@@ -1,69 +1,82 @@
-# الشرطي — Voice Character Architecture
+# الشرطي — Architecture
 
-## Product goal
+## الهدف
 
-The app opens directly into a single cinematic police-dog character. The child talks naturally in Arabic; the character listens, thinks, replies, and visibly reacts. The three-dot menu switches between online and offline speech preference without exposing developer settings to the child.
+تجربة Android مستقلة بالكامل عن VibeApp: يفتح الطفل التطبيق مباشرة على كلب شرطي سينمائي خلف مكتب، يتحدث معه بالعربية، يسمعه التطبيق، يرد عليه، ثم يعود للاستماع تلقائياً.
 
-## Current vertical slice
+## هوية Android الثابتة
+
+- namespace: `com.malik.alshurti`
+- applicationId: `com.malik.alshurti`
+- اسم المنتج: `الشرطي`
+
+هذه الهوية لا تتغير في المستقبل. اختلاف applicationId عن VibeApp يسمح بتثبيت التطبيقين معاً، وثباته يسمح بتحديث الشرطي فوق نسخته السابقة.
+
+## الوضع الحالي القابل للبناء
 
 ```text
 Microphone
-  -> Android SpeechRecognizer (ar-SA, partial results)
-  -> PoliceBrain contract + child-safety guard
-  -> Android TextToSpeech (best Arabic voice for selected mode)
-  -> PoliceDogStage expression / mouth animation
+  -> Android SpeechRecognizer (ar-SA + partial results)
+  -> PoliceBrain + child-safety contract
+  -> Android TextToSpeech (best Arabic voice available for mode)
+  -> Arabic viseme timing
+  -> PoliceDogStage expressions / mouth animation
   -> automatic return to listening
 ```
 
-The code deliberately separates state, brain, speech I/O, and rendering so each engine can be replaced without changing the call screen.
+المحركات مفصولة عمداً حتى لا ترتبط الواجهة بمزوّد واحد.
 
-## Target neural stack
+## الهدف العصبي
 
-The production-quality target keeps the same interfaces and replaces the baseline engines with:
+### Offline
 
 ```text
-Offline
-  STT: whisper.cpp or sherpa-onnx
-  Brain: Qwen GGUF through llama.cpp / another proven Android runtime
-  TTS: on-device neural Arabic TTS through sherpa-onnx
-
-Online / self-hosted
-  STT: streaming Whisper/Qwen ASR
-  Brain: Qwen service with the exact PoliceCharacterContract
-  TTS: Chatterbox/Fish-style neural Arabic voice when a self-hosted GPU is available
+On-device VAD
+  -> whisper.cpp / sherpa-onnx Arabic STT
+  -> quantized Qwen-class model on Android runtime
+  -> on-device Arabic neural TTS
+  -> timed visemes
+  -> rigged GLB character
 ```
 
-No paid API is required by the architecture. Online mode is intended for a user-owned/self-hosted endpoint when the neural backend is added.
+### Online / self-hosted
 
-## Character rendering contract
+```text
+Streaming STT
+  -> Qwen service with the same PoliceCharacterContract
+  -> streaming Arabic neural TTS
+  -> first-audio playback while synthesis continues
+  -> timed visemes / facial morph targets
+```
 
-`PoliceDogStage` is currently a lightweight cinematic animated fallback so the application is buildable before a licensed 3D character is committed. The final asset should be a rigged high-fidelity dog in police uniform seated behind a desk.
+لا تعتمد المعمارية على API مدفوع؛ يمكن أن يكون Online عبارة عن backend يملكه المستخدم.
 
-Recommended asset contract for the future Filament renderer:
+## الشخصية السينمائية
 
-- Format: GLB / glTF 2.0, physically based materials.
-- Mobile LODs: high, medium, low.
-- Textures: 2K default; optional 4K only for high-end devices.
-- Fur: baked/cards or mobile-friendly groom representation; avoid desktop strand hair.
-- Skeleton: head, neck, jaw, ears, eyelids, brows, shoulders, forelegs.
-- Facial morph targets: jawOpen, mouthWide, mouthNarrow, smile, blinkL, blinkR, browUp, browDown.
-- Animation clips: Idle, Listen, Think, Talk, Smile, Laugh, Serious, Concerned.
-- Keep the camera fixed enough that facial animation remains readable on a phone.
-- Desk and room may be separate meshes to allow quality scaling.
+`PoliceDogStage` الحالي fallback متحرك وخفيف. الهدف النهائي أصل 3D مستقل، وليس رسومات VibeApp أو واجهاته.
 
-## Latency budget
+عقد الأصل النهائي:
 
-For the experience to feel like a phone call, optimize for time-to-first-audio rather than full-response completion:
+- GLB / glTF 2.0.
+- PBR materials.
+- mobile LODs.
+- 2K textures افتراضياً، و4K اختيارياً للأجهزة القوية.
+- skeleton: head, neck, jaw, ears, eyelids, brows, shoulders, forelegs.
+- morph targets: jawOpen, mouthWide, mouthNarrow, smile, blinkL, blinkR, browUp, browDown.
+- clips: Idle, Listen, Think, Talk, Smile, Laugh, Serious, Concerned.
+- مزامنة الفم من visemes وليس مجرد فتح/إغلاق دوري.
 
-- End-of-speech detection: ~0.35–0.70 s after natural pause.
-- Brain first tokens: target <0.5 s on a capable local runtime or LAN server.
-- TTS first audio: target <0.4 s with streaming neural synthesis.
-- Overall target: first reply audio around 1–1.6 s after the child finishes speaking on a suitable device/backend.
+## ميزانية التأخير
 
-The current Android fallback is device/engine dependent and therefore cannot guarantee that target; the neural adapters are where deterministic latency work belongs.
+القياس المهم هو Time To First Audio:
 
-## Safety and scope
+- نهاية كلام الطفل: تقريباً 0.35–0.70 ثانية بعد الوقفة الطبيعية.
+- أول token للعقل: هدف أقل من 0.5 ثانية على backend مناسب.
+- أول صوت TTS: هدف أقل من 0.4 ثانية لمحرك streaming.
+- الهدف الإجمالي: بدء الرد تقريباً خلال 1–1.6 ثانية على جهاز/backend مناسب.
 
-`PoliceCharacterContract` is a code-level contract, not just UI copy. It keeps the character child-appropriate, blocks requests for sensitive personal information, avoids threats or fake dispatch claims, and routes real danger to a trusted adult / real emergency services.
+لا يُعتبر أي رقم مضموناً قبل قياسه على جهاز حقيقي.
 
-The character must remain clearly an in-app fictional police character. It must never claim that a real police unit has been contacted or dispatched.
+## الأمان
+
+الشخصية خيالية داخل التطبيق. لا تدعي إرسال دورية حقيقية، لا تطلب عنوان الطفل أو رقم هاتفه، ولا تهدد بالسجن. عند خطر حقيقي، توجه الطفل فوراً إلى بالغ موثوق أو إلى خدمات الطوارئ الحقيقية بواسطة بالغ.

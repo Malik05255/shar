@@ -2,40 +2,54 @@
 
 ## Source of truth
 
-This repository now builds **Al-Shorti / الشرطي**, not VibeApp. The production module is `police-app`.
+This repository builds one Android product: **Al-Shorti / الشرطي**.
 
-Use these files first:
+Read these first:
 - `police-app/build.gradle.kts`
 - `police-app/src/main/kotlin/com/malik/alshurti/`
+- `version.properties`
 - `docs/alshurti.md`
+- `docs/release.md`
 
-Legacy VibeApp directories (`app`, `build-engine`, `build-tools`, `shadow-runtime`) are retained only as reference and are intentionally excluded from `settings.gradle.kts`. Do not wire them back into the build unless the user explicitly requests it.
+## Permanent product identity
+
+- App name: `الشرطي`
+- Android namespace: `com.malik.alshurti`
+- Android application ID: `com.malik.alshurti`
+
+**Never change the application ID.** It is intentionally different from VibeApp (`com.vibe.app`) so both apps can coexist. Keeping this ID stable is also required for in-place updates.
+
+For every distributable version, increment `VERSION_CODE` in `version.properties`. A higher `VERSION_NAME` alone is not sufficient.
+
+Release builds must use the same signing key for the lifetime of the app. Never commit a private production keystore to this public repository.
 
 ## Product contract
 
-- Android app, Arabic-first, minSdk 29 / targetSdk 36.
-- App opens directly to one police-dog call scene.
-- The character is fictional and must never claim a real police unit was contacted/dispatched.
-- Main priorities: cinematic character realism, natural Arabic speech, and low turn latency.
-- The three-dot menu switches between ONLINE and OFFLINE modes.
-- OFFLINE mode must never silently use the network.
-- Keep STT, conversational brain, TTS, and character rendering replaceable as independent engines.
-- Real danger must route the child to a trusted adult / real emergency help; never request sensitive child data.
+- Android, Arabic-first, minSdk 29 / targetSdk 36.
+- Opens directly into a police-dog voice-call scene.
+- Primary priorities: cinematic character realism, natural Arabic speech, and low time-to-first-audio.
+- Three-dot menu switches ONLINE / OFFLINE.
+- OFFLINE must never silently fall back to network speech recognition.
+- STT, brain, TTS, lip-sync, and 3D rendering remain independent replaceable engines.
+- The character is fictional and must not claim a real police unit was contacted or dispatched.
+- Real danger routes the child to a trusted adult / real emergency help and never solicits sensitive child data.
 
-## Current implementation
+## Architecture
 
-The current vertical slice uses Android SpeechRecognizer + Android TTS and a lightweight local guarded response engine. These are baseline adapters only. The target neural architecture is documented in `docs/alshurti.md`.
+Current buildable baseline:
 
-The current Canvas dog is a buildable animated fallback. The final visual target is a licensed/generated rigged GLB rendered with a mobile-appropriate 3D pipeline, with facial morph targets and animation states.
+`SpeechRecognizer -> PoliceBrain -> Android TTS -> Arabic visemes -> animated character`
+
+Target neural path:
+
+`streaming/on-device STT -> Qwen-class conversational brain -> Arabic neural TTS -> timed visemes -> rigged GLB/Filament`
+
+Do not claim photorealistic 3D, neural Arabic TTS, or measured latency until those components are actually present and validated on a device.
 
 ## Verification
-
-Run:
 
 ```bash
 ./gradlew :police-app:assembleDebug
 ./gradlew :police-app:testDebugUnitTest
 ./gradlew :police-app:lintDebug
 ```
-
-Do not claim photorealistic 3D, Qwen integration, neural Arabic TTS, or verified latency until those components are actually present and measured on-device.

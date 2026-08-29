@@ -1,4 +1,4 @@
-name: Android CI
+name: Al-Shorti Android CI
 
 on:
   push:
@@ -11,12 +11,12 @@ on:
       - dev
 
 concurrency:
-  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  group: alshorti-android-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build installable debug APK
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,23 +31,18 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Resolve app module
-        run: |
-          if [ -d police-app ]; then
-            echo "APP_MODULE=police-app" >> "$GITHUB_ENV"
-          else
-            echo "APP_MODULE=app" >> "$GITHUB_ENV"
-          fi
-      - name: Build Debug APK
-        run: ./gradlew --no-daemon :${APP_MODULE}:assembleDebug
-      - name: Upload Debug APK
+      - name: Load app version
+        run: cat version.properties >> "$GITHUB_ENV"
+      - name: Build Al-Shorti
+        run: ./gradlew --no-daemon :police-app:assembleDebug
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlShorti-debug-apk
-          path: ${{ env.APP_MODULE }}/build/outputs/apk/debug/*.apk
+          name: AlShorti-${{ env.VERSION_NAME }}-debug
+          path: police-app/build/outputs/apk/debug/*.apk
 
   unit-tests:
-    name: Unit Tests
+    name: Unit tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,18 +57,11 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Resolve app module
-        run: |
-          if [ -d police-app ]; then
-            echo "APP_MODULE=police-app" >> "$GITHUB_ENV"
-          else
-            echo "APP_MODULE=app" >> "$GITHUB_ENV"
-          fi
-      - name: Run Unit Tests
-        run: ./gradlew --no-daemon :${APP_MODULE}:testDebugUnitTest
+      - name: Run tests
+        run: ./gradlew --no-daemon :police-app:testDebugUnitTest
 
   lint:
-    name: Android Lint
+    name: Android lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,12 +76,5 @@ jobs:
           cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Resolve app module
-        run: |
-          if [ -d police-app ]; then
-            echo "APP_MODULE=police-app" >> "$GITHUB_ENV"
-          else
-            echo "APP_MODULE=app" >> "$GITHUB_ENV"
-          fi
-      - name: Run Android Lint
-        run: ./gradlew --no-daemon :${APP_MODULE}:lintDebug
+      - name: Run lint
+        run: ./gradlew --no-daemon :police-app:lintDebug

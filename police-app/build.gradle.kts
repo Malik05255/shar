@@ -1,20 +1,52 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
 }
+
+val appVersion = Properties().apply {
+    rootProject.file("version.properties").inputStream().use { load(it) }
+}
+val alShortiVersionCode = appVersion.getProperty("VERSION_CODE").toInt()
+val alShortiVersionName = appVersion.getProperty("VERSION_NAME")
+
+val releaseStoreFile = System.getenv("ALSHORTI_KEYSTORE_FILE")
+val releaseStorePassword = System.getenv("ALSHORTI_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ALSHORTI_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ALSHORTI_KEY_PASSWORD")
+val releaseSigningReady = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.malik.alshurti"
     compileSdk = 36
 
     defaultConfig {
+        // Permanent Android identity. Never change this after distribution: it is
+        // what lets Al-Shorti coexist with VibeApp and receive in-place updates.
         applicationId = "com.malik.alshurti"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = alShortiVersionCode
+        versionName = alShortiVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +57,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 
@@ -35,6 +68,13 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        resources.excludes += setOf(
+            "/META-INF/AL2.0",
+            "/META-INF/LGPL2.1"
+        )
     }
 }
 
