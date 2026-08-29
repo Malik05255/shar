@@ -15,7 +15,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.vibe.app"
+        applicationId = "com.malik.alshurti"
         minSdk = 29
         targetSdk = 36
         versionCode = 15
