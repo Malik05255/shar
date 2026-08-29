@@ -85,7 +85,12 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     onClick = viewModel::interruptAndListen
                 )
         ) {
-            PoliceDogStage(state.mood, state.phase, state.viseme, Modifier.fillMaxSize())
+            RealPoliceDogStage(
+                mood = state.mood,
+                phase = state.phase,
+                viseme = state.viseme,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         Box(
@@ -112,7 +117,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "الإنترنت",
-                            "يستخدم أفضل خدمات الصوت المتاحة على الجهاز",
+                            "يحمّل الصوت العصبي أول مرة ثم يحتفظ به على الجهاز",
                             state.mode == VoiceMode.ONLINE
                         )
                     },
@@ -125,7 +130,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "بدون إنترنت",
-                            "يعمل فقط إذا كانت العربية المحلية مثبتة",
+                            "يستخدم الصوت العصبي المحفوظ محلياً بدون اشتراك أو دقائق",
                             state.mode == VoiceMode.OFFLINE
                         )
                     },
