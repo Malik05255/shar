@@ -1,26 +1,10 @@
-package com.vibe.app.presentation.ui.police
+package com.malik.alshurti
 
-enum class VoiceMode {
-    ONLINE,
-    OFFLINE
-}
+enum class VoiceMode { ONLINE, OFFLINE }
 
-enum class CallPhase {
-    STARTING,
-    LISTENING,
-    THINKING,
-    SPEAKING,
-    ERROR
-}
+enum class CallPhase { STARTING, LISTENING, THINKING, SPEAKING, ERROR }
 
-enum class DogMood {
-    CALM,
-    LISTENING,
-    THINKING,
-    TALKING,
-    SMILE,
-    SERIOUS
-}
+enum class DogMood { CALM, LISTENING, THINKING, TALKING, SMILE, SERIOUS }
 
 data class PoliceUiState(
     val mode: VoiceMode = VoiceMode.ONLINE,

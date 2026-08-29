@@ -1,4 +1,4 @@
-package com.vibe.app.presentation.ui.police
+package com.malik.alshurti
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
-
     private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
     private val brain: PoliceBrain = LocalPoliceBrain()
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
@@ -85,8 +84,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         if (!microphonePermissionGranted || !ttsReady || sessionStarted) return
         sessionStarted = true
 
-        val state = _uiState.value
-        if (!state.firstGreetingDone) {
+        if (!_uiState.value.firstGreetingDone) {
             val greeting = "هلا يا بطل، معك الشرطي. وش عندك؟"
             _uiState.update {
                 it.copy(
@@ -170,9 +168,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(heardText = text) }
     }
 
-    override fun onFinalText(text: String) {
-        handleRecognizedText(text)
-    }
+    override fun onFinalText(text: String) = handleRecognizedText(text)
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
         if (recoverable && microphonePermissionGranted) {
@@ -185,7 +181,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
             viewModelScope.launch {
-                delay(500)
+                delay(450)
                 retryListening()
             }
         } else {
@@ -218,7 +214,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onTtsFinished() {
         if (!microphonePermissionGranted) return
         viewModelScope.launch {
-            delay(140)
+            delay(120)
             retryListening()
         }
     }

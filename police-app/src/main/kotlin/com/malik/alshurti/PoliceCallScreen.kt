@@ -1,4 +1,4 @@
-package com.vibe.app.presentation.ui.police
+package com.malik.alshurti
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -29,7 +29,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,39 +52,31 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
-fun PoliceCallScreen(
-    viewModel: PoliceCallViewModel = viewModel()
-) {
+fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var modeMenuExpanded by remember { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = viewModel::onMicrophonePermissionResult
+        ActivityResultContracts.RequestPermission(),
+        viewModel::onMicrophonePermissionResult
     )
 
     LaunchedEffect(Unit) {
-        val granted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (granted) {
-            viewModel.onMicrophonePermissionResult(true)
-        } else {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) viewModel.onMicrophonePermissionResult(true)
+        else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     Box(
-        modifier = Modifier
+        Modifier
             .fillMaxSize()
             .background(Color(0xFF07111C))
     ) {
         val interactionSource = remember { MutableInteractionSource() }
         Box(
-            modifier = Modifier
+            Modifier
                 .fillMaxSize()
                 .clickable(
                     interactionSource = interactionSource,
@@ -94,15 +85,11 @@ fun PoliceCallScreen(
                     onClick = viewModel::interruptAndListen
                 )
         ) {
-            PoliceDogStage(
-                mood = state.mood,
-                phase = state.phase,
-                modifier = Modifier.fillMaxSize()
-            )
+            PoliceDogStage(state.mood, state.phase, Modifier.fillMaxSize())
         }
 
         Box(
-            modifier = Modifier
+            Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 18.dp, end = 12.dp)
         ) {
@@ -111,42 +98,39 @@ fun PoliceCallScreen(
                 color = Color.Black.copy(alpha = 0.30f),
                 contentColor = Color.White
             ) {
-                IconButton(onClick = { modeMenuExpanded = true }) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "اختيار وضع التشغيل"
-                    )
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "اختيار وضع التشغيل")
                 }
             }
 
             DropdownMenu(
-                expanded = modeMenuExpanded,
-                onDismissRequest = { modeMenuExpanded = false },
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
                 modifier = Modifier.background(Color(0xFF10232E))
             ) {
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
-                            title = "الإنترنت",
-                            subtitle = "يفضل خدمات الصوت المتصلة",
-                            selected = state.mode == VoiceMode.ONLINE
+                            "الإنترنت",
+                            "يستخدم أفضل خدمات الصوت المتاحة على الجهاز",
+                            state.mode == VoiceMode.ONLINE
                         )
                     },
                     onClick = {
-                        modeMenuExpanded = false
+                        menuExpanded = false
                         viewModel.chooseMode(VoiceMode.ONLINE)
                     }
                 )
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
-                            title = "بدون إنترنت",
-                            subtitle = "يفضل التعرف والصوت الموجودين على الجهاز",
-                            selected = state.mode == VoiceMode.OFFLINE
+                            "بدون إنترنت",
+                            "يعمل فقط إذا كانت العربية المحلية مثبتة",
+                            state.mode == VoiceMode.OFFLINE
                         )
                     },
                     onClick = {
-                        modeMenuExpanded = false
+                        menuExpanded = false
                         viewModel.chooseMode(VoiceMode.OFFLINE)
                     }
                 )
@@ -154,7 +138,7 @@ fun PoliceCallScreen(
         }
 
         Column(
-            modifier = Modifier
+            Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp, vertical = 22.dp),
@@ -165,12 +149,9 @@ fun PoliceCallScreen(
                 enter = fadeIn(),
                 exit = fadeOut()
             ) {
-                Surface(
-                    color = Color.Black.copy(alpha = 0.38f),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
+                Surface(color = Color.Black.copy(alpha = 0.38f), shape = RoundedCornerShape(18.dp)) {
                     Text(
-                        text = "سمعتك: ${state.heardText}",
+                        "سمعتك: ${state.heardText}",
                         color = Color.White.copy(alpha = 0.88f),
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,
@@ -179,13 +160,9 @@ fun PoliceCallScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
 
-            Surface(
-                color = Color(0xCC0B1820),
-                shape = RoundedCornerShape(24.dp),
-                tonalElevation = 0.dp
-            ) {
+            Surface(color = Color(0xCC0B1820), shape = RoundedCornerShape(24.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
@@ -193,7 +170,7 @@ fun PoliceCallScreen(
                 ) {
                     PhaseDot(state.phase)
                     Text(
-                        text = state.statusText,
+                        state.statusText,
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
@@ -201,15 +178,8 @@ fun PoliceCallScreen(
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
                     if (state.phase == CallPhase.ERROR) {
-                        IconButton(
-                            onClick = viewModel::retryListening,
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Refresh,
-                                contentDescription = "إعادة المحاولة",
-                                tint = Color.White
-                            )
+                        IconButton(onClick = viewModel::retryListening, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Default.Refresh, contentDescription = "إعادة المحاولة", tint = Color.White)
                         }
                     }
                 }
@@ -221,7 +191,7 @@ fun PoliceCallScreen(
                 exit = fadeOut()
             ) {
                 Text(
-                    text = "المس الشرطي إذا أردت مقاطعته",
+                    "المس الشرطي إذا أردت مقاطعته",
                     color = Color.White.copy(alpha = 0.55f),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 6.dp)
@@ -232,28 +202,24 @@ fun PoliceCallScreen(
 }
 
 @Composable
-private fun ModeMenuText(
-    title: String,
-    subtitle: String,
-    selected: Boolean
-) {
-    Column(modifier = Modifier.padding(vertical = 2.dp)) {
+private fun ModeMenuText(title: String, subtitle: String, selected: Boolean) {
+    Column(Modifier.padding(vertical = 2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
-                modifier = Modifier
+                Modifier
                     .size(9.dp)
                     .clip(CircleShape)
                     .background(if (selected) Color(0xFF75D4A8) else Color(0xFF637783))
             )
             Text(
-                text = title,
+                title,
                 color = Color.White,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
         Text(
-            text = subtitle,
+            subtitle,
             color = Color.White.copy(alpha = 0.58f),
             fontSize = 11.sp,
             modifier = Modifier.padding(start = 17.dp, top = 2.dp)
@@ -271,7 +237,7 @@ private fun PhaseDot(phase: CallPhase) {
         CallPhase.ERROR -> listOf(Color(0xFFE98B7F), Color(0xFFB84C42))
     }
     Box(
-        modifier = Modifier
+        Modifier
             .size(10.dp)
             .clip(CircleShape)
             .background(Brush.radialGradient(colors))

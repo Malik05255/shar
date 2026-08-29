@@ -1,4 +1,4 @@
-package com.vibe.app.presentation.ui.police
+package com.malik.alshurti
 
 import android.content.Context
 import android.content.Intent
@@ -9,6 +9,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import java.util.Locale
 
 class PoliceVoiceEngine(
@@ -118,8 +119,7 @@ class PoliceVoiceEngine(
 
         engine.setSpeechRate(0.98f)
         engine.setPitch(0.96f)
-        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
-        if (result == TextToSpeech.ERROR) {
+        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID) == TextToSpeech.ERROR) {
             listener.onTtsError("تعذر تشغيل صوت الشرطي.")
         }
     }
@@ -138,13 +138,12 @@ class PoliceVoiceEngine(
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
 
-    private fun createRecognizer(): SpeechRecognizer {
-        return if (mode == VoiceMode.OFFLINE && hasOnDeviceRecognizer()) {
+    private fun createRecognizer(): SpeechRecognizer =
+        if (mode == VoiceMode.OFFLINE && hasOnDeviceRecognizer()) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         } else {
             SpeechRecognizer.createSpeechRecognizer(context)
         }
-    }
 
     private fun initTts() {
         tts = TextToSpeech(context.applicationContext) { status ->
@@ -153,13 +152,8 @@ class PoliceVoiceEngine(
                 if (engine != null) {
                     engine.language = Locale("ar", "SA")
                     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {
-                            listener.onTtsStarted()
-                        }
-
-                        override fun onDone(utteranceId: String?) {
-                            listener.onTtsFinished()
-                        }
+                        override fun onStart(utteranceId: String?) = listener.onTtsStarted()
+                        override fun onDone(utteranceId: String?) = listener.onTtsFinished()
 
                         @Deprecated("Deprecated in Java")
                         override fun onError(utteranceId: String?) {
@@ -182,10 +176,6 @@ class PoliceVoiceEngine(
         }
     }
 
-    /**
-     * Returns true only when the selected mode can actually speak Arabic.
-     * OFFLINE never silently falls back to a network-required voice.
-     */
     private fun selectBestArabicVoice(): Boolean {
         val engine = tts ?: return false
         if (!ttsReady) return false
@@ -195,8 +185,8 @@ class PoliceVoiceEngine(
             .orEmpty()
 
         if (arabicVoices.isEmpty()) {
-            return engine.isLanguageAvailable(Locale("ar", "SA")) >= TextToSpeech.LANG_AVAILABLE &&
-                mode == VoiceMode.ONLINE
+            return mode == VoiceMode.ONLINE &&
+                engine.isLanguageAvailable(Locale("ar", "SA")) >= TextToSpeech.LANG_AVAILABLE
         }
 
         val candidates = if (mode == VoiceMode.OFFLINE) {
@@ -206,8 +196,7 @@ class PoliceVoiceEngine(
         }
 
         val preferred = candidates.maxWithOrNull(
-            compareBy<android.speech.tts.Voice> { it.quality }
-                .thenBy { -it.latency }
+            compareBy<Voice> { it.quality }.thenBy { -it.latency }
         ) ?: return false
 
         engine.voice = preferred
@@ -215,20 +204,11 @@ class PoliceVoiceEngine(
     }
 
     private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            listener.onReadyToListen()
-        }
-
-        override fun onBeginningOfSpeech() {
-            listener.onSpeechStarted()
-        }
-
+        override fun onReadyForSpeech(params: Bundle?) = listener.onReadyToListen()
+        override fun onBeginningOfSpeech() = listener.onSpeechStarted()
         override fun onRmsChanged(rmsdB: Float) = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
-
-        override fun onEndOfSpeech() {
-            listening = false
-        }
+        override fun onEndOfSpeech() { listening = false }
 
         override fun onError(error: Int) {
             listening = false
