@@ -10,6 +10,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import androidx.annotation.ChecksSdkIntAtLeast
 import java.util.Locale
 
 class PoliceVoiceEngine(
@@ -134,6 +135,7 @@ class PoliceVoiceEngine(
         ttsReady = false
     }
 
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
     private fun hasOnDeviceRecognizer(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
