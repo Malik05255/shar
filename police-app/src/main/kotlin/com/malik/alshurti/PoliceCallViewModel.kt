@@ -12,12 +12,13 @@ import kotlinx.coroutines.launch
 
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
     private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
-    private val brain: PoliceBrain = LocalPoliceBrain()
-    private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
 
     private val initialMode = runCatching {
         VoiceMode.valueOf(preferences.getString(KEY_MODE, VoiceMode.ONLINE.name) ?: VoiceMode.ONLINE.name)
     }.getOrDefault(VoiceMode.ONLINE)
+
+    private val brain: PoliceBrain = LocalPoliceBrain()
+    private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
 
     private val _uiState = MutableStateFlow(PoliceUiState(mode = initialMode))
     val uiState: StateFlow<PoliceUiState> = _uiState.asStateFlow()
@@ -49,6 +50,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     fun chooseMode(mode: VoiceMode) {
         preferences.edit().putString(KEY_MODE, mode.name).apply()
+        ttsReady = false
+        sessionStarted = false
         voiceEngine.setMode(mode)
         _uiState.update {
             it.copy(
@@ -56,12 +59,14 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
-                statusText = if (mode == VoiceMode.ONLINE) "وضع الإنترنت" else "وضع بدون إنترنت",
+                statusText = if (mode == VoiceMode.ONLINE) {
+                    "جاري تجهيز الصوت العصبي العربي…"
+                } else {
+                    "جاري تشغيل الصوت المحلي…"
+                },
                 errorMessage = null
             )
         }
-        sessionStarted = false
-        tryStartSession()
     }
 
     fun retryListening() {
@@ -189,7 +194,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
             viewModelScope.launch {
-                delay(450)
+                delay(380)
                 retryListening()
             }
         } else {
@@ -205,8 +210,27 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    override fun onTtsPreparing(percent: Int, message: String) {
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.STARTING,
+                mood = DogMood.CALM,
+                viseme = MouthViseme.REST,
+                statusText = if (percent in 1..99) "$message $percent%" else message,
+                errorMessage = null
+            )
+        }
+    }
+
     override fun onTtsReady() {
         ttsReady = true
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.STARTING,
+                mood = DogMood.CALM,
+                statusText = "الصوت الطبيعي جاهز"
+            )
+        }
         tryStartSession()
     }
 
@@ -228,7 +252,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(viseme = MouthViseme.REST) }
         if (!microphonePermissionGranted) return
         viewModelScope.launch {
-            delay(120)
+            delay(100)
             retryListening()
         }
     }
