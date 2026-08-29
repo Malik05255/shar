@@ -1,32 +1,50 @@
-name: Android CI
+name: ALMI Android CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  group: almi-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-
   build:
-    name: Build Debug APK
+    name: Build ALMI APK
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Guard ALMI release signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_KEYSTORE_BLOB="713f25064a41595c7040f60bdaf0d15daf0d1435"
+          ACTUAL_KEYSTORE_BLOB="$(git hash-object .github/almi_ai_dev_keystore.b64)"
+          echo "ALMI keystore identity: $ACTUAL_KEYSTORE_BLOB"
+          test "$ACTUAL_KEYSTORE_BLOB" = "$EXPECTED_KEYSTORE_BLOB"
+
+      - name: Guard unobfuscated release policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eq 'isMinifyEnabled[[:space:]]*=[[:space:]]*false' app/build.gradle.kts
+          grep -Eq 'isShrinkResources[[:space:]]*=[[:space:]]*false' app/build.gradle.kts
+          test ! -f app/proguard-rules.pro
+          printf '%s\n' \
+            'R8/minification: disabled' \
+            'resource shrinking: disabled' \
+            'custom ProGuard rules: absent' \
+            'APK signing: retained (required by Android)' > ALMI_BUILD_POLICY.txt
 
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
@@ -35,61 +53,77 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew --no-daemon app:assembleDebug
+      - name: Build signed Release APK
+        run: ./gradlew --no-daemon app:assembleRelease
 
-      - name: Upload Debug APK
+      - name: Verify no R8 mapping was produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -f app/build/outputs/mapping/release/mapping.txt
+
+      - name: Name APK
+        run: cp app/build/outputs/apk/release/app-release.apk ALMI_AI.apk
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_CERT_SHA256="aa85b8be54212a633477c8f644ca783e8fdd6a5b8842b9d69675e9ec3bf96ac9"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs ALMI_AI.apk | tee ALMI_APK_SIGNATURE.txt
+          CERT_SHA256="$(awk -F'digest: ' '/certificate SHA-256 digest:/ { print $2; exit }' ALMI_APK_SIGNATURE.txt | tr -d '\r')"
+          test -n "$CERT_SHA256"
+          test "$CERT_SHA256" = "$EXPECTED_CERT_SHA256"
+          printf '%s\n' "$CERT_SHA256" > ALMI_SIGNING_CERT_SHA256.txt
+          echo "ALMI release certificate SHA-256: $CERT_SHA256"
+
+      - name: Upload ALMI APK
         uses: actions/upload-artifact@v4
         with:
-          name: VibeApp-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-
+          name: ALMI_AI
+          path: |
+            ALMI_AI.apk
+            ALMI_APK_SIGNATURE.txt
+            ALMI_SIGNING_CERT_SHA256.txt
+            ALMI_BUILD_POLICY.txt
+          if-no-files-found: error
 
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v5
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
-
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-
       - name: Run Unit Tests
         run: ./gradlew --no-daemon app:testDebugUnitTest
-
 
   lint:
     name: Android Lint
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v5
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
-
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-
       - name: Run Android Lint
-        run: ./gradlew --no-daemon app:lintDebug
+        run: ./gradlew --no-daemon app:lintRelease

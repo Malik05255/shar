@@ -1,603 +1,145 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <string name="app_name">VibeApp</string>
-
-    <string name="sample_item_title">Item 1</string>
-    <string name="sample_item_description">Item description</string>
-
-
-    <!-- API Providers -->
-
-    <string name="openrouter" translatable="false">
-        OpenRouter
-    </string>
-
-    <string name="openrouter_description">
-        Access multiple AI models through OpenRouter API.
-    </string>
-
-    <string name="custom_api" translatable="false">
-        Custom API
-    </string>
-
-    <string name="custom_api_description">
-        Use a custom compatible API endpoint.
-    </string>
-
-
-    <!-- Existing -->
-
-    <string name="next">Next</string>
+    <string name="app_name">ALMI_AI</string>
+    <string name="app_tagline">AI virtual try-on</string>
+    <string name="settings_title">Settings</string>
     <string name="back">Back</string>
-    <string name="need_help">Need Help?</string>
-
-    <string name="setup_complete">
-        You’re all set!
-    </string>
-
-    <string name="setup_complete_description">
-        Let’s start using VibeApp!
-    </string>
-
-    <string name="setup_complete_logo">
-        Setup Complete
-    </string>
-
-    <string name="done">
-        Done
-    </string>
-
-    <string name="settings">
-        Settings
-    </string>
-
-    <string name="confirm">
-        Confirm
-    </string>
-
-    <string name="cancel">
-        Cancel
-    </string>
-
-    <string name="go_back">
-        Go back
-    </string>
-
-    <string name="enable_api">
-        Enable API
-    </string>
-
-
-    <!-- Language Settings -->
-    <string name="language">Language</string>
-    <string name="arabic">Arabic</string>
-    <string name="english">English</string>
-
-
-    <!-- API -->
-
-    <string name="api_key">
-        API Key
-    </string>
-
-    <string name="api_model">
-        API Model
-    </string>
-
-    <string name="api_url">
-        API URL
-    </string>
-
-    <string name="api_url_hint">
-        https://openrouter.ai/api/
-    </string>
-
-    <string name="api_key_hint">
-        sk-or-v1-…
-    </string>
-
-    <string name="model_name">
-        Model Identifier
-    </string>
-
-    <string name="model">
-        Model
-    </string>
-
-
-    <!-- Setup Wizard -->
-
-    <string name="choose_platform_type">
-        Choose Platform Type
-    </string>
-
-    <string name="choose_platform_type_description">
-        Select the API provider you want to use
-    </string>
-
-    <string name="platform_name">
-        Platform Name
-    </string>
-
-    <string name="platform_name_hint">
-        My OpenRouter Platform
-    </string>
-
-    <string name="platform_name_supporting">
-        Choose a name for this platform configuration.
-    </string>
-
-    <string name="platform_basics_description">
-        Configure your API platform settings.
-    </string>
-
-    <string name="api_key_description">
-        Enter your API key. Stored locally on your device.
-    </string>
-
-    <string name="api_key_supporting">
-        Your API key is stored locally on your device.
-    </string>
-
-    <string name="api_url_cautions">
-        Enter the API endpoint URL.
-    </string>
-
-    <string name="model_description">
-        Enter the model identifier you want to use.
-    </string>
-
-    <string name="model_supporting">
-        Enter the model identifier.
-    </string>
-
-    <string name="model_examples">
-        Example: gpt-4o, claude-3, deepseek-chat
-    </string>
-
-    <string name="step_x_of_y">
-        Step %1$d of %2$d
-    </string>
-
-    <string name="step_basics">
-        Basics
-    </string>
-
-    <string name="step_api_key">
-        API Key
-    </string>
-
-    <string name="step_model">
-        Model
-    </string>
-
-    <string name="switched_platform_hint">
-        Switched to %1$s
-    </string>
-
-    <string name="finish">
-        Finish
-    </string>
-
-
-    <!-- Settings Screen -->
-
-    <string name="theme_settings">
-        Theme Settings
-    </string>
-
-    <string name="theme_description">
-        Customize application appearance.
-    </string>
-
-    <string name="about">
-        About
-    </string>
-
-    <string name="about_description">
-        Application information.
-    </string>
-
-    <string name="dynamic_theme">
-        Dynamic Theme
-    </string>
-
-    <string name="dark_mode">
-        Dark Mode
-    </string>
-
-    <string name="enabled">
-        Enabled
-    </string>
-
-    <string name="disabled">
-        Disabled
-    </string>
-
-    <string name="add_platform">
-        Add Platform
-    </string>
-
-    <string name="add_platform_description">
-        Add a new API platform.
-    </string>
-
-    <string name="delete_platform">
-        Delete Platform
-    </string>
-
-    <string name="delete_platform_confirmation">
-        Are you sure you want to delete this platform?
-    </string>
-
-    <string name="debug_log">
-        Debug Log
-    </string>
-
-    <string name="debug_log_description">
-        View application debug information.
-    </string>
-
-
-    <!-- Platform Settings -->
-
-    <string name="platform_settings">
-        Platform Settings
-    </string>
-
-    <string name="platform_settings_description">
-        Configure platform options.
-    </string>
-
-    <string name="top_p_setting">
-        Top P
-    </string>
-
-    <string name="top_p_setting_description">
-        Controls nucleus sampling value.
-    </string>
-
-    <string name="temperature_setting">
-        Temperature
-    </string>
-
-    <string name="temperature_setting_description">
-        Controls creativity of generated responses.
-    </string>
-
-    <string name="reset">
-        Reset
-    </string>
-
-    <string name="system_prompt_setting">
-        System Prompt
-    </string>
-
-    <string name="system_prompt_description">
-        Configure the default system prompt.
-    </string>
-
-    <string name="system_prompt">
-        System Prompt
-    </string>
-
-    <string name="invalid_api_url">
-        Invalid API URL
-    </string>
-
-
-    <!-- About -->
-
-    <string name="version">
-        Version
-    </string>
-
-    <string name="version_icon">
-        Version Icon
-    </string>
-
-    <string name="license">
-        License
-    </string>
-
-    <string name="license_description">
-        Open source license information.
-    </string>
-
-    <string name="license_icon">
-        License Icon
-    </string>
-
-    <string name="github">
-        GitHub
-    </string>
-
-    <string name="github_icon">
-        GitHub Icon
-    </string>
-
-    <string name="github_link">
-        https://github.com/
-    </string>
-
-    <string name="feedback">
-        Feedback
-    </string>
-
-    <string name="feedback_description">
-        Send feedback or report issues.
-    </string>
-
-    <string name="feedback_icon">
-        Feedback Icon
-    </string>
-
-    <string name="feedback_link">
-        mailto:support@example.com
-    </string>
-
-    <string name="bug_report">
-        Bug Report
-    </string>
-
-    <string name="bug_report_description">
-        Report bugs and application issues.
-    </string>
-
-    <string name="bug_report_icon">
-        Bug Report Icon
-    </string>
-
-    <string name="bug_report_link">
-        https://github.com/issues
-    </string>
-
-    <!-- Home Screen -->
-
-    <string name="projects">
-        Projects
-    </string>
-
-    <string name="projects_selected">
-        %1$d Projects Selected
-    </string>
-
-    <string name="new_project">
-        New Project
-    </string>
-
-    <string name="delete_selected_projects">
-        Delete Selected Projects
-    </string>
-
-    <string name="deleted_projects">
-        Deleted %1$d projects
-    </string>
-
-    <string name="no_search_results">
-        No projects found
-    </string>
-
-    <string name="search_projects">
-        Search projects
-    </string>
-
-    <string name="clear">
-        Clear
-    </string>
-
-    <string name="home_session_thinking">
-        Using %1$s
-    </string>
-
-
-    <!-- Chat Snapshot -->
-
-    <string name="snapshot_time_minutes_ago">
-        %1$d minutes ago
-    </string>
-
-    <string name="snapshot_time_hours_ago">
-        %1$d hours ago
-    </string>
-
-
-    <!-- Complete Tool Display Names -->
-    <string name="tool_name_close_app">Close App</string>
-    <string name="tool_name_create_plan">Create Plan</string>
-    <string name="tool_name_delete_project_file">Delete Project File</string>
-    <string name="tool_name_edit_project_file">Edit Project File</string>
-    <string name="tool_name_fetch_web_page">Fetch Web Page</string>
-    <string name="tool_name_fix_crash_guide">Fix Crash Guide</string>
-    <string name="tool_name_get_design_guide">Get Design Guide</string>
-    <string name="tool_name_get_project_memo">Get Project Memo</string>
-    <string name="tool_name_get_ui_pattern">Get UI Pattern</string>
-    <string name="tool_name_grep_project_files">Grep Project Files</string>
-    <string name="tool_name_inspect_ui">Inspect UI</string>
-    <string name="tool_name_interact_ui">Interact UI</string>
-    <string name="tool_name_launch_app">Launch App</string>
-    <string name="tool_name_list_project_files">List Project Files</string>
-    <string name="tool_name_read_project_file">Read Project File</string>
-    <string name="tool_name_read_runtime_log">Read Runtime Log</string>
-    <string name="tool_name_rename_project">Rename Project</string>
-    <string name="tool_name_run_build_pipeline">Run Build Pipeline</string>
-    <string name="tool_name_search_icon">Search Icon</string>
-    <string name="tool_name_search_ui_pattern">Search UI Pattern</string>
-    <string name="tool_name_update_plan_step">Update Plan Step</string>
-    <string name="tool_name_update_project_icon">Update Project Icon</string>
-    <string name="tool_name_update_project_icon_custom">Update Project Icon Custom</string>
-    <string name="tool_name_update_project_intent">Update Project Intent</string>
-    <string name="tool_name_web_search">Web Search</string>
-    <string name="tool_name_write_project_file">Write Project File</string>
-
-    <string name="project_memo_title">Project Memo</string>
-    <string name="snapshot_history_title">Snapshot History</string>
-    <string name="snapshot_history_empty">No snapshots found</string>
-    <string name="snapshot_history_restore">Restore Snapshot</string>
-    <string name="snapshot_time_just_now">Just now</string>
-    <string name="snapshot_history_manual_label">Manual Snapshot</string>
-    <string name="history_auto_supporting">Auto-saved history</string>
-    <string name="clear_chat_history">Clear chat history</string>
-    <string name="copy_text">Copy text</string>
-    <string name="supported_image_formats">Supported image formats</string>
-    <string name="notification_channel_result">Notification Channel Result</string>
-    <string name="notification_single">Single Notification</string>
-    <string name="notification_multiple">Multiple Notifications</string>
-    <string name="notification_ongoing_single">Ongoing Notification (Single)</string>
-    <string name="notification_ongoing_multiple">Ongoing Notification (Multiple)</string>
-
-
-    <!-- Turn Undo -->
-
-    <string name="turn_undo_bar_label">
-        Undo last turn
-    </string>
-
-    <string name="turn_undo_button">
-        Undo
-    </string>
-
-
-
-    <!-- Diagnostics -->
-
-    <string name="diagnostic_events">
-        Events
-    </string>
-
-    <string name="diagnostic_summary">
-        Summary
-    </string>
-
-    <string name="diagnostic_context_size">
-        Context Size
-    </string>
-
-    <string name="diagnostic_compaction">
-        Compaction
-    </string>
-
-    <string name="diagnostic_total_events">
-        Total Events
-    </string>
-
-    <string name="diagnostic_errors">
-        Errors
-    </string>
-
-    <string name="diagnostic_warnings">
-        Warnings
-    </string>
-
-    <string name="diagnostic_log_size">
-        Log Size
-    </string>
-
-    <string name="diagnostic_event_copied">
-        Event copied
-    </string>
-
-
-
-    <!-- Common -->
-
-    <string name="save">
-        Save
-    </string>
-
-    <string name="edit">
-        Edit
-    </string>
-
-    <string name="close">
-        Close
-    </string>
-
-    <string name="arrow_icon">
-        Arrow Icon
-    </string>
-
-
-
-    <!-- Dialog -->
-
-    <string name="this_operation_can_t_be_undone">
-        This operation cannot be undone.
-    </string>
-
-
-
-    <!-- Settings -->
-
-    <string name="temperature">
-        Temperature
-    </string>
-
-    <string name="top_p">
-        Nucleus sampling (Top p)
-    </string>
-
-    <string name="not_set">
-        Not set
-    </string>
-
-    <string name="delete">
-        Delete
-    </string>
-
-    <string name="remove">
-        Remove
-    </string>
-
-
-
-    <!-- Theme -->
-
-    <string name="on">
-        On
-    </string>
-
-    <string name="off">
-        Off
-    </string>
-
-    <string name="system_default">
-        System Default
-    </string>
-
-    <!-- ChatScreen & ThinkingBlock missing strings added -->
-    <string name="image_input_not_supported">Image input is not supported by this platform</string>
-    <string name="some_platforms_disabled">Some platforms are disabled</string>
-    <string name="add_api_key_to_start_chatting">Add an API key to start chatting</string>
-    <string name="clear_chat_history_title">Clear chat history</string>
-    <string name="clear_chat_history_message">Are you sure you want to clear the chat history?</string>
-    <string name="notification_permission_title">Notification Permission</string>
-    <string name="notification_permission_rationale">Notifications are needed to keep you updated on build progress.</string>
-    <string name="notification_permission_grant">Grant</string>
-    <string name="notification_permission_skip">Skip</string>
-    <string name="turn_undo_done_toast">Last turn undone</string>
-    <string name="turn_undo_failed_toast">Failed to undo last turn</string>
-    <string name="unknown">Unknown</string>
-    <string name="add_api_key">Add API Key</string>
-    <string name="options">Options</string>
-    <string name="update_project_name">Update Project Name</string>
-    <string name="install_apk">Install APK</string>
-    <string name="export_chat">Export Chat</string>
-    <string name="export_source_code">Export Source Code</string>
-    <string name="export_apk">Export APKs</string>
-    <string name="scroll_to_bottom_icon">Scroll to bottom</string>
-    <string name="select_image">Select Image</string>
-    <string name="ask_a_question">Ask a question...</string>
-    <string name="stop">Stop</string>
-    <string name="send">Send</string>
-    <string name="tool_calling">Calling %1$s...</string>
-    <string name="tool_result_ok">%1$s completed</string>
-    <string name="tool_result_error">%1$s failed</string>
-    <string name="hide_thinking">Hide thinking</string>
-    <string name="view_thinking">View thinking</string>
-    <string name="thinking_in_progress">Thinking...</string>
-    <string name="collapse">Collapse</string>
-    <string name="expand">Expand</string>
-
+    <string name="open_settings">Open settings</string>
+
+    <string name="ai_tryon_badge">AI TRY-ON</string>
+    <string name="hero_title">See the outfit on you before you buy</string>
+    <string name="hero_body">Add your photo and a product link or garment image. ALMI_AI combines them into a realistic try-on image, then can animate the result.</string>
+
+    <string name="person_title">Your photo</string>
+    <string name="person_hint">Use a clear photo that shows your body and current pose.</string>
+    <string name="person_empty">Add a clear body photo</string>
+    <string name="camera">Camera</string>
+    <string name="gallery">Gallery</string>
+
+    <string name="product_title">Garment</string>
+    <string name="product_hint">Paste a product link or upload the garment image directly.</string>
+    <string name="product_url">Product link</string>
+    <string name="product_fetch">Read product</string>
+    <string name="product_loading">Reading product…</string>
+    <string name="product_upload">Upload garment image</string>
+    <string name="product_empty">Garment preview</string>
+    <string name="error_empty_url">Enter a product link first.</string>
+    <string name="error_product_unavailable">This store page could not be read. Upload the garment image instead.</string>
+    <string name="error_product_image">The product page was found, but no usable image was detected. Upload the garment image instead.</string>
+
+    <string name="generate_title">AI result</string>
+    <string name="generate_hint">Nothing is uploaded until you start generation.</string>
+    <string name="generate_action">Try this outfit</string>
+    <string name="generating_image">Creating your try-on…</string>
+    <string name="generation_percent">%1$d%%</string>
+    <string name="show_result">View result</string>
+    <string name="close_result">Close result</string>
+    <string name="error_api_key">AI is not configured. Open AI settings and activate a valid mode.</string>
+    <string name="error_free_key">Automatic mode needs at least one connected OpenRouter key.</string>
+    <string name="error_free_image_unavailable">No free image-generation model compatible with try-on is currently available. Refresh later or activate a custom model.</string>
+    <string name="error_generation">The AI could not create the image. Check your connection, provider settings, balance or limits, and reference images, then try again.</string>
+
+    <string name="result_title">Your try-on</string>
+    <string name="result_disclaimer">This is a high-realism visual simulation. A single photo cannot guarantee physical garment measurements or fit to the millimeter.</string>
+    <string name="video_motion">Video movement</string>
+    <string name="motion_turn">Turn</string>
+    <string name="motion_walk">Walk</string>
+    <string name="motion_detail">Detail</string>
+    <string name="generate_video">Create video</string>
+    <string name="video_submitting">Sending…</string>
+    <string name="video_processing">Generating video…</string>
+    <string name="video_downloading">Saving video…</string>
+    <string name="video_result_title">Your video</string>
+    <string name="error_video">Video generation failed. Your try-on image is still saved; you can retry the video.</string>
+    <string name="start_over">Start a new try-on</string>
+
+    <string name="privacy_title">Privacy</string>
+    <string name="privacy_body">Selected photos stay on your device until you press the AI generation button. At that point the required references are sent to the active provider for generation.</string>
+
+    <string name="settings_language">Language</string>
+    <string name="settings_language_hint">The entire interface and layout direction follow this choice.</string>
+    <string name="language_arabic">العربية</string>
+    <string name="language_english">English</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_appearance_hint">Choose a clean light or dark theme, or follow the device.</string>
+    <string name="theme_system">System</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+
+    <string name="settings_ai_button_title">AI settings</string>
+    <string name="settings_ai_button_hint">Choose one active AI route: automatic routing or your custom provider.</string>
+    <string name="settings_ai_button_action">AI settings</string>
+
+    <string name="ai_settings_title">AI settings</string>
+    <string name="ai_status_active">Active</string>
+    <string name="ai_status_inactive">Inactive</string>
+    <string name="ai_mode_title">Choose how ALMI_AI connects</string>
+    <string name="ai_mode_hint">Only one mode is active at a time. Automatic mode manages routing and key failover; Custom uses exactly what you enter.</string>
+    <string name="ai_mode_auto">Automatic</string>
+    <string name="ai_mode_custom">Custom</string>
+
+    <string name="ai_auto_title">Automatic free routing</string>
+    <string name="ai_auto_hint">ALMI_AI discovers compatible free routes, rotates connected keys, then falls back to the next model automatically.</string>
+    <string name="ai_auto_keys_count">Keys: %1$d</string>
+    <string name="ai_auto_pipeline_body">Request order: best compatible model → first healthy encrypted key → next key if limited → next model if the route fails. Your custom model stays saved but is not used while Automatic mode is active.</string>
+    <string name="ai_auto_connect_title">Connect OpenRouter</string>
+    <string name="ai_auto_connect_hint">No copy/paste required. Sign in to OpenRouter in your browser and ALMI_AI receives a user-controlled API key through OAuth PKCE.</string>
+    <string name="ai_auto_connect_button">Connect automatically</string>
+    <string name="ai_auto_connecting">Waiting for OpenRouter…</string>
+    <string name="ai_auto_connected">OpenRouter connected. The new key was added to the encrypted device vault.</string>
+    <string name="ai_auto_connection_failed">OpenRouter connection was not completed. Try again.</string>
+    <string name="ai_auto_secure_storage">Keys are encrypted with Android Keystore and remain inside this ALMI_AI installation. Provider keys are not hardcoded into the APK.</string>
+    <string name="ai_auto_keys_title">Connected key vault</string>
+    <string name="ai_auto_manual_show">Add a key manually</string>
+    <string name="ai_auto_manual_hide">Hide manual entry</string>
+    <string name="ai_auto_manual_label">OpenRouter API key</string>
+    <string name="ai_auto_manual_add">Add to encrypted vault</string>
+    <string name="ai_auto_delete_key">Delete key</string>
+    <string name="ai_auto_video_ready">Free video route ready: %1$s</string>
+    <string name="ai_catalog_title">Automatic model catalog</string>
+    <string name="ai_catalog_hint">Refreshes image and video capabilities from OpenRouter specialized model endpoints and keeps up to 30 candidates per media type.</string>
+
+    <string name="ai_custom_title">Custom provider</string>
+    <string name="ai_custom_hint">Use a provider and media models you control. This mode bypasses automatic free routing.</string>
+    <string name="ai_custom_configure">Configure custom model</string>
+    <string name="ai_custom_hide">Hide custom settings</string>
+    <string name="ai_custom_group_provider">Provider and authentication</string>
+    <string name="ai_custom_group_image">Image generation</string>
+    <string name="ai_custom_group_video">Video generation</string>
+    <string name="ai_custom_provider_name">Provider name</string>
+    <string name="ai_custom_base_url">API base URL</string>
+    <string name="ai_custom_api_key">API key</string>
+    <string name="ai_custom_image_endpoint">Image endpoint</string>
+    <string name="ai_custom_image_model">Image model ID</string>
+    <string name="ai_custom_video_endpoint">Video endpoint</string>
+    <string name="ai_custom_video_model">Video model ID</string>
+    <string name="ai_custom_compatibility_note">The custom service must accept the same media request/response contract used by OpenRouter-style image and asynchronous video APIs. Technical IDs and URLs stay exactly as entered.</string>
+    <string name="ai_custom_save_activate">Save and activate custom provider</string>
+    <string name="ai_custom_saved">Custom provider saved and activated. Automatic mode is now off.</string>
+
+    <string name="ai_free_title">Free AI</string>
+    <string name="ai_free_hint">Automatically discovers compatible free media models and tries them in priority order.</string>
+    <string name="ai_free_on">On</string>
+    <string name="ai_free_off">Off</string>
+    <string name="ai_free_exclusive_note">While free mode is on, it is the only active AI route in ALMI_AI.</string>
+    <string name="ai_free_key_label">OpenRouter API key</string>
+    <string name="ai_free_key_hint">OpenRouter requires account authentication even for free models.</string>
+    <string name="ai_free_key_save">Save key</string>
+    <string name="ai_free_key_saved">Key saved.</string>
+    <string name="ai_free_refresh">Refresh models</string>
+    <string name="ai_free_checking">Checking models…</string>
+    <string name="ai_free_image_count">Images: %1$d</string>
+    <string name="ai_free_video_count">Videos: %1$d</string>
+    <string name="ai_free_no_image">No explicitly free OpenRouter image-generation model with reference-image support is available right now. Automatic mode will detect one when the catalog changes; use Custom mode for image try-on meanwhile.</string>
+    <string name="ai_free_no_video">No compatible free video model was found in the current catalog.</string>
+    <string name="ai_free_image_models">Image fallback order</string>
+    <string name="ai_free_video_models">Video fallback order</string>
+    <string name="ai_free_none">No compatible route currently available.</string>
+    <string name="ai_free_more_models">+%1$d more</string>
+    <string name="ai_free_catalog_error">Could not refresh the model catalog. Check your connection and connected key, then try again.</string>
+    <string name="ai_free_fallback_note">ALMI_AI keeps up to 30 compatible candidates per media type and moves automatically after a route failure.</string>
+
+    <string name="settings_updates">Updates</string>
+    <string name="settings_updates_hint">ALMI_AI has its own Android identity and can be installed beside VibeApp.</string>
+    <string name="settings_updates_body">ALMI_AI 0.2+ uses one fixed signed Release channel. After installing this channel once, later Release APKs update in place without uninstalling. An older experimental build signed with another certificate can require one final reinstall to enter this permanent channel.</string>
 </resources>

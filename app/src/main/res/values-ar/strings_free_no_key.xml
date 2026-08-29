@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="free_ai_no_key_providers">مزودات لا تحتاج منك مفتاح API</string>
+    <string name="free_ai_none_available">لا يوجد حاليًا مزود ذكاء موثوق بدون مفتاح API يمكن الوصول إليه. لن يعرض ALMI مزودًا يطلب منك إنشاء أو لصق مفتاح.</string>
+    <string name="free_ai_connected_now">متصل الآن</string>
+    <string name="free_ai_no_connection">لا يوجد مزود مجاني متصل</string>
+    <string name="free_ai_waiting_provider">يتصل ALMI تلقائيًا بأفضل مزود موثوق لا يحتاج منك مفتاح API عندما يكون متاحًا.</string>
+    <string name="free_ai_ready">جاهز</string>
+    <string name="free_ai_auto_selected">تم اختياره تلقائيًا كمسار الذكاء المجاني الحالي.</string>
+    <string name="free_ai_no_personal_key">لا يحتاج منك مفتاح API شخصي.</string>
+    <string name="free_ai_horde_offer">دخول مجهول للنصوص عبر AI Horde بدون تسجيل أو مفتاح API شخصي. لا يرسل ALMI صور تجربة الملابس الخاصة بك عبر مسار الصور المجهول للمجتمع.</string>
+</resources>

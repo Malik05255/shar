@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="free_ai_no_key_providers">Providers that need no personal API key</string>
+    <string name="free_ai_none_available">No verified no-key AI provider is reachable right now. ALMI will not show providers that require you to create or paste an API key.</string>
+    <string name="free_ai_connected_now">Connected now</string>
+    <string name="free_ai_no_connection">No free provider connected</string>
+    <string name="free_ai_waiting_provider">ALMI will connect automatically to the best verified no-key provider when one is reachable.</string>
+    <string name="free_ai_ready">Ready</string>
+    <string name="free_ai_auto_selected">Selected automatically as the current free route.</string>
+    <string name="free_ai_no_personal_key">No personal API key required.</string>
+    <string name="free_ai_horde_offer">Anonymous community text access with no signup or personal API key. ALMI does not send private try-on photos through the anonymous community image route.</string>
+</resources>

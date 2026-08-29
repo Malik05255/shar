@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="studio_eyebrow">استوديو التجربة بالذكاء الاصطناعي</string>
+    <string name="studio_title">شوف اللوك عليك.</string>
+    <string name="studio_subtitle">أضف صورتك، الصق رابط المنتج، ثم أنشئ تجربة ملابس واقعية ضمن مسار واحد بسيط.</string>
+    <string name="studio_settings">الإعدادات</string>
+
+    <string name="studio_you">أنت</string>
+    <string name="studio_person_title">صورتك</string>
+    <string name="studio_person_hint">الصورة الواضحة لكامل الجسم تعطي أفضل نتيجة.</string>
+    <string name="studio_camera">الكاميرا</string>
+    <string name="studio_gallery">المعرض</string>
+    <string name="studio_photo_ready">الصورة جاهزة</string>
+    <string name="studio_add_photo">أضف صورتك</string>
+
+    <string name="studio_look">اللوك</string>
+    <string name="studio_product_title">اختر القطعة</string>
+    <string name="studio_product_hint">الصق صفحة المنتج نفسها. ALMI يقرأ الصفحة ويختار صورة المنتج الرئيسية.</string>
+    <string name="studio_product_url">رابط المنتج</string>
+    <string name="studio_scan_link">قراءة الرابط</string>
+    <string name="studio_scanning_link">جاري قراءة المنتج…</string>
+    <string name="studio_upload_piece">أو ارفع صورة القطعة</string>
+    <string name="studio_piece_ready">القطعة جاهزة</string>
+    <string name="studio_product_details">بيانات المنتج</string>
+    <string name="studio_brand">العلامة</string>
+    <string name="studio_price">السعر</string>
+    <string name="studio_color">اللون</string>
+    <string name="studio_sku">رقم المنتج</string>
+    <string name="studio_source_ai">مساعدة بالذكاء الاصطناعي</string>
+    <string name="studio_source_page">من صفحة المنتج</string>
+
+    <string name="studio_create_title">أنشئ اللوك</string>
+    <string name="studio_create_hint_ready">كل شيء جاهز.</string>
+    <string name="studio_create_hint_person">أضف صورتك للمتابعة.</string>
+    <string name="studio_create_hint_product">أضف رابط منتج أو صورة للقطعة.</string>
+    <string name="studio_create_action">جرّبها عليك</string>
+    <string name="studio_creating">جاري إنشاء اللوك</string>
+    <string name="studio_generation_percent">٪%1$d</string>
+    <string name="studio_private_note">صورتك الشخصية تبقى على جهازك حتى تختار التوليد.</string>
+
+    <string name="studio_error_empty_url">الصق رابط المنتج أولاً.</string>
+    <string name="studio_error_product">تعذر قراءة صفحة المنتج. يمكنك رفع صورة القطعة بدلًا منها.</string>
+    <string name="studio_error_product_image">تم العثور على بيانات المنتج، لكن لم يتم اكتشاف صورة منتج موثوقة.</string>
+    <string name="studio_error_key">اربط مزود ذكاء اصطناعي من الإعدادات لبدء التوليد.</string>
+    <string name="studio_error_generation">فشل التوليد. تحقق من النموذج النشط أو حاول مرة أخرى.</string>
+    <string name="studio_error_video">فشل إنشاء الفيديو، لكن صورة التجربة ما زالت محفوظة.</string>
+
+    <string name="result_eyebrow">لوكك</string>
+    <string name="result_title_new">طالع عليك حلو.</string>
+    <string name="result_subtitle_new">صورة التجربة جاهزة. احتفظ بها كصورة أو حوّلها إلى مقطع أزياء قصير.</string>
+    <string name="result_motion_title">اختر الحركة</string>
+    <string name="result_motion_turn">دوران</string>
+    <string name="result_motion_walk">مشي</string>
+    <string name="result_motion_detail">تفاصيل</string>
+    <string name="result_generate_video">حوّلها إلى فيديو</string>
+    <string name="result_video_submitting">بدء الفيديو…</string>
+    <string name="result_video_processing">جاري إنشاء الحركة…</string>
+    <string name="result_video_downloading">جاري حفظ الفيديو…</string>
+    <string name="result_video_ready">الفيديو جاهز</string>
+    <string name="result_new_look">أنشئ لوك جديد</string>
+    <string name="result_settings">الإعدادات</string>
+
+    <string name="settings_v2_title">الإعدادات</string>
+    <string name="settings_v2_subtitle">الاستوديو يبقى بسيطًا، والتحكم التقني كله هنا.</string>
+    <string name="settings_v2_language">اللغة</string>
+    <string name="settings_v2_language_hint">اختر لغة الواجهة.</string>
+    <string name="settings_v2_appearance">المظهر</string>
+    <string name="settings_v2_appearance_hint">اتبع إعداد الهاتف أو اختر الفاتح أو الداكن.</string>
+    <string name="settings_v2_ai">محرك الذكاء الاصطناعي</string>
+    <string name="settings_v2_ai_hint">المزود والمفاتيح وتحليل المنتج ونماذج الصور والفيديو.</string>
+    <string name="settings_v2_open_ai">فتح إعدادات الذكاء الاصطناعي</string>
+    <string name="settings_v2_about">عن ALMI</string>
+    <string name="settings_v2_about_hint">استوديو تجربة ملابس خاص، مصمم لمسار بصري قصير وواضح.</string>
+    <string name="settings_v2_version">الإصدار %1$s (%2$d)</string>
+    <string name="settings_v2_arabic">العربية</string>
+    <string name="settings_v2_english">English</string>
+    <string name="settings_v2_system">تلقائي</string>
+    <string name="settings_v2_light">فاتح</string>
+    <string name="settings_v2_dark">داكن</string>
+
+    <string name="ai_v2_title">محرك الذكاء الاصطناعي</string>
+    <string name="ai_v2_subtitle">محرك واحد لثلاث مهام: قراءة صفحة المنتج، إنشاء الصورة، وإنشاء الفيديو.</string>
+    <string name="ai_v2_auto">تلقائي</string>
+    <string name="ai_v2_custom">مخصص</string>
+    <string name="ai_v2_auto_title">OpenRouter تلقائي</string>
+    <string name="ai_v2_auto_body">ALMI يكتشف النماذج المتوافقة وينتقل تلقائيًا لنموذج بديل عند تعذر أحدها.</string>
+    <string name="ai_v2_connect">ربط OpenRouter</string>
+    <string name="ai_v2_connecting">جاري الربط…</string>
+    <string name="ai_v2_connected">تم ربط OpenRouter</string>
+    <string name="ai_v2_connection_failed">فشل الربط</string>
+    <string name="ai_v2_keys">مفاتيح API</string>
+    <string name="ai_v2_key_count">%1$d نشط</string>
+    <string name="ai_v2_add_key">إضافة مفتاح يدويًا</string>
+    <string name="ai_v2_key_placeholder">مفتاح OpenRouter API</string>
+    <string name="ai_v2_save_key">حفظ المفتاح</string>
+    <string name="ai_v2_refresh">تحديث كتالوج النماذج</string>
+    <string name="ai_v2_refreshing">جاري التحديث…</string>
+    <string name="ai_v2_image_count">%1$d صور</string>
+    <string name="ai_v2_video_count">%1$d فيديو</string>
+    <string name="ai_v2_custom_title">مزود مخصص</string>
+    <string name="ai_v2_custom_body">استخدم مزودًا متوافقًا مع OpenRouter وحدد كل قدرة بشكل مستقل.</string>
+    <string name="ai_v2_provider">اسم المزود</string>
+    <string name="ai_v2_base_url">الرابط الأساسي</string>
+    <string name="ai_v2_api_key">مفتاح API</string>
+    <string name="ai_v2_analysis">تحليل المنتج</string>
+    <string name="ai_v2_image">إنشاء الصور</string>
+    <string name="ai_v2_video">إنشاء الفيديو</string>
+    <string name="ai_v2_endpoint">Endpoint</string>
+    <string name="ai_v2_model">Model ID</string>
+    <string name="ai_v2_save">حفظ وتفعيل</string>
+    <string name="ai_v2_saved">تم تفعيل المحرك المخصص</string>
+    <string name="ai_v2_secure">تُحفظ المفاتيح محليًا بتشفير Android Keystore.</string>
+    <string name="ai_v2_remove_key">حذف المفتاح</string>
+    <string name="ai_v2_catalog_error">تعذر تحديث كتالوج النماذج.</string>
+    <string name="ai_v2_no_image">لا يوجد حاليًا نموذج مجاني متوافق لإنشاء صورة اعتمادًا على صور مرجعية.</string>
+</resources>

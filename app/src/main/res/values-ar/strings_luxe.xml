@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="luxe_nav_home">الرئيسية</string>
+    <string name="luxe_nav_ai">الذكاء</string>
+    <string name="luxe_nav_settings">الإعدادات</string>
+    <string name="luxe_ai_ready">الذكاء جاهز</string>
+    <string name="luxe_inactive">غير نشط</string>
+    <string name="ai_hub_inactive">غير نشط</string>
+    <string name="luxe_stage_title">إطلالتك</string>
+    <string name="luxe_stage_hint">صورتك والقطعة في مساحة بصرية واحدة.</string>
+    <string name="luxe_person_ready">صورتك</string>
+    <string name="luxe_piece_ready">القطعة</string>
+    <string name="luxe_change_photo">تغيير الصورة</string>
+    <string name="luxe_change_piece">تغيير القطعة</string>
+    <string name="luxe_product_source">أضف القطعة</string>
+    <string name="luxe_product_source_hint">الصق رابط المنتج أو ارفع صورة.</string>
+    <string name="luxe_ready_title">كل شيء جاهز</string>
+    <string name="luxe_ready_hint">صورتك والقطعة جاهزتان لبدء التوليد.</string>
+    <string name="luxe_settings_title">غرفة التحكم</string>
+    <string name="luxe_settings_hint">مكان أخف للغة والمظهر والذكاء الاصطناعي.</string>
+    <string name="luxe_ai_title">محرك الذكاء</string>
+    <string name="luxe_ai_hint">اختر المسار الذي يشغّل ALMI.</string>
+    <string name="luxe_engine_live">المحرك النشط</string>
+    <string name="luxe_engine_openrouter">OpenRouter</string>
+    <string name="luxe_engine_custom">API مخصص</string>
+    <string name="luxe_engine_free">ذكاء مجاني</string>
+    <string name="luxe_open">فتح</string>
+    <string name="luxe_result_title">إطلالتك الجديدة</string>
+    <string name="luxe_result_hint">النتيجة جاهزة. أضف حركة إذا رغبت.</string>
+</resources>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="luxe_nav_home">Home</string>
+    <string name="luxe_nav_ai">AI</string>
+    <string name="luxe_nav_settings">Settings</string>
+    <string name="luxe_ai_ready">AI ready</string>
+    <string name="luxe_inactive">Inactive</string>
+    <string name="ai_hub_inactive">Inactive</string>
+    <string name="luxe_stage_title">Your look</string>
+    <string name="luxe_stage_hint">Your photo and the piece in one visual stage.</string>
+    <string name="luxe_person_ready">Your photo</string>
+    <string name="luxe_piece_ready">The piece</string>
+    <string name="luxe_change_photo">Change photo</string>
+    <string name="luxe_change_piece">Change piece</string>
+    <string name="luxe_product_source">Add the piece</string>
+    <string name="luxe_product_source_hint">Paste a product link or upload an image.</string>
+    <string name="luxe_ready_title">Everything is ready</string>
+    <string name="luxe_ready_hint">Your photo and the piece are ready for generation.</string>
+    <string name="luxe_settings_title">Control room</string>
+    <string name="luxe_settings_hint">A lighter place for language, appearance and AI.</string>
+    <string name="luxe_ai_title">AI engine</string>
+    <string name="luxe_ai_hint">Choose the route that powers ALMI.</string>
+    <string name="luxe_engine_live">Active engine</string>
+    <string name="luxe_engine_openrouter">OpenRouter</string>
+    <string name="luxe_engine_custom">Custom API</string>
+    <string name="luxe_engine_free">Free AI</string>
+    <string name="luxe_open">Open</string>
+    <string name="luxe_result_title">Your new look</string>
+    <string name="luxe_result_hint">The generated result is ready. Add motion if you want.</string>
+</resources>

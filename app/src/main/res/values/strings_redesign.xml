@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="studio_eyebrow">AI TRY-ON STUDIO</string>
+    <string name="studio_title">See the look on you.</string>
+    <string name="studio_subtitle">Add your photo, paste a product link, then create a realistic try-on in one flow.</string>
+    <string name="studio_settings">Settings</string>
+
+    <string name="studio_you">YOU</string>
+    <string name="studio_person_title">Your photo</string>
+    <string name="studio_person_hint">A clear full-body photo gives the best fit.</string>
+    <string name="studio_camera">Camera</string>
+    <string name="studio_gallery">Gallery</string>
+    <string name="studio_photo_ready">Photo ready</string>
+    <string name="studio_add_photo">Add your photo</string>
+
+    <string name="studio_look">THE LOOK</string>
+    <string name="studio_product_title">Choose the item</string>
+    <string name="studio_product_hint">Paste the exact product page. ALMI reads the page and picks the main product photo.</string>
+    <string name="studio_product_url">Product link</string>
+    <string name="studio_scan_link">Read link</string>
+    <string name="studio_scanning_link">Reading product…</string>
+    <string name="studio_upload_piece">Or upload item photo</string>
+    <string name="studio_piece_ready">Item ready</string>
+    <string name="studio_product_details">Product details</string>
+    <string name="studio_brand">Brand</string>
+    <string name="studio_price">Price</string>
+    <string name="studio_color">Color</string>
+    <string name="studio_sku">SKU</string>
+    <string name="studio_source_ai">AI assisted</string>
+    <string name="studio_source_page">From product page</string>
+
+    <string name="studio_create_title">Create your look</string>
+    <string name="studio_create_hint_ready">Everything is ready.</string>
+    <string name="studio_create_hint_person">Add your photo to continue.</string>
+    <string name="studio_create_hint_product">Add a product link or item photo.</string>
+    <string name="studio_create_action">Try it on</string>
+    <string name="studio_creating">Creating your look</string>
+    <string name="studio_generation_percent">%1$d%%</string>
+    <string name="studio_private_note">Your personal photo stays on this device until you choose to generate.</string>
+
+    <string name="studio_error_empty_url">Paste a product link first.</string>
+    <string name="studio_error_product">We could not read this product page. Try the item photo instead.</string>
+    <string name="studio_error_product_image">Product data was found, but no reliable product image was detected.</string>
+    <string name="studio_error_key">Connect an AI provider in Settings to generate.</string>
+    <string name="studio_error_generation">Generation failed. Check the active model or try again.</string>
+    <string name="studio_error_video">Video generation failed. Your try-on image is still saved.</string>
+
+    <string name="result_eyebrow">YOUR LOOK</string>
+    <string name="result_title_new">Looks good on you.</string>
+    <string name="result_subtitle_new">Your generated image is ready. Keep it as a photo or turn it into a short fashion clip.</string>
+    <string name="result_motion_title">Choose movement</string>
+    <string name="result_motion_turn">Turn</string>
+    <string name="result_motion_walk">Walk</string>
+    <string name="result_motion_detail">Detail</string>
+    <string name="result_generate_video">Make a video</string>
+    <string name="result_video_submitting">Starting video…</string>
+    <string name="result_video_processing">Creating motion…</string>
+    <string name="result_video_downloading">Saving video…</string>
+    <string name="result_video_ready">Video ready</string>
+    <string name="result_new_look">Create another look</string>
+    <string name="result_settings">Settings</string>
+
+    <string name="settings_v2_title">Settings</string>
+    <string name="settings_v2_subtitle">Keep the studio simple. Technical controls live here.</string>
+    <string name="settings_v2_language">Language</string>
+    <string name="settings_v2_language_hint">Choose the interface language.</string>
+    <string name="settings_v2_appearance">Appearance</string>
+    <string name="settings_v2_appearance_hint">Follow the phone or choose light or dark.</string>
+    <string name="settings_v2_ai">AI engine</string>
+    <string name="settings_v2_ai_hint">Provider, keys, product analysis, image and video models.</string>
+    <string name="settings_v2_open_ai">Open AI settings</string>
+    <string name="settings_v2_about">About ALMI</string>
+    <string name="settings_v2_about_hint">Private try-on studio built for a short, visual workflow.</string>
+    <string name="settings_v2_version">Version %1$s (%2$d)</string>
+    <string name="settings_v2_arabic">العربية</string>
+    <string name="settings_v2_english">English</string>
+    <string name="settings_v2_system">System</string>
+    <string name="settings_v2_light">Light</string>
+    <string name="settings_v2_dark">Dark</string>
+
+    <string name="ai_v2_title">AI engine</string>
+    <string name="ai_v2_subtitle">One engine, three jobs: read product pages, create images, and create video.</string>
+    <string name="ai_v2_auto">Automatic</string>
+    <string name="ai_v2_custom">Custom</string>
+    <string name="ai_v2_auto_title">Automatic OpenRouter</string>
+    <string name="ai_v2_auto_body">ALMI discovers compatible models and falls back automatically when a model is unavailable.</string>
+    <string name="ai_v2_connect">Connect OpenRouter</string>
+    <string name="ai_v2_connecting">Connecting…</string>
+    <string name="ai_v2_connected">OpenRouter connected</string>
+    <string name="ai_v2_connection_failed">Connection failed</string>
+    <string name="ai_v2_keys">API keys</string>
+    <string name="ai_v2_key_count">%1$d active</string>
+    <string name="ai_v2_add_key">Add key manually</string>
+    <string name="ai_v2_key_placeholder">OpenRouter API key</string>
+    <string name="ai_v2_save_key">Save key</string>
+    <string name="ai_v2_refresh">Refresh model catalog</string>
+    <string name="ai_v2_refreshing">Refreshing…</string>
+    <string name="ai_v2_image_count">%1$d image</string>
+    <string name="ai_v2_video_count">%1$d video</string>
+    <string name="ai_v2_custom_title">Custom provider</string>
+    <string name="ai_v2_custom_body">Use an OpenRouter-compatible provider and define each capability independently.</string>
+    <string name="ai_v2_provider">Provider name</string>
+    <string name="ai_v2_base_url">Base URL</string>
+    <string name="ai_v2_api_key">API key</string>
+    <string name="ai_v2_analysis">Product analysis</string>
+    <string name="ai_v2_image">Image generation</string>
+    <string name="ai_v2_video">Video generation</string>
+    <string name="ai_v2_endpoint">Endpoint</string>
+    <string name="ai_v2_model">Model ID</string>
+    <string name="ai_v2_save">Save and activate</string>
+    <string name="ai_v2_saved">Custom engine activated</string>
+    <string name="ai_v2_secure">Keys are stored locally using Android Keystore encryption.</string>
+    <string name="ai_v2_remove_key">Remove key</string>
+    <string name="ai_v2_catalog_error">Could not refresh the catalog.</string>
+    <string name="ai_v2_no_image">No compatible free reference-image model is currently available.</string>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ai_auto_link_analysis_hint">تستخدم روابط المنتجات مسارًا نصيًا مستقلًا للتحليل. يستخرج ALMI_AI البيانات المنظمة محليًا أولًا، ثم يستخدم جلب الويب عبر OpenRouter فقط عندما تكون الصفحة محجوبة أو البيانات ناقصة.</string>
+    <string name="ai_custom_group_analysis">تحليل روابط المنتجات</string>
+    <string name="ai_custom_analysis_endpoint">مسار تحليل الرابط / المحادثة</string>
+    <string name="ai_custom_analysis_model">معرّف موديل تحليل الروابط</string>
+    <string name="ai_custom_analysis_hint">هذا موديل نصي يقرأ صفحة المنتج ويستخرج الاسم والعلامة التجارية والسعر واللون ورقم المنتج وصوره من البيانات الفعلية، وهو مستقل عن موديلات إنشاء الصور والفيديو.</string>
+</resources>
