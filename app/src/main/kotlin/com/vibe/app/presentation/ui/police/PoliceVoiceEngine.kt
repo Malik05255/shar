@@ -9,7 +9,6 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
 import java.util.Locale
 
 class PoliceVoiceEngine(
@@ -42,13 +41,21 @@ class PoliceVoiceEngine(
         if (mode == newMode) return
         mode = newMode
         stopListening()
-        speechRecognizer?.destroy()
+        runCatching { speechRecognizer?.destroy() }
         speechRecognizer = null
-        selectBestArabicVoice()
+        if (ttsReady) selectBestArabicVoice()
     }
 
     fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+        if (mode == VoiceMode.OFFLINE && !hasOnDeviceRecognizer()) {
+            listener.onSpeechError(
+                "وضع بدون إنترنت يحتاج حزمة تعرّف صوتي محلية على الجهاز. ثبّت العربية للتعرّف دون اتصال أو اختر وضع الإنترنت.",
+                false
+            )
+            return
+        }
+
+        if (mode == VoiceMode.ONLINE && !SpeechRecognizer.isRecognitionAvailable(context)) {
             listener.onSpeechError("التعرّف على الصوت غير متوفر على هذا الجهاز.", false)
             return
         }
@@ -83,7 +90,6 @@ class PoliceVoiceEngine(
     fun stopListening() {
         if (!listening) return
         listening = false
-        runCatching { speechRecognizer?.stopListening() }
         runCatching { speechRecognizer?.cancel() }
     }
 
@@ -99,7 +105,17 @@ class PoliceVoiceEngine(
         }
 
         stopListening()
-        selectBestArabicVoice()
+        if (!selectBestArabicVoice()) {
+            listener.onTtsError(
+                if (mode == VoiceMode.OFFLINE) {
+                    "لا يوجد صوت عربي محلي مثبت. نزّل صوتاً عربياً من إعدادات تحويل النص إلى كلام أو اختر وضع الإنترنت."
+                } else {
+                    "لا يوجد صوت عربي متاح على الجهاز."
+                }
+            )
+            return
+        }
+
         engine.setSpeechRate(0.98f)
         engine.setPitch(0.96f)
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
@@ -118,12 +134,12 @@ class PoliceVoiceEngine(
         ttsReady = false
     }
 
-    private fun createRecognizer(): SpeechRecognizer {
-        return if (
-            mode == VoiceMode.OFFLINE &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+    private fun hasOnDeviceRecognizer(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-        ) {
+
+    private fun createRecognizer(): SpeechRecognizer {
+        return if (mode == VoiceMode.OFFLINE && hasOnDeviceRecognizer()) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         } else {
             SpeechRecognizer.createSpeechRecognizer(context)
@@ -132,59 +148,70 @@ class PoliceVoiceEngine(
 
     private fun initTts() {
         tts = TextToSpeech(context.applicationContext) { status ->
-            if (status != TextToSpeech.SUCCESS) {
+            if (status == TextToSpeech.SUCCESS) {
+                val engine = tts
+                if (engine != null) {
+                    engine.language = Locale("ar", "SA")
+                    engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            listener.onTtsStarted()
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            listener.onTtsFinished()
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            listener.onTtsError("حدث خطأ أثناء نطق الرد.")
+                        }
+
+                        override fun onError(utteranceId: String?, errorCode: Int) {
+                            listener.onTtsError("حدث خطأ أثناء نطق الرد ($errorCode).")
+                        }
+                    })
+                    ttsReady = true
+                    selectBestArabicVoice()
+                    listener.onTtsReady()
+                } else {
+                    listener.onTtsError("لم يتم العثور على محرك نطق جاهز.")
+                }
+            } else {
                 listener.onTtsError("لم يتم العثور على محرك نطق جاهز.")
-                return@TextToSpeech
             }
-
-            val engine = tts ?: return@TextToSpeech
-            engine.language = Locale("ar", "SA")
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    listener.onTtsStarted()
-                }
-
-                override fun onDone(utteranceId: String?) {
-                    listener.onTtsFinished()
-                }
-
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    listener.onTtsError("حدث خطأ أثناء نطق الرد.")
-                }
-
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    listener.onTtsError("حدث خطأ أثناء نطق الرد ($errorCode).")
-                }
-            })
-            ttsReady = true
-            selectBestArabicVoice()
-            listener.onTtsReady()
         }
     }
 
-    private fun selectBestArabicVoice() {
-        val engine = tts ?: return
-        if (!ttsReady) return
+    /**
+     * Returns true only when the selected mode can actually speak Arabic.
+     * OFFLINE never silently falls back to a network-required voice.
+     */
+    private fun selectBestArabicVoice(): Boolean {
+        val engine = tts ?: return false
+        if (!ttsReady) return false
 
         val arabicVoices = engine.voices
             ?.filter { it.locale.language.equals("ar", ignoreCase = true) }
             .orEmpty()
 
         if (arabicVoices.isEmpty()) {
-            engine.language = Locale("ar", "SA")
-            return
+            return engine.isLanguageAvailable(Locale("ar", "SA")) >= TextToSpeech.LANG_AVAILABLE &&
+                mode == VoiceMode.ONLINE
         }
 
-        val preferred = arabicVoices
-            .filter { voice ->
-                if (mode == VoiceMode.OFFLINE) !voice.isNetworkConnectionRequired
-                else voice.isNetworkConnectionRequired
-            }
-            .maxWithOrNull(compareBy<Voice> { it.quality }.thenByDescending { -it.latency })
-            ?: arabicVoices.maxByOrNull { it.quality }
+        val candidates = if (mode == VoiceMode.OFFLINE) {
+            arabicVoices.filterNot { it.isNetworkConnectionRequired }
+        } else {
+            arabicVoices
+        }
 
-        preferred?.let { engine.voice = it }
+        val preferred = candidates.maxWithOrNull(
+            compareBy<android.speech.tts.Voice> { it.quality }
+                .thenBy { -it.latency }
+        ) ?: return false
+
+        engine.voice = preferred
+        return true
     }
 
     private val recognitionListener = object : RecognitionListener {
@@ -193,13 +220,12 @@ class PoliceVoiceEngine(
         }
 
         override fun onBeginningOfSpeech() {
-            // Barge-in: any user speech immediately cancels the character voice.
-            interruptSpeech()
             listener.onSpeechStarted()
         }
 
         override fun onRmsChanged(rmsdB: Float) = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
+
         override fun onEndOfSpeech() {
             listening = false
         }
@@ -213,7 +239,8 @@ class PoliceVoiceEngine(
                 SpeechRecognizer.ERROR_AUDIO -> "مشكلة في صوت الميكروفون."
                 SpeechRecognizer.ERROR_CLIENT -> "توقف الاستماع مؤقتاً."
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "يحتاج التطبيق إذن الميكروفون."
-                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "تعذر الوصول لخدمة التعرف على الصوت."
+                SpeechRecognizer.ERROR_NETWORK,
+                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "تعذر الوصول لخدمة التعرف على الصوت."
                 SpeechRecognizer.ERROR_NO_MATCH -> "ما سمعت الكلام بوضوح."
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "الميكروفون مشغول، سأحاول مرة ثانية."
                 SpeechRecognizer.ERROR_SERVER -> "خدمة التعرف على الصوت غير متاحة الآن."
