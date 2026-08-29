@@ -28,6 +28,7 @@ import kotlin.math.sin
 fun PoliceDogStage(
     mood: DogMood,
     phase: CallPhase,
+    viseme: MouthViseme,
     modifier: Modifier = Modifier
 ) {
     val transition = rememberInfiniteTransition(label = "police-dog")
@@ -52,11 +53,11 @@ fun PoliceDogStage(
         ),
         label = "blink"
     )
-    val talk by transition.animateFloat(
-        initialValue = 0.08f,
+    val syllablePulse by transition.animateFloat(
+        initialValue = 0.86f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(135, easing = LinearEasing), RepeatMode.Reverse),
-        label = "talk"
+        animationSpec = infiniteRepeatable(tween(105, easing = LinearEasing), RepeatMode.Reverse),
+        label = "syllable-pulse"
     )
     val earTwitch by transition.animateFloat(
         initialValue = -1f,
@@ -78,7 +79,6 @@ fun PoliceDogStage(
             val w = size.width
             val h = size.height
 
-            // Warm key light + cool rim light to mimic a film set.
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(Color(0x55F7C97B), Color.Transparent),
@@ -108,7 +108,6 @@ fun PoliceDogStage(
                 )
             }
 
-            // Desk.
             drawRoundRect(
                 brush = Brush.verticalGradient(listOf(Color(0xFF5A3B27), Color(0xFF281B15))),
                 topLeft = Offset(-w * 0.05f, h * 0.73f),
@@ -126,7 +125,6 @@ fun PoliceDogStage(
             val headW = w * 0.43f
             val headH = h * 0.29f
 
-            // Navy police uniform.
             drawOval(
                 brush = Brush.radialGradient(
                     listOf(Color(0xFF294A5D), Color(0xFF102733), Color(0xFF081921)),
@@ -147,7 +145,6 @@ fun PoliceDogStage(
             }
             drawPath(collar, Color(0xFF142F3D))
 
-            // Fur / head volume.
             drawOval(
                 brush = Brush.radialGradient(
                     listOf(Color(0xFFBC8B58), Color(0xFF7A5030), Color(0xFF3F271A)),
@@ -173,7 +170,6 @@ fun PoliceDogStage(
             drawPath(leftEar, Brush.linearGradient(listOf(Color(0xFF4A2A1D), Color(0xFF9B6741))))
             drawPath(rightEar, Brush.linearGradient(listOf(Color(0xFF9B6741), Color(0xFF4A2A1D))))
 
-            // Police cap and badge.
             drawOval(
                 color = Color(0xFF071D2A),
                 topLeft = Offset(headCenter.x - headW * 0.34f, headCenter.y - headH * 0.51f),
@@ -215,7 +211,6 @@ fun PoliceDogStage(
                 drawLine(Color(0xFF3A2418), Offset(headCenter.x + headW * 0.24f, eyeY - headH * 0.09f), Offset(headCenter.x + headW * 0.09f, eyeY - headH * 0.04f), 7f)
             }
 
-            // Muzzle, nose, animated mouth.
             drawOval(
                 brush = Brush.radialGradient(listOf(Color(0xFFD5AE7A), Color(0xFF8B5E39))),
                 topLeft = Offset(headCenter.x - headW * 0.22f, headCenter.y + headH * 0.02f),
@@ -228,25 +223,39 @@ fun PoliceDogStage(
             )
 
             val speaking = phase == CallPhase.SPEAKING
-            val mouthOpen = if (speaking) talk else if (mood == DogMood.SMILE) 0.24f else 0.05f
+            val shapeWidth = when (viseme) {
+                MouthViseme.CLOSED -> 0.15f
+                MouthViseme.ROUND -> 0.12f
+                MouthViseme.WIDE -> 0.27f
+                MouthViseme.OPEN -> 0.20f
+                MouthViseme.REST -> if (mood == DogMood.SMILE) 0.24f else 0.16f
+            }
+            val shapeOpen = when (viseme) {
+                MouthViseme.CLOSED -> 0.04f
+                MouthViseme.ROUND -> 0.58f
+                MouthViseme.WIDE -> 0.30f
+                MouthViseme.OPEN -> 0.82f
+                MouthViseme.REST -> if (mood == DogMood.SMILE) 0.12f else 0.03f
+            }
+            val mouthOpen = if (speaking) shapeOpen * syllablePulse else shapeOpen
             val mouthTop = headCenter.y + headH * 0.17f
+            val mouthWidth = headW * shapeWidth
             drawOval(
                 Color(0xFF24100D),
-                topLeft = Offset(headCenter.x - headW * 0.10f, mouthTop),
-                size = Size(headW * 0.20f, headH * (0.025f + 0.095f * mouthOpen))
+                topLeft = Offset(headCenter.x - mouthWidth / 2f, mouthTop),
+                size = Size(mouthWidth, headH * (0.025f + 0.095f * mouthOpen))
             )
-            if (speaking && mouthOpen > 0.38f) {
+            if (speaking && mouthOpen > 0.40f && viseme != MouthViseme.CLOSED) {
                 drawOval(
                     Color(0xFFC85C61),
-                    topLeft = Offset(headCenter.x - headW * 0.055f, mouthTop + headH * 0.025f),
-                    size = Size(headW * 0.11f, headH * 0.04f * mouthOpen)
+                    topLeft = Offset(headCenter.x - mouthWidth * 0.29f, mouthTop + headH * 0.025f),
+                    size = Size(mouthWidth * 0.58f, headH * 0.04f * mouthOpen)
                 )
             }
 
             drawCircle(Color(0xFFDDB355), w * 0.033f, Offset(w * 0.59f, h * 0.66f + breathe))
             drawCircle(Color(0xFF102C3A), w * 0.015f, Offset(w * 0.59f, h * 0.66f + breathe))
 
-            // Paws on desk.
             drawOval(Color(0xFF8A5B38), Offset(w * 0.26f, h * 0.69f + breathe), Size(w * 0.18f, h * 0.075f))
             drawOval(Color(0xFF8A5B38), Offset(w * 0.56f, h * 0.69f + breathe), Size(w * 0.18f, h * 0.075f))
         }
