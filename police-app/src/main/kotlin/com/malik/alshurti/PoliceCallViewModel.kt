@@ -37,6 +37,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 it.copy(
                     phase = CallPhase.ERROR,
                     mood = DogMood.SERIOUS,
+                    viseme = MouthViseme.REST,
                     statusText = "اسمح للشرطي باستخدام الميكروفون حتى يسمعك.",
                     errorMessage = "إذن الميكروفون مطلوب للمحادثة الصوتية."
                 )
@@ -54,6 +55,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mode = mode,
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
+                viseme = MouthViseme.REST,
                 statusText = if (mode == VoiceMode.ONLINE) "وضع الإنترنت" else "وضع بدون إنترنت",
                 errorMessage = null
             )
@@ -68,6 +70,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.LISTENING,
                 mood = DogMood.LISTENING,
+                viseme = MouthViseme.REST,
                 statusText = "تكلم… أنا أسمعك",
                 errorMessage = null
             )
@@ -112,6 +115,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 heardText = text,
                 phase = CallPhase.THINKING,
                 mood = DogMood.THINKING,
+                viseme = MouthViseme.REST,
                 statusText = "لحظة… أفكر في كلامك",
                 errorMessage = null
             )
@@ -135,6 +139,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                         it.copy(
                             phase = CallPhase.ERROR,
                             mood = DogMood.SERIOUS,
+                            viseme = MouthViseme.REST,
                             statusText = "صار خطأ بسيط، حاول مرة ثانية.",
                             errorMessage = error.message
                         )
@@ -148,6 +153,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.LISTENING,
                 mood = DogMood.LISTENING,
+                viseme = MouthViseme.REST,
                 statusText = "تكلم… أنا أسمعك",
                 errorMessage = null
             )
@@ -159,6 +165,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.LISTENING,
                 mood = DogMood.LISTENING,
+                viseme = MouthViseme.REST,
                 statusText = "أسمعك…"
             )
         }
@@ -176,6 +183,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 it.copy(
                     phase = CallPhase.LISTENING,
                     mood = DogMood.LISTENING,
+                    viseme = MouthViseme.REST,
                     statusText = message,
                     errorMessage = null
                 )
@@ -189,6 +197,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 it.copy(
                     phase = CallPhase.ERROR,
                     mood = DogMood.SERIOUS,
+                    viseme = MouthViseme.REST,
                     statusText = message,
                     errorMessage = message
                 )
@@ -211,7 +220,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    override fun onViseme(viseme: MouthViseme) {
+        _uiState.update { it.copy(viseme = viseme) }
+    }
+
     override fun onTtsFinished() {
+        _uiState.update { it.copy(viseme = MouthViseme.REST) }
         if (!microphonePermissionGranted) return
         viewModelScope.launch {
             delay(120)
@@ -224,6 +238,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.ERROR,
                 mood = DogMood.SERIOUS,
+                viseme = MouthViseme.REST,
                 statusText = message,
                 errorMessage = message
             )
