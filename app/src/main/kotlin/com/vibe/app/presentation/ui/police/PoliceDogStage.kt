@@ -16,13 +16,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import kotlin.math.sin
 
 @Composable
@@ -93,7 +91,6 @@ fun PoliceDogStage(
             val w = size.width
             val h = size.height
 
-            // Cinematic room lighting.
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0x55F7C97B), Color.Transparent),
@@ -113,7 +110,6 @@ fun PoliceDogStage(
                 center = Offset(w * 0.82f, h * 0.30f)
             )
 
-            // Back wall panels.
             repeat(4) { index ->
                 val left = w * (0.04f + index * 0.245f)
                 drawRoundRect(
@@ -125,7 +121,6 @@ fun PoliceDogStage(
                 )
             }
 
-            // Desk and reflected light.
             drawRoundRect(
                 brush = Brush.verticalGradient(listOf(Color(0xFF5A3B27), Color(0xFF281B15))),
                 topLeft = Offset(-w * 0.05f, h * 0.73f),
@@ -143,7 +138,6 @@ fun PoliceDogStage(
             val headW = w * 0.43f
             val headH = h * 0.29f
 
-            // Body: dark navy police uniform.
             drawOval(
                 brush = Brush.radialGradient(
                     listOf(Color(0xFF294A5D), Color(0xFF102733), Color(0xFF081921)),
@@ -154,7 +148,6 @@ fun PoliceDogStage(
                 size = Size(w * 0.56f, h * 0.31f)
             )
 
-            // Shirt collar.
             val collar = Path().apply {
                 moveTo(w * 0.37f, h * 0.56f + breathe)
                 lineTo(w * 0.50f, h * 0.66f + breathe)
@@ -165,7 +158,6 @@ fun PoliceDogStage(
             }
             drawPath(collar, Color(0xFF142F3D))
 
-            // Fur behind the face.
             drawOval(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0xFFBC8B58), Color(0xFF7A5030), Color(0xFF3F271A)),
@@ -176,7 +168,6 @@ fun PoliceDogStage(
                 size = Size(headW, headH)
             )
 
-            // Ears.
             val leftEar = Path().apply {
                 moveTo(headCenter.x - headW * 0.33f, headCenter.y - headH * 0.27f)
                 lineTo(headCenter.x - headW * (0.50f + earTwitch * 0.008f), headCenter.y - headH * 0.63f)
@@ -192,7 +183,6 @@ fun PoliceDogStage(
             drawPath(leftEar, Brush.linearGradient(listOf(Color(0xFF4A2A1D), Color(0xFF9B6741))))
             drawPath(rightEar, Brush.linearGradient(listOf(Color(0xFF9B6741), Color(0xFF4A2A1D))))
 
-            // Police cap.
             drawOval(
                 color = Color(0xFF071D2A),
                 topLeft = Offset(headCenter.x - headW * 0.34f, headCenter.y - headH * 0.51f),
@@ -207,7 +197,6 @@ fun PoliceDogStage(
             drawCircle(Color(0xFFE4B353), radius = headW * 0.055f, center = Offset(headCenter.x, headCenter.y - headH * 0.52f))
             drawCircle(Color(0xFF102C3A), radius = headW * 0.025f, center = Offset(headCenter.x, headCenter.y - headH * 0.52f))
 
-            // Brow/expression.
             val serious = mood == DogMood.SERIOUS
             val thinking = mood == DogMood.THINKING
             val eyeY = headCenter.y - headH * 0.07f
@@ -224,7 +213,11 @@ fun PoliceDogStage(
                 size = Size(headW * 0.11f, eyeHeight.coerceAtLeast(2f))
             )
             if (blink < 0.8f) {
-                val lookShift = if (thinking) sin(earTwitch * 1.5f) * headW * 0.012f else 0f
+                val lookShift = if (thinking) {
+                    sin((earTwitch * 1.5f).toDouble()).toFloat() * headW * 0.012f
+                } else {
+                    0f
+                }
                 drawCircle(Color(0xFF18130F), headW * 0.025f, Offset(headCenter.x - eyeGap + lookShift, eyeY))
                 drawCircle(Color(0xFF18130F), headW * 0.025f, Offset(headCenter.x + eyeGap + lookShift, eyeY))
                 drawCircle(Color.White.copy(alpha = 0.85f), headW * 0.008f, Offset(headCenter.x - eyeGap - headW * 0.007f + lookShift, eyeY - headH * 0.01f))
@@ -235,7 +228,6 @@ fun PoliceDogStage(
                 drawLine(Color(0xFF3A2418), Offset(headCenter.x + headW * 0.24f, eyeY - headH * 0.09f), Offset(headCenter.x + headW * 0.09f, eyeY - headH * 0.04f), 7f)
             }
 
-            // Muzzle and nose.
             drawOval(
                 brush = Brush.radialGradient(listOf(Color(0xFFD5AE7A), Color(0xFF8B5E39))),
                 topLeft = Offset(headCenter.x - headW * 0.22f, headCenter.y + headH * 0.02f),
@@ -264,11 +256,9 @@ fun PoliceDogStage(
                 )
             }
 
-            // Uniform badge.
             drawCircle(Color(0xFFDDB355), radius = w * 0.033f, center = Offset(w * 0.59f, h * 0.66f + breathe))
             drawCircle(Color(0xFF102C3A), radius = w * 0.015f, center = Offset(w * 0.59f, h * 0.66f + breathe))
 
-            // Forearms resting on desk.
             drawOval(
                 color = Color(0xFF8A5B38),
                 topLeft = Offset(w * 0.26f, h * 0.69f + breathe),
