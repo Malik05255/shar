@@ -85,7 +85,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     onClick = viewModel::interruptAndListen
                 )
         ) {
-            PoliceDogStage(state.mood, state.phase, Modifier.fillMaxSize())
+            PoliceDogStage(state.mood, state.phase, state.viseme, Modifier.fillMaxSize())
         }
 
         Box(
