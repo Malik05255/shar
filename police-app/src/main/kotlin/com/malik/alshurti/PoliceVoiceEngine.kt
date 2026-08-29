@@ -27,6 +27,7 @@ class PoliceVoiceEngine(
         fun onTtsStarted()
         fun onTtsFinished()
         fun onTtsError(message: String)
+        fun onViseme(viseme: MouthViseme)
     }
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -34,6 +35,7 @@ class PoliceVoiceEngine(
     private var mode: VoiceMode = VoiceMode.ONLINE
     private var ttsReady = false
     private var listening = false
+    private var spokenText: String = ""
 
     init {
         initTts()
@@ -97,6 +99,7 @@ class PoliceVoiceEngine(
 
     fun interruptSpeech() {
         runCatching { tts?.stop() }
+        listener.onViseme(MouthViseme.REST)
     }
 
     fun speak(text: String) {
@@ -118,6 +121,7 @@ class PoliceVoiceEngine(
             return
         }
 
+        spokenText = text
         engine.setSpeechRate(0.98f)
         engine.setPitch(0.96f)
         if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID) == TextToSpeech.ERROR) {
@@ -133,6 +137,7 @@ class PoliceVoiceEngine(
         runCatching { tts?.shutdown() }
         tts = null
         ttsReady = false
+        listener.onViseme(MouthViseme.REST)
     }
 
     @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
@@ -154,15 +159,28 @@ class PoliceVoiceEngine(
                 if (engine != null) {
                     engine.language = Locale("ar", "SA")
                     engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) = listener.onTtsStarted()
-                        override fun onDone(utteranceId: String?) = listener.onTtsFinished()
+                        override fun onStart(utteranceId: String?) {
+                            listener.onViseme(MouthViseme.OPEN)
+                            listener.onTtsStarted()
+                        }
+
+                        override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                            listener.onViseme(visemeForRange(spokenText, start, end))
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            listener.onViseme(MouthViseme.REST)
+                            listener.onTtsFinished()
+                        }
 
                         @Deprecated("Deprecated in Java")
                         override fun onError(utteranceId: String?) {
+                            listener.onViseme(MouthViseme.REST)
                             listener.onTtsError("حدث خطأ أثناء نطق الرد.")
                         }
 
                         override fun onError(utteranceId: String?, errorCode: Int) {
+                            listener.onViseme(MouthViseme.REST)
                             listener.onTtsError("حدث خطأ أثناء نطق الرد ($errorCode).")
                         }
                     })
@@ -203,6 +221,19 @@ class PoliceVoiceEngine(
 
         engine.voice = preferred
         return true
+    }
+
+    private fun visemeForRange(text: String, start: Int, end: Int): MouthViseme {
+        if (text.isBlank() || start !in text.indices) return MouthViseme.OPEN
+        val safeEnd = end.coerceIn(start + 1, text.length)
+        val letter = text.substring(start, safeEnd).firstOrNull { it.isLetter() } ?: return MouthViseme.OPEN
+        return when (letter) {
+            'ب', 'م', 'ف' -> MouthViseme.CLOSED
+            'و', 'ؤ' -> MouthViseme.ROUND
+            'ي', 'ى', 'س', 'ش', 'ث', 'ز', 'ج' -> MouthViseme.WIDE
+            'ا', 'أ', 'إ', 'آ', 'ع', 'ه', 'ح', 'خ', 'ق', 'ك' -> MouthViseme.OPEN
+            else -> MouthViseme.OPEN
+        }
     }
 
     private val recognitionListener = object : RecognitionListener {
