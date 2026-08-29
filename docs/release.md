@@ -35,7 +35,7 @@ VERSION_NAME=0.2.0
 - حدّث `VERSION_NAME` للعرض للمستخدم.
 - لا تعيد استخدام versionCode سبق توزيعه.
 
-## توقيع Release
+## توقيع Release محلياً
 
 لا تحفظ مفتاح التوقيع الخاص في هذا المستودع العام.
 
@@ -48,13 +48,28 @@ ALSHORTI_KEY_ALIAS
 ALSHORTI_KEY_PASSWORD
 ```
 
-مثال بناء:
+ثم:
 
 ```bash
 ./gradlew :police-app:assembleRelease
 ```
 
-إذا لم تتوفر متغيرات التوقيع، لا تعتبر APK الناتج إصداراً قابلاً لسلسلة تحديثات الإنتاج.
+## GitHub Actions — APK موقّع وقابل للتحديث
+
+الملف `.github/workflows/release.yml` يبني النسخة الموقعة يدوياً عبر **Run workflow**. يحتاج GitHub Secrets التالية:
+
+```text
+ALSHORTI_KEYSTORE_BASE64
+ALSHORTI_KEYSTORE_PASSWORD
+ALSHORTI_KEY_ALIAS
+ALSHORTI_KEY_PASSWORD
+```
+
+`ALSHORTI_KEYSTORE_BASE64` هو ملف الـ keystore بعد تحويله إلى Base64. لا ترفع ملف keystore نفسه إلى المستودع.
+
+طالما تستخدم نفس الأسرار/المفتاح وتزيد `VERSION_CODE`، فإن APK الناتج من هذا workflow يمكنه تحديث النسخة السابقة مباشرة بدلاً من حذفها.
+
+إذا لم تتوفر بيانات التوقيع، لا تعتبر APK الناتج إصداراً نهائياً لسلسلة تحديثات الإنتاج.
 
 ## حفظ المفتاح
 
@@ -62,7 +77,7 @@ ALSHORTI_KEY_PASSWORD
 
 ## Debug
 
-نسخ Debug مناسبة للاختبار فقط. إمكانية تحديث Debug فوق Debug تعتمد على استخدام نفس debug signing certificate. لا تعتمد على APKs مبنية في أجهزة أو runners مختلفة كسلسلة إصدار نهائية.
+نسخ Debug مناسبة للاختبار فقط. إمكانية تحديث Debug فوق Debug تعتمد على استخدام نفس debug signing certificate. لا تعتمد على APKs مبنية في runners مختلفة كسلسلة إصدار نهائية.
 
 ## قائمة فحص الإصدار
 
