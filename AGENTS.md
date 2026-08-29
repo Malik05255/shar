@@ -1,121 +1,55 @@
 # AGENTS.md
 
-> This file provides current, high-signal context for AI coding assistants working on this repository.
+## Source of truth
 
-## Source of Truth
+This repository builds one Android product: **Al-Shorti / الشرطي**.
 
-If this summary conflicts with the codebase, follow these files first:
+Read these first:
+- `police-app/build.gradle.kts`
+- `police-app/src/main/kotlin/com/malik/alshurti/`
+- `version.properties`
+- `docs/alshurti.md`
+- `docs/release.md`
 
-- `app/build.gradle.kts` and `build-engine/build.gradle.kts` for SDK / Java config
-- `docs/architecture.md` for module boundaries and runtime flow
-- `docs/build-engine.md` and `docs/build-chain.md` for the real on-device build pipeline
-- `CONTRIBUTING.md` for branch and review workflow
+## Permanent product identity
 
-## Project Overview
+- App name: `الشرطي`
+- Android namespace: `com.malik.alshurti`
+- Android application ID: `com.malik.alshurti`
 
-VibeApp (意造) is an Android app that lets users generate, compile, sign, and install native Android APKs directly on their phone from natural-language prompts. The build runs on-device inside the app workspace; model inference may use cloud APIs or a local OpenAI-compatible endpoint such as Ollama.
+**Never change the application ID.** It is intentionally different from VibeApp (`com.vibe.app`) so both apps can coexist. Keeping this ID stable is also required for in-place updates.
 
-## Current Tech Stack
+For every distributable version, increment `VERSION_CODE` in `version.properties`. A higher `VERSION_NAME` alone is not sufficient.
 
-- **Language**: Kotlin for the app, Java + XML for generated projects
-- **UI**: Jetpack Compose + Material 3
-- **Architecture**: MVVM + UDF
-- **DI**: Hilt
-- **Persistence**: Room + DataStore
-- **Async**: Coroutines + Flow
-- **Network providers**: OpenAI, Anthropic, Google, Qwen, Ollama/OpenAI-compatible endpoints
-- **Build chain**: AAPT2 + `JavacCompiler`/`JavacTool` + D8 + `AndroidApkBuilder` + `DebugApkSigner`
-- **App SDK**: `minSdk = 29`, `targetSdk = 36`, `compileSdk = 36`
-- **Build-engine defaults**: `CompileInput` now defaults to `minSdk = 29`, `targetSdk = 36`
-- **Java levels**: app/build-engine code targets Java 11; generated template apps stay on a conservative Java 8 source level
+Release builds must use the same signing key for the lifetime of the app. Never commit a private production keystore to this public repository.
 
-## Current Project Structure
+## Product contract
 
-```text
-app/src/main/kotlin/com/vibe/app/
-├── presentation/   # Compose UI, navigation, ViewModel, theme
-│   ├── common/
-│   ├── icons/
-│   ├── theme/
-│   └── ui/
-│       ├── chat/
-│       ├── home/
-│       ├── main/
-│       ├── migrate/
-│       ├── setting/
-│       ├── setup/
-│       └── startscreen/
-├── feature/        # Agent loop, project workspace/init, icon generation
-│   ├── agent/
-│   │   ├── loop/
-│   │   └── tool/
-│   ├── project/
-│   ├── projecticon/
-│   └── projectinit/
-├── data/           # Room, DataStore, DTO, repository, network clients
-│   ├── database/
-│   ├── datastore/
-│   ├── dto/
-│   ├── model/
-│   ├── network/
-│   └── repository/
-├── di/
-└── util/
+- Android, Arabic-first, minSdk 29 / targetSdk 36.
+- Opens directly into a police-dog voice-call scene.
+- Primary priorities: cinematic character realism, natural Arabic speech, and low time-to-first-audio.
+- Three-dot menu switches ONLINE / OFFLINE.
+- OFFLINE must never silently fall back to network speech recognition.
+- STT, brain, TTS, lip-sync, and 3D rendering remain independent replaceable engines.
+- The character is fictional and must not claim a real police unit was contacted or dispatched.
+- Real danger routes the child to a trusted adult / real emergency help and never solicits sensitive child data.
 
-build-engine/src/main/java/com/vibe/build/engine/
-├── apk/
-├── compiler/
-├── dex/
-├── internal/
-├── model/
-├── pipeline/
-├── resource/
-└── sign/
+## Architecture
+
+Current buildable baseline:
+
+`SpeechRecognizer -> PoliceBrain -> Android TTS -> Arabic visemes -> animated character`
+
+Target neural path:
+
+`streaming/on-device STT -> Qwen-class conversational brain -> Arabic neural TTS -> timed visemes -> rigged GLB/Filament`
+
+Do not claim photorealistic 3D, neural Arabic TTS, or measured latency until those components are actually present and validated on a device.
+
+## Verification
+
+```bash
+./gradlew :police-app:assembleDebug
+./gradlew :police-app:testDebugUnitTest
+./gradlew :police-app:lintDebug
 ```
-
-## Key Implementation Facts
-
-1. **Generated apps are Java + XML, not Kotlin + Compose.** The current production path is optimized for Java/XML generation and on-device compilation success.
-2. **The real compiler path is Javac-based.** `EcjCompiler` still exists only as a deprecated compatibility wrapper; do not describe ECJ as the primary compiler.
-3. **AAPT2 runs before Java compilation.** The pipeline is `RESOURCE -> COMPILE -> DEX -> PACKAGE -> SIGN`.
-4. **Project workspaces live under app-private storage.** The typical runtime workspace is `files/projects/{projectId}/app`.
-5. **Agent tooling is workspace-centric.** Tools read/write/list project files, run the build pipeline, rename projects, and update launcher icons.
-6. **Provider support is not uniform.** Platform settings support multiple providers, but agent-loop gateway behavior is implemented in `feature/agent/loop` and should be checked before assuming identical tool-calling capability across providers.
-
-## Common Tasks
-
-### Adding or changing model/provider support
-
-1. Update the relevant types under `app/src/main/kotlin/com/vibe/app/data/model/`.
-2. Add or update API clients in `app/src/main/kotlin/com/vibe/app/data/network/`.
-3. Wire defaults and persistence through repository / DataStore layers.
-4. Update setup and settings UI under `presentation/ui/setup` and `presentation/ui/setting`.
-5. If the provider participates in the agent loop, update `feature/agent/loop`.
-
-### Modifying the build pipeline
-
-1. Treat `build-engine` as the source of truth for compile/package/sign behavior.
-2. Keep `docs/build-engine.md` and `docs/build-chain.md` aligned with any pipeline changes.
-3. Check template defaults in `ProjectInitializer` when SDK or generated project assumptions change.
-
-## Files To Treat As Prebuilt Inputs
-
-- `build-tools/**/libs/*.jar`
-- `build-engine/src/main/assets/*.zip`
-- Template assets under `app/src/main/assets/templates/`
-
-Do not rewrite or replace these casually unless the task is explicitly about updating bundled toolchain artifacts or template assets.
-
-## Testing
-
-- Unit tests: `./gradlew test`
-- Build engine tests: `./gradlew :build-engine:test`
-- App build sanity check: `./gradlew assembleDebug`
-- UI/device validation when flows change: manual verification on an Android 10+ device or emulator
-
-## Known Product Limits
-
-- Generated apps are still Java/XML-first
-- No general third-party dependency resolution pipeline yet
-- Single-project workspace/build flow is the primary path
-- Prompts and templates intentionally stay conservative to maximize device-side build success
