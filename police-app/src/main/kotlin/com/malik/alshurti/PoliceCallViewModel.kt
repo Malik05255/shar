@@ -3,6 +3,7 @@ package com.malik.alshurti
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.malik.alshurti.remote.RemotePoliceBrain
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +18,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         VoiceMode.valueOf(preferences.getString(KEY_MODE, VoiceMode.ONLINE.name) ?: VoiceMode.ONLINE.name)
     }.getOrDefault(VoiceMode.ONLINE)
 
-    private val brain: PoliceBrain = QwenPoliceBrain(application.applicationContext)
+    private val localBrain: PoliceBrain = QwenPoliceBrain(application.applicationContext)
+    private val remoteBrain: PoliceBrain = RemotePoliceBrain(application.applicationContext)
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
 
     private val _uiState = MutableStateFlow(
@@ -82,10 +84,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
+                heardText = "",
+                replyText = "",
                 statusText = if (mode == VoiceMode.ONLINE) {
-                    "وضع الإنترنت — جاري إعادة الاتصال…"
+                    "وضع الإنترنت — جاري الاتصال بالصوت الحقيقي…"
                 } else {
-                    "بدون إنترنت — جاري فتح المكالمة…"
+                    "بدون إنترنت — جاري فتح المكالمة المحلية…"
                 },
                 errorMessage = null,
                 readyToStart = false
@@ -109,14 +113,21 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
                 heardText = "",
-                statusText = "جاري الاتصال بالشرطي…",
+                statusText = if (it.mode == VoiceMode.ONLINE) {
+                    "جاري الاتصال بمكتب الشرطي…"
+                } else {
+                    "جاري فتح المكالمة المحلية…"
+                },
                 errorMessage = null,
                 readyToStart = false
             )
         }
 
-        // Voice comes first so the child hears the greeting immediately. The local
-        // conversational model warms in the background after the greeting starts.
+        // In ONLINE mode neither Qwen nor TTS runs on the phone. The backend owns both,
+        // eliminating the model-load failures seen on real devices.
+        if (_uiState.value.mode == VoiceMode.OFFLINE) {
+            localBrain.prepare(allowDownload = false)
+        }
         voiceEngine.prepareVoice()
     }
 
@@ -143,6 +154,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         retryListening()
     }
 
+    private fun activeBrain(): PoliceBrain =
+        if (_uiState.value.mode == VoiceMode.ONLINE) remoteBrain else localBrain
+
     private fun handleRecognizedText(text: String) {
         val clean = text.trim()
         if (clean.isBlank()) {
@@ -163,7 +177,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         viewModelScope.launch {
-            runCatching { brain.reply(clean) }
+            runCatching { activeBrain().reply(clean) }
                 .onSuccess { reply ->
                     _uiState.update {
                         it.copy(
@@ -183,7 +197,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                             phase = CallPhase.ERROR,
                             mood = DogMood.SERIOUS,
                             viseme = MouthViseme.REST,
-                            statusText = "تعذر تجهيز الرد. اضغط إعادة المحاولة.",
+                            statusText = if (it.mode == VoiceMode.ONLINE) {
+                                "تعذر الاتصال بمكتب الشرطي. تأكد أن خادم الصوت شغال على نفس الشبكة ثم أعد المحاولة."
+                            } else {
+                                "تعذر تجهيز الرد المحلي. أعد المحاولة."
+                            },
                             errorMessage = error.message ?: "تعذر تجهيز الرد.",
                             readyToStart = false
                         )
@@ -274,7 +292,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
-                statusText = "جاري تجهيز صوت الشرطي…",
+                statusText = if (it.mode == VoiceMode.ONLINE) {
+                    "جاري الاتصال بصوت الشرطي الحقيقي…"
+                } else {
+                    "جاري تجهيز صوت الشرطي…"
+                },
                 errorMessage = null,
                 readyToStart = false
             )
@@ -298,9 +320,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         voiceEngine.speak(greeting)
-
-        // Warm Qwen only after audio has been launched so model work never delays the greeting.
-        brain.prepare(allowDownload = _uiState.value.mode == VoiceMode.ONLINE)
     }
 
     override fun onTtsStarted() {
@@ -336,7 +355,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.ERROR,
                 mood = DogMood.SERIOUS,
                 viseme = MouthViseme.REST,
-                statusText = "تعذر تشغيل الصوت. غيّر وضع الاتصال أو اضغط إعادة المحاولة.",
+                statusText = if (it.mode == VoiceMode.ONLINE) {
+                    "تعذر الاتصال بصوت الشرطي الحقيقي. تأكد أن الخادم شغال على نفس الشبكة ثم أعد المحاولة."
+                } else {
+                    "تعذر تشغيل الصوت المحلي. أعد المحاولة."
+                },
                 errorMessage = message,
                 readyToStart = false
             )
@@ -344,7 +367,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onCleared() {
-        brain.release()
+        localBrain.release()
+        remoteBrain.release()
         voiceEngine.release()
         super.onCleared()
     }
