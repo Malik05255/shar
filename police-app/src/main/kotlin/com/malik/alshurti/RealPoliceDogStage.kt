@@ -2,7 +2,13 @@ package com.malik.alshurti
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -10,7 +16,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
@@ -21,14 +30,11 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * The character shown to users must be a licensed cinematic stylized-realistic 3D
- * police dog: feature-film animation quality, believable fur/anatomy/materials and
- * expressive facial rig. It is NOT a photographed real dog and NOT a flat mascot.
+ * The final character is a cinematic stylized-realistic 3D animated police dog:
+ * believable canine anatomy/materials with expressive feature-film facial animation.
+ * It is NOT a photographed real dog and NOT the old flat/cartoon mascot.
  *
- * We intentionally do not fall back to the old Canvas dog. Showing a cheap cartoon
- * when the product promises a high-end animated character is a product bug.
- *
- * Required body clips: Idle, Listen, Think, Smile, Laugh, Serious.
+ * Required body clips: Idle, Listen, Think, Smile, Serious.
  * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
  */
 @Composable
@@ -47,7 +53,7 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        MissingProductionCharacter(modifier)
+        VoicePreviewStage(modifier)
         return
     }
 
@@ -82,19 +88,50 @@ fun RealPoliceDogStage(
     }
 }
 
+/**
+ * Deliberately neutral: this is not a fake/cartoon replacement for the final dog.
+ * It keeps the voice/conversation build testable while the licensed rigged GLB is
+ * authored separately.
+ */
 @Composable
-private fun MissingProductionCharacter(modifier: Modifier) {
+private fun VoicePreviewStage(modifier: Modifier) {
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF07111C)),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = "شخصية الشرطي السينمائية غير مثبتة في هذه النسخة",
-            color = Color.White.copy(alpha = 0.72f),
-            textAlign = TextAlign.Center
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                modifier = Modifier.size(112.dp),
+                shape = CircleShape,
+                color = Color(0xFF102B3A),
+                contentColor = Color.White
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "صوت",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = "معاينة صوتية",
+                color = Color.White.copy(alpha = 0.88f),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "المجسم السينمائي النهائي يُركّب بشكل مستقل",
+                color = Color.White.copy(alpha = 0.46f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
