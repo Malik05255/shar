@@ -31,15 +31,15 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
     private val history = ArrayDeque<Turn>()
 
     @Volatile private var loadedModel: LlamaModel? = null
-    @Volatile private var allowNetworkDownloads = true
+    @Volatile private var allowNetworkDownloads = false
 
     override fun prepare(allowDownload: Boolean) {
         allowNetworkDownloads = allowDownload
         if (loadedModel != null) return
         scope.launch {
             runCatching { modelOrLoad() }
-            // Warm-up errors are not made permanent: switching from Offline to Online
-            // later can still provision the model without restarting the app.
+            // Warm-up errors are not made permanent: an explicit user-requested
+            // download can provision the model later without restarting the app.
         }
     }
 
@@ -141,8 +141,6 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
 
         if (cleaned.length <= MAX_REPLY_CHARS) return cleaned
 
-        // Keep a phone-call response short at a natural sentence boundary rather than
-        // chopping an Arabic word mid-sentence. Nothing is substituted with canned text.
         val window = cleaned.take(MAX_REPLY_CHARS)
         val boundary = window.indexOfLast { it == '.' || it == '؟' || it == '!' || it == '،' }
         return if (boundary >= MIN_NATURAL_BOUNDARY) {
@@ -181,7 +179,7 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
         if (target.isFile && target.length() >= MIN_MODEL_BYTES) return target
 
         if (!allowDownload) {
-            error("نموذج المحادثة غير مثبت. شغّل وضع الإنترنت مرة واحدة لتنزيله، وبعدها يعمل محلياً.")
+            error("نموذج المحادثة المحلي غير مثبت. من قائمة ⋮ اختر «تنزيل المحادثة المحلية» إذا أردت تثبيته؛ لن يتم تنزيل مئات الميغابايت تلقائياً.")
         }
 
         val partial = File(dir, "$MODEL_FILE_NAME.part")
