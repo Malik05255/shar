@@ -14,9 +14,9 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * A licensed PBR GLB is rendered by Filament/SceneView when present. The office director
- * can temporarily redirect the character's animation attention toward a ringing phone or
- * opening door, then the character returns to the child/camera.
+ * A licensed PBR GLB is rendered by Filament/SceneView when present. If the GLB is not
+ * bundled yet, the app uses a photoreal cinematic reference frame rather than dropping
+ * back to the old illustrated dog. True jaw/eye/ear/body animation remains the GLB path.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -35,8 +35,11 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        // Build-safe development fallback. It is not labelled as the final 3D character.
-        PoliceDogStage(mood, phase, viseme, modifier)
+        PhotorealPoliceDogFallback(
+            phase = phase,
+            attention = officeScene.attention,
+            modifier = modifier
+        )
         return
     }
 
