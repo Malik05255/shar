@@ -2,7 +2,7 @@
 
 ## الهدف
 
-تجربة Android مستقلة بالكامل عن VibeApp: يفتح الطفل التطبيق مباشرة على كلب شرطي سينمائي خلف مكتب، يتحدث معه بالعربية، يسمعه التطبيق، يرد عليه، ثم يعود للاستماع تلقائياً.
+تجربة Android مستقلة بالكامل عن VibeApp: يفتح الطفل التطبيق مباشرة على كلب شرطي واقعي خلف مكتب، يتحدث معه بالعربية، يسمعه التطبيق، يرد عليه، ثم يعود للاستماع تلقائياً.
 
 ## هوية Android الثابتة
 
@@ -12,70 +12,71 @@
 
 هذه الهوية لا تتغير في المستقبل. اختلاف applicationId عن VibeApp يسمح بتثبيت التطبيقين معاً، وثباته يسمح بتحديث الشرطي فوق نسخته السابقة.
 
-## الوضع الحالي القابل للبناء
+## مسار الصوت الحالي
+
+تم حذف Android TextToSpeech من مسار الرد. الرد الصوتي الآن مبني على Supertonic 3 عبر ONNX Runtime Android:
 
 ```text
 Microphone
   -> Android SpeechRecognizer (ar-SA + partial results)
   -> PoliceBrain + child-safety contract
-  -> Android TextToSpeech (best Arabic voice available for mode)
-  -> Arabic viseme timing
-  -> PoliceDogStage expressions / mouth animation
+  -> Supertonic 3 neural Arabic TTS (ONNX, local after first download)
+  -> chunked synthesis + overlapped playback
+  -> Arabic viseme cursor
+  -> real GLB animation clips / fallback during development
   -> automatic return to listening
 ```
 
-المحركات مفصولة عمداً حتى لا ترتبط الواجهة بمزوّد واحد.
+### تنزيل النموذج
 
-## الهدف العصبي
+ملفات النموذج كبيرة ولذلك لا تدخل داخل APK. في وضع الإنترنت يتم تنزيلها مرة واحدة إلى app-private storage. بعد اكتمال التنزيل، نفس TTS يعمل محلياً في وضع الإنترنت وبدون الإنترنت ولا توجد API مدفوعة أو حصة دقائق.
 
-### Offline
+وضع Offline لا يسمح بتنزيل النموذج خفية. إذا لم يكن النموذج موجوداً، يطلب من المستخدم تشغيل Online مرة واحدة.
 
-```text
-On-device VAD
-  -> whisper.cpp / sherpa-onnx Arabic STT
-  -> quantized Qwen-class model on Android runtime
-  -> on-device Arabic neural TTS
-  -> timed visemes
-  -> rigged GLB character
-```
+### تقليل التأخير
 
-### Online / self-hosted
+`NeuralArabicVoice` يقسم الرد إلى مقطع أول قصير ثم مقاطع تالية. أول مقطع يبدأ تشغيله فور انتهاء توليده، وفي الوقت نفسه يستمر توليد المقطع التالي على thread منفصل عن AudioTrack. الهدف هو تحسين Time To First Audio بدون خفض جودة الصوت إلى preset سريع روبوتي.
 
-```text
-Streaming STT
-  -> Qwen service with the same PoliceCharacterContract
-  -> streaming Arabic neural TTS
-  -> first-audio playback while synthesis continues
-  -> timed visemes / facial morph targets
-```
+لا يعتبر رقم التأخير مضموناً قبل القياس على هاتف Android حقيقي.
 
-لا تعتمد المعمارية على API مدفوع؛ يمكن أن يكون Online عبارة عن backend يملكه المستخدم.
+## الاستماع
 
-## الشخصية السينمائية
+STT ما زال حالياً عبر Android SpeechRecognizer:
 
-`PoliceDogStage` الحالي fallback متحرك وخفيف. الهدف النهائي أصل 3D مستقل، وليس رسومات VibeApp أو واجهاته.
+- Online: recognizer المتاح على الجهاز.
+- Offline: on-device recognizer فقط، بدون fallback سري للشبكة.
 
-عقد الأصل النهائي:
+المرحلة التالية للاستقلال الكامل عن حزم الجهاز هي whisper.cpp أو sherpa-onnx Arabic STT.
 
-- GLB / glTF 2.0.
-- PBR materials.
-- mobile LODs.
-- 2K textures افتراضياً، و4K اختيارياً للأجهزة القوية.
-- skeleton: head, neck, jaw, ears, eyelids, brows, shoulders, forelegs.
-- morph targets: jawOpen, mouthWide, mouthNarrow, smile, blinkL, blinkR, browUp, browDown.
-- clips: Idle, Listen, Think, Talk, Smile, Laugh, Serious, Concerned.
-- مزامنة الفم من visemes وليس مجرد فتح/إغلاق دوري.
+## الشخصية الواقعية
 
-## ميزانية التأخير
+واجهة الإنتاج أصبحت `RealPoliceDogStage` المبنية على SceneView + Google Filament. عندما يوجد:
 
-القياس المهم هو Time To First Audio:
+`police-app/src/main/assets/models/police_dog.glb`
 
-- نهاية كلام الطفل: تقريباً 0.35–0.70 ثانية بعد الوقفة الطبيعية.
-- أول token للعقل: هدف أقل من 0.5 ثانية على backend مناسب.
-- أول صوت TTS: هدف أقل من 0.4 ثانية لمحرك streaming.
-- الهدف الإجمالي: بدء الرد تقريباً خلال 1–1.6 ثانية على جهاز/backend مناسب.
+يتم تشغيله مباشرة. الرسم القديم `PoliceDogStage` أصبح fallback تطوير فقط ولا يمثل الشكل النهائي.
 
-لا يُعتبر أي رقم مضموناً قبل قياسه على جهاز حقيقي.
+### عقد الأصل النهائي
+
+التفاصيل الكاملة في:
+
+`police-app/src/main/assets/models/README.md`
+
+أهم المتطلبات:
+
+- كلب Belgian Malinois أو German Shepherd واقعي، وليس mascot/cartoon.
+- زي شرطة PBR حقيقي بصرياً، مكتب ومشهد واقعيان.
+- rig للوجه والفك والأذن والعين والجسم.
+- clips للحالات: Idle / Listen / Think / Smile / Serious.
+- clips للفم: TalkOpen / TalkWide / TalkRound / TalkClosed / TalkRest.
+- محرك الصوت يغير clips الفم أثناء العربية بناء على visemes.
+- 2K PBR baseline وميزانية mobile واضحة.
+
+SceneView/Filament يفصل أصل الـGLB عن منطق المحادثة؛ يمكن استبدال الكلب لاحقاً بأصل أعلى جودة بدون إعادة كتابة الصوت أو العقل.
+
+## العقل
+
+`PoliceBrain` ما زال abstraction مستقلاً. النسخة الحالية baseline محلية ومقيدة بقواعد أمان الطفل. الهدف التالي هو Qwen-class model محلي/ذاتي الاستضافة مع نفس contract، بحيث لا تتغير الواجهة أو TTS عند تبديل العقل.
 
 ## الأمان
 
