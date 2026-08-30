@@ -1,6 +1,7 @@
 package com.malik.alshurti
 
 import android.content.Context
+import com.malik.alshurti.remote.RemoteArabicVoice
 import com.malik.alshurti.stt.LocalArabicRecognizer
 import com.malik.alshurti.voice.LocalArabicVoice
 
@@ -30,88 +31,56 @@ class PoliceVoiceEngine(
     private val localRecognizer = LocalArabicRecognizer(
         context = context.applicationContext,
         callbacks = object : LocalArabicRecognizer.Callbacks {
-            override fun onPreparing(percent: Int, message: String) {
-                listener.onSpeechPreparing(percent, message)
-            }
-
+            override fun onPreparing(percent: Int, message: String) = listener.onSpeechPreparing(percent, message)
             override fun onReady() = Unit
-
-            override fun onListening() {
-                listener.onReadyToListen()
-            }
-
-            override fun onSpeechStarted() {
-                listener.onSpeechStarted()
-            }
-
-            override fun onPartial(text: String) {
-                listener.onPartialText(text)
-            }
-
-            override fun onFinal(text: String) {
-                listener.onFinalText(text)
-            }
-
-            override fun onError(message: String, recoverable: Boolean) {
-                listener.onSpeechError(message, recoverable)
-            }
+            override fun onListening() = listener.onReadyToListen()
+            override fun onSpeechStarted() = listener.onSpeechStarted()
+            override fun onPartial(text: String) = listener.onPartialText(text)
+            override fun onFinal(text: String) = listener.onFinalText(text)
+            override fun onError(message: String, recoverable: Boolean) = listener.onSpeechError(message, recoverable)
         }
     )
 
     private val localArabicVoice = LocalArabicVoice(
         context = context.applicationContext,
         callbacks = object : LocalArabicVoice.Callbacks {
-            override fun onPreparing(percent: Int, message: String) {
-                listener.onTtsPreparing(percent, message)
-            }
-
-            override fun onReady() {
-                listener.onTtsReady()
-            }
-
-            override fun onSpeechStarted(durationMs: Long) {
-                lastViseme = MouthViseme.OPEN
-                listener.onViseme(lastViseme)
-                listener.onTtsStarted()
-            }
-
-            override fun onSpeechCursor(fraction: Float) {
-                val viseme = visemeAtFraction(spokenText, fraction)
-                if (viseme != lastViseme) {
-                    lastViseme = viseme
-                    listener.onViseme(viseme)
-                }
-            }
-
-            override fun onSpeechFinished() {
-                lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
-                listener.onTtsFinished()
-            }
-
-            override fun onError(message: String) {
-                lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
-                listener.onTtsError(message)
-            }
+            override fun onPreparing(percent: Int, message: String) = listener.onTtsPreparing(percent, message)
+            override fun onReady() = listener.onTtsReady()
+            override fun onSpeechStarted(durationMs: Long) = handleSpeechStarted()
+            override fun onSpeechCursor(fraction: Float) = handleCursor(fraction)
+            override fun onSpeechFinished() = handleSpeechFinished()
+            override fun onError(message: String) = handleVoiceError(message)
         }
     )
 
-    /** Changes policy only. It deliberately performs no model download or initialization. */
+    private val remoteArabicVoice = RemoteArabicVoice(
+        context = context.applicationContext,
+        callbacks = object : RemoteArabicVoice.Callbacks {
+            override fun onPreparing(percent: Int, message: String) = listener.onTtsPreparing(percent, message)
+            override fun onReady() = listener.onTtsReady()
+            override fun onSpeechStarted(durationMs: Long) = handleSpeechStarted()
+            override fun onSpeechCursor(fraction: Float) = handleCursor(fraction)
+            override fun onSpeechFinished() = handleSpeechFinished()
+            override fun onError(message: String) = handleVoiceError(message)
+        }
+    )
+
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
         localArabicVoice.interrupt()
+        remoteArabicVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
     }
 
-    /** Explicit user action: ONLINE may download once; OFFLINE only opens cached voice. */
+    /** ONLINE = Chatterbox V3 backend. OFFLINE = best Arabic TTS installed on the phone. */
     fun prepareVoice() {
-        localArabicVoice.prepare(allowDownload = mode == VoiceMode.ONLINE)
+        if (mode == VoiceMode.ONLINE) remoteArabicVoice.prepare()
+        else localArabicVoice.prepare(allowDownload = false)
     }
 
-    /** Explicit user action. Whisper is never provisioned merely because the app opened. */
+    /** Whisper stays on-device in both modes; ONLINE may provision it once. */
     fun startListening() {
         localRecognizer.prepare(allowDownload = mode == VoiceMode.ONLINE)
         localRecognizer.startListening()
@@ -123,6 +92,7 @@ class PoliceVoiceEngine(
 
     fun interruptSpeech() {
         localArabicVoice.interrupt()
+        remoteArabicVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
     }
@@ -134,15 +104,43 @@ class PoliceVoiceEngine(
             listener.onTtsFinished()
             return
         }
-        localArabicVoice.speak(spokenText)
+        if (mode == VoiceMode.ONLINE) remoteArabicVoice.speak(spokenText)
+        else localArabicVoice.speak(spokenText)
     }
 
     fun release() {
         stopListening()
         localRecognizer.release()
         localArabicVoice.release()
+        remoteArabicVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
+    }
+
+    private fun handleSpeechStarted() {
+        lastViseme = MouthViseme.OPEN
+        listener.onViseme(lastViseme)
+        listener.onTtsStarted()
+    }
+
+    private fun handleCursor(fraction: Float) {
+        val viseme = visemeAtFraction(spokenText, fraction)
+        if (viseme != lastViseme) {
+            lastViseme = viseme
+            listener.onViseme(viseme)
+        }
+    }
+
+    private fun handleSpeechFinished() {
+        lastViseme = MouthViseme.REST
+        listener.onViseme(MouthViseme.REST)
+        listener.onTtsFinished()
+    }
+
+    private fun handleVoiceError(message: String) {
+        lastViseme = MouthViseme.REST
+        listener.onViseme(MouthViseme.REST)
+        listener.onTtsError(message)
     }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
@@ -151,9 +149,7 @@ class PoliceVoiceEngine(
         val radius = 3
         val from = (position - radius).coerceAtLeast(0)
         val to = (position + radius + 1).coerceAtMost(text.length)
-        val letter = text.substring(from, to)
-            .firstOrNull { it.isLetter() }
-            ?: return MouthViseme.REST
+        val letter = text.substring(from, to).firstOrNull { it.isLetter() } ?: return MouthViseme.REST
         return when (letter) {
             'ب', 'م', 'ف' -> MouthViseme.CLOSED
             'و', 'ؤ' -> MouthViseme.ROUND
