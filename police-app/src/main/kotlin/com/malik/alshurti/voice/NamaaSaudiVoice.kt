@@ -14,6 +14,7 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -47,11 +48,8 @@ class NamaaSaudiVoice(
     private val main = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
 
-    @Volatile
-    private var player: MediaPlayer? = null
-
-    @Volatile
-    private var released = false
+    @Volatile private var player: MediaPlayer? = null
+    @Volatile private var released = false
 
     fun prepare() {
         if (released) return
@@ -79,9 +77,7 @@ class NamaaSaudiVoice(
             } catch (t: Throwable) {
                 if (ticket == generation.get() && !released) {
                     main.post {
-                        callbacks.onError(
-                            t.message ?: "تعذر تشغيل الصوت السعودي الآن."
-                        )
+                        callbacks.onError(t.message ?: "تعذر تشغيل الصوت السعودي الآن.")
                     }
                 }
             }
@@ -102,11 +98,10 @@ class NamaaSaudiVoice(
 
     private fun synthesize(ticket: Long, text: String): File {
         if (ticket != generation.get()) error("cancelled")
-
         val eventId = createJob(text)
-        val outputUrl = waitForAudio(eventId, ticket)
+        val output = waitForAudio(eventId, ticket)
         if (ticket != generation.get()) error("cancelled")
-        return downloadAudio(outputUrl, ticket)
+        return downloadAudio(output, ticket)
     }
 
     private fun createJob(text: String): String {
@@ -115,10 +110,10 @@ class NamaaSaudiVoice(
                 "data",
                 JSONArray().apply {
                     put(text.take(MAX_TEXT_CHARS))
-                    put(JSONObject.NULL) // Use the Space's built-in Saudi reference voice.
+                    put(JSONObject.NULL) // Space falls back to its built-in Saudi reference voice.
                     put(EXAGGERATION)
                     put(TEMPERATURE)
-                    put(0) // random seed
+                    put(0)
                     put(CFG_WEIGHT)
                 }
             )
@@ -139,11 +134,8 @@ class NamaaSaudiVoice(
         }
     }
 
-    private fun waitForAudio(eventId: String, ticket: Long): String {
-        val connection = openConnection(
-            "$BASE_URL/gradio_api/call/$API_NAME/$eventId",
-            "GET"
-        ).apply {
+    private fun waitForAudio(eventId: String, ticket: Long): AudioLocation {
+        val connection = openConnection("$BASE_URL/gradio_api/call/$API_NAME/$eventId", "GET").apply {
             setRequestProperty("Accept", "text/event-stream")
             readTimeout = EVENT_READ_TIMEOUT_MS
         }
@@ -158,11 +150,9 @@ class NamaaSaudiVoice(
                         line.startsWith("event:") -> event = line.substringAfter(':').trim()
                         line.startsWith("data:") -> {
                             val data = line.substringAfter(':').trim()
-                            if (event == "error") {
-                                error(parseServerError(data))
-                            }
+                            if (event == "error") error(parseServerError(data))
                             if (event == "complete") {
-                                findAudioUrl(data)?.let { return resolveUrl(it) }
+                                findAudioLocation(data)?.let { return it }
                                 error("خدمة الصوت انتهت بدون ملف صوتي.")
                             }
                         }
@@ -175,46 +165,46 @@ class NamaaSaudiVoice(
         error("انقطع الاتصال بخدمة الصوت قبل اكتمال الرد.")
     }
 
-    private fun findAudioUrl(data: String): String? {
+    private fun findAudioLocation(data: String): AudioLocation? {
         val root: Any = runCatching { JSONArray(data) }
             .getOrElse { runCatching { JSONObject(data) }.getOrNull() ?: return null }
-        return findUrlRecursive(root)
+        return findAudioRecursive(root)
     }
 
-    private fun findUrlRecursive(value: Any?): String? = when (value) {
+    private fun findAudioRecursive(value: Any?): AudioLocation? = when (value) {
         is JSONObject -> {
-            val preferred = sequenceOf("url", "path")
-                .mapNotNull { key -> value.optString(key).takeIf(String::isNotBlank) }
-                .firstOrNull { candidate ->
-                    candidate.startsWith("http://") || candidate.startsWith("https://") ||
-                        candidate.contains("/gradio_api/file=") || candidate.endsWith(".wav") ||
-                        candidate.endsWith(".flac") || candidate.endsWith(".mp3")
-                }
-            preferred ?: value.keys().asSequence()
-                .mapNotNull { key -> findUrlRecursive(value.opt(key)) }
+            value.optString("url").takeIf { it.isNotBlank() }?.let {
+                return AudioLocation(url = it, path = null)
+            }
+            value.optString("path").takeIf { it.isNotBlank() }?.let {
+                return AudioLocation(url = null, path = it)
+            }
+            value.keys().asSequence()
+                .mapNotNull { key -> findAudioRecursive(value.opt(key)) }
                 .firstOrNull()
         }
         is JSONArray -> (0 until value.length()).asSequence()
-            .mapNotNull { index -> findUrlRecursive(value.opt(index)) }
+            .mapNotNull { index -> findAudioRecursive(value.opt(index)) }
             .firstOrNull()
-        is String -> value.takeIf {
-            it.startsWith("http://") || it.startsWith("https://") ||
-                it.contains("/gradio_api/file=") || it.endsWith(".wav") ||
-                it.endsWith(".flac") || it.endsWith(".mp3")
+        is String -> when {
+            value.startsWith("http://") || value.startsWith("https://") -> AudioLocation(value, null)
+            value.contains("/gradio_api/file=") -> AudioLocation(value, null)
+            value.endsWith(".wav") || value.endsWith(".flac") || value.endsWith(".mp3") ->
+                AudioLocation(null, value)
+            else -> null
         }
         else -> null
     }
 
-    private fun resolveUrl(value: String): String = when {
-        value.startsWith("https://") || value.startsWith("http://") -> value
-        value.startsWith("/") -> "$BASE_URL$value"
-        value.startsWith("gradio_api/") -> "$BASE_URL/$value"
-        else -> "$BASE_URL/gradio_api/file=$value"
-    }
+    private fun downloadAudio(location: AudioLocation, ticket: Long): File {
+        val resolvedUrl = when {
+            !location.url.isNullOrBlank() -> resolveReturnedUrl(location.url)
+            !location.path.isNullOrBlank() -> gradioFileUrl(location.path)
+            else -> error("لم ترجع خدمة الصوت موقع الملف.")
+        }
 
-    private fun downloadAudio(url: String, ticket: Long): File {
         val target = File.createTempFile("saudi-voice-", ".wav", appContext.cacheDir)
-        val connection = openConnection(url, "GET")
+        val connection = openConnection(resolvedUrl, "GET")
         try {
             ensureSuccess(connection, "تعذر تنزيل الرد الصوتي")
             BufferedInputStream(connection.inputStream, BUFFER_SIZE).use { input ->
@@ -231,6 +221,7 @@ class NamaaSaudiVoice(
         } finally {
             connection.disconnect()
         }
+
         if (ticket != generation.get()) {
             target.delete()
             error("cancelled")
@@ -240,6 +231,18 @@ class NamaaSaudiVoice(
             error("ملف الصوت السعودي غير صالح.")
         }
         return target
+    }
+
+    private fun resolveReturnedUrl(value: String): String = when {
+        value.startsWith("https://") || value.startsWith("http://") -> value
+        value.startsWith("/gradio_api/") -> "$BASE_URL$value"
+        value.startsWith("gradio_api/") -> "$BASE_URL/$value"
+        else -> gradioFileUrl(value)
+    }
+
+    private fun gradioFileUrl(path: String): String {
+        val encoded = URLEncoder.encode(path, Charsets.UTF_8.name()).replace("+", "%20")
+        return "$BASE_URL/gradio_api/file=$encoded"
     }
 
     private fun play(ticket: Long, file: File) {
@@ -278,9 +281,7 @@ class NamaaSaudiVoice(
                 if (player === failed) player = null
                 runCatching { failed.release() }
                 file.delete()
-                if (ticket == generation.get() && !released) {
-                    callbacks.onError("تعذر تشغيل الرد الصوتي.")
-                }
+                if (ticket == generation.get() && !released) callbacks.onError("تعذر تشغيل الرد الصوتي.")
                 true
             }
         }
@@ -293,9 +294,7 @@ class NamaaSaudiVoice(
             override fun run() {
                 if (ticket != generation.get() || player !== active || released) return
                 val current = runCatching { active.currentPosition }.getOrDefault(0)
-                callbacks.onSpeechCursor(
-                    (current.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                )
+                callbacks.onSpeechCursor((current.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f))
                 if (runCatching { active.isPlaying }.getOrDefault(false)) {
                     main.postDelayed(this, CURSOR_INTERVAL_MS)
                 }
@@ -318,7 +317,7 @@ class NamaaSaudiVoice(
             readTimeout = READ_TIMEOUT_MS
             instanceFollowRedirects = true
             useCaches = false
-            setRequestProperty("User-Agent", "AlShorti-Android/0.2")
+            setRequestProperty("User-Agent", "AlShorti-Android/0.3")
         }
 
     private fun ensureSuccess(connection: HttpURLConnection, prefix: String) {
@@ -339,6 +338,8 @@ class NamaaSaudiVoice(
         .replace(Regex("\\s+"), " ")
         .replace("…", "،")
         .trim()
+
+    private data class AudioLocation(val url: String?, val path: String?)
 
     private companion object {
         const val BASE_URL = "https://omarelshehy-namaa-saudi-voice.hf.space"
