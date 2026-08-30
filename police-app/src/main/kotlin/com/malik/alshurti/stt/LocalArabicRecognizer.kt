@@ -127,6 +127,9 @@ class LocalArabicRecognizer(
         whisperModel = null
     }
 
+    // RECORD_AUDIO permission is explicitly gated by PoliceCallScreen/ViewModel before this path.
+    // The constructor/start calls are also wrapped in Throwable handling for permission revocation races.
+    @android.annotation.SuppressLint("MissingPermission")
     private suspend fun captureOneUtterance() {
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
