@@ -36,6 +36,7 @@ enum class DogAction {
     WALK_TO_DOOR,
     GREET_STAFF,
     RETURN_TO_DESK,
+    REVIEW_FILE,
     SIT_DOWN
 }
 
