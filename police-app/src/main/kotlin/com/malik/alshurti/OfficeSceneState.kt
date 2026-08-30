@@ -25,6 +25,7 @@ data class OfficeSceneState(
     val officerB: OfficeActorMotion = OfficeActorMotion.IDLE,
     val dogLookTarget: DogLookTarget = DogLookTarget.CHILD,
     val sideSpeaker: SideSpeaker = SideSpeaker.NONE,
+    val phoneRinging: Boolean = false,
     val scenarioLabel: String = "normal",
     val soundCue: OfficeSoundCue = OfficeSoundCue.NONE,
     val soundCueNonce: Long = 0L
