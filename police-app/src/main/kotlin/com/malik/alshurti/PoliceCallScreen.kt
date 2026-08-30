@@ -104,7 +104,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 contentColor = Color.White
             ) {
                 IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "اختيار وضع التشغيل")
+                    Icon(Icons.Default.MoreVert, contentDescription = "إعدادات الصوت")
                 }
             }
 
@@ -116,27 +116,14 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
-                            "الإنترنت",
-                            "يحمّل الصوت العصبي أول مرة ثم يحتفظ به على الجهاز",
-                            state.mode == VoiceMode.ONLINE
+                            "صوت سعودي طبيعي",
+                            "صوت رجل سعودي بشري عبر الإنترنت — بدون بديل روبوتي",
+                            true
                         )
                     },
                     onClick = {
                         menuExpanded = false
                         viewModel.chooseMode(VoiceMode.ONLINE)
-                    }
-                )
-                DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "بدون إنترنت",
-                            "يستخدم الصوت العصبي المحفوظ محلياً بدون اشتراك أو دقائق",
-                            state.mode == VoiceMode.OFFLINE
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.chooseMode(VoiceMode.OFFLINE)
                     }
                 )
             }
