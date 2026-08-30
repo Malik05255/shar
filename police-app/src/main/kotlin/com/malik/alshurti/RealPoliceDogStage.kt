@@ -70,7 +70,7 @@ fun RealPoliceDogStage(
             ModelNode(
                 modelInstance = instance,
                 autoAnimate = false,
-                animationName = "OfficeIdle",
+                animationName = if (officeScene.phoneRinging) "PhoneRing" else "OfficeIdle",
                 animationLoop = true,
                 animationSpeed = 1f
             )
@@ -144,6 +144,7 @@ private fun dogAnimation(
     lookTarget == DogLookTarget.DOOR -> "LookDoor"
     lookTarget == DogLookTarget.OFFICER_A -> "LookOfficerA"
     lookTarget == DogLookTarget.OFFICER_B -> "LookOfficerB"
+    lookTarget == DogLookTarget.DESK -> "LookDesk"
     phase == CallPhase.SPEAKING -> when (viseme) {
         MouthViseme.OPEN -> "TalkOpen"
         MouthViseme.WIDE -> "TalkWide"
