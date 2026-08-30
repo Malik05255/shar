@@ -3,6 +3,7 @@ package com.malik.alshurti.remote
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import java.net.HttpURLConnection
@@ -20,7 +21,7 @@ class BackendLocator(context: Context) {
     @Volatile private var cachedBaseUrl: String? = null
 
     suspend fun resolve(force: Boolean = false): String {
-        if (!force) cachedBaseUrl?.let { if (health(it)) return it }
+        if (!force) cachedBaseUrl?.let { if (ready(it)) return it }
 
         val discovered = runCatching { discoverWithNsd() }.getOrNull()
         val candidates = buildList {
@@ -28,17 +29,37 @@ class BackendLocator(context: Context) {
             add("http://alshorti.local:8787")
         }.distinct()
 
+        var warmingServer: String? = null
         for (candidate in candidates) {
-            if (health(candidate)) {
+            if (!health(candidate)) continue
+            if (ready(candidate)) {
                 cachedBaseUrl = candidate
                 return candidate
             }
+            warmingServer = candidate
+        }
+
+        if (warmingServer != null && awaitReady(warmingServer)) {
+            cachedBaseUrl = warmingServer
+            return warmingServer
+        }
+
+        if (warmingServer != null) {
+            error("خادم الشرطي متصل لكن نماذج الصوت والمحادثة لم تجهز بعد. انتظر قليلاً ثم أعد المحاولة.")
         }
         error("خادم الصوت الحقيقي غير متصل. شغّل Al-Shorti Voice Backend على نفس شبكة الواي فاي.")
     }
 
     fun invalidate() {
         cachedBaseUrl = null
+    }
+
+    private suspend fun awaitReady(baseUrl: String): Boolean {
+        repeat(READY_RETRIES) {
+            if (ready(baseUrl)) return true
+            delay(READY_RETRY_MS)
+        }
+        return false
     }
 
     private suspend fun discoverWithNsd(): String = withTimeout(DISCOVERY_TIMEOUT_MS) {
@@ -63,7 +84,8 @@ class BackendLocator(context: Context) {
 
                         override fun onServiceResolved(resolved: NsdServiceInfo) {
                             val host = resolved.host ?: return
-                            val address = if (host is Inet6Address) "[${host.hostAddress}]" else host.hostAddress
+                            val rawAddress = host.hostAddress ?: return
+                            val address = if (host is Inet6Address) "[$rawAddress]" else rawAddress
                             val port = resolved.port.takeIf { it > 0 } ?: 8787
                             finish {
                                 if (continuation.isActive) continuation.resume("http://$address:$port")
@@ -103,9 +125,12 @@ class BackendLocator(context: Context) {
         }
     }
 
-    private fun health(baseUrl: String): Boolean {
+    private fun health(baseUrl: String): Boolean = probe("$baseUrl/v1/health")
+    private fun ready(baseUrl: String): Boolean = probe("$baseUrl/v1/ready")
+
+    private fun probe(url: String): Boolean {
         val connection = runCatching {
-            (URL("$baseUrl/v1/health").openConnection() as HttpURLConnection).apply {
+            (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 1_500
                 readTimeout = 2_000
                 requestMethod = "GET"
@@ -126,5 +151,7 @@ class BackendLocator(context: Context) {
     private companion object {
         const val SERVICE_TYPE = "_alshorti._tcp."
         const val DISCOVERY_TIMEOUT_MS = 6_000L
+        const val READY_RETRIES = 60
+        const val READY_RETRY_MS = 1_500L
     }
 }
