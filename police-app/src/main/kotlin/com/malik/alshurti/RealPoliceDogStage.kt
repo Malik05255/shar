@@ -14,9 +14,9 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * A licensed PBR GLB is rendered by Filament/SceneView when present. If the GLB is not
- * bundled yet, the app uses a photoreal cinematic reference frame rather than dropping
- * back to the old illustrated dog. True jaw/eye/ear/body animation remains the GLB path.
+ * Preferred path: rigged PBR GLB. Until that asset exists, the app uses deterministic AI motion
+ * clips that preserve the selected master dog/office. Missing clips fall back to the exact master
+ * frame without faking standing/walking by zooming the bitmap.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -35,9 +35,11 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        PhotorealPoliceDogFallback(
+        AiCinematicDogStage(
+            mood = mood,
             phase = phase,
-            attention = officeScene.attention,
+            viseme = viseme,
+            officeScene = officeScene,
             modifier = modifier
         )
         return
@@ -63,8 +65,12 @@ fun RealPoliceDogStage(
             ModelNode(
                 modelInstance = instance,
                 autoAnimate = false,
-                animationName = animationFor(mood, phase, viseme, officeScene.attention),
-                animationLoop = true,
+                animationName = animationFor(mood, phase, viseme, officeScene),
+                animationLoop = officeScene.dogAction in setOf(
+                    DogAction.SEATED_IDLE,
+                    DogAction.TALK_SEATED,
+                    DogAction.TALK_STANDING
+                ),
                 animationSpeed = animationSpeedFor(phase, officeScene.attention),
                 scaleToUnits = 1.72f,
                 centerOrigin = Position(x = 0f, y = -1f, z = 0f),
@@ -78,22 +84,40 @@ private fun animationFor(
     mood: DogMood,
     phase: CallPhase,
     viseme: MouthViseme,
-    attention: DogAttention
-): String = when {
-    phase == CallPhase.SPEAKING -> when (viseme) {
+    scene: OfficeSceneState
+): String = when (scene.dogAction) {
+    DogAction.STAND_UP -> "StandUp"
+    DogAction.TALK_STANDING -> when (viseme) {
+        MouthViseme.OPEN -> "StandTalkOpen"
+        MouthViseme.WIDE -> "StandTalkWide"
+        MouthViseme.ROUND -> "StandTalkRound"
+        MouthViseme.CLOSED -> "StandTalkClosed"
+        MouthViseme.REST -> "StandTalkRest"
+    }
+    DogAction.WALK_AROUND_DESK -> "WalkAroundDesk"
+    DogAction.APPROACH_CAMERA -> "ApproachCamera"
+    DogAction.WALK_TO_PHONE -> "WalkToPhone"
+    DogAction.ANSWER_PHONE -> "AnswerPhone"
+    DogAction.WALK_TO_DOOR -> "WalkToDoor"
+    DogAction.GREET_STAFF -> "GreetStaff"
+    DogAction.RETURN_TO_DESK -> "ReturnToDesk"
+    DogAction.SIT_DOWN -> "SitDown"
+    DogAction.TALK_SEATED -> when (viseme) {
         MouthViseme.OPEN -> "TalkOpen"
         MouthViseme.WIDE -> "TalkWide"
         MouthViseme.ROUND -> "TalkRound"
         MouthViseme.CLOSED -> "TalkClosed"
         MouthViseme.REST -> "TalkRest"
     }
-    phase == CallPhase.LISTENING -> "Listen"
-    phase == CallPhase.THINKING -> "Think"
-    attention == DogAttention.DOOR || attention == DogAttention.STAFF -> "Listen"
-    attention == DogAttention.PHONE -> "Think"
-    mood == DogMood.SMILE -> "Smile"
-    mood == DogMood.SERIOUS || phase == CallPhase.ERROR -> "Serious"
-    else -> "Idle"
+    DogAction.SEATED_IDLE -> when {
+        phase == CallPhase.LISTENING -> "Listen"
+        phase == CallPhase.THINKING -> "Think"
+        scene.attention == DogAttention.DOOR || scene.attention == DogAttention.STAFF -> "Listen"
+        scene.attention == DogAttention.PHONE -> "Think"
+        mood == DogMood.SMILE -> "Smile"
+        mood == DogMood.SERIOUS || phase == CallPhase.ERROR -> "Serious"
+        else -> "Idle"
+    }
 }
 
 private fun animationSpeedFor(phase: CallPhase, attention: DogAttention): Float = when {

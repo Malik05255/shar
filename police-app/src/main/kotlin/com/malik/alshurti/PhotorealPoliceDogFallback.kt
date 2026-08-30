@@ -1,32 +1,24 @@
 package com.malik.alshurti
 
 import android.graphics.BitmapFactory
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * Crash-safe photoreal fallback. Raster decoding is isolated so a vendor-specific
- * decoder/resource failure cannot crash composition; the lightweight Canvas stage is
- * used if the bundled JPEG cannot be decoded on a device.
+ * Crash-safe cinematic master-frame fallback.
+ *
+ * Important quality rule: full-body motion is never faked by zooming, translating or rotating
+ * this bitmap. If an AI/3D motion asset is unavailable, the exact master frame stays still.
  */
 @Composable
 fun PhotorealPoliceDogFallback(
@@ -54,34 +46,6 @@ fun PhotorealPoliceDogFallback(
         return
     }
 
-    val infinite = rememberInfiniteTransition(label = "photoreal-dog-fallback")
-    val breathe by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "fallback-breath"
-    )
-
-    val speakingEnergy by animateFloatAsState(
-        targetValue = if (phase == CallPhase.SPEAKING) 1f else 0f,
-        animationSpec = tween(260),
-        label = "fallback-speaking-energy"
-    )
-
-    val attentionShift by animateFloatAsState(
-        targetValue = when (attention) {
-            DogAttention.PHONE -> -1f
-            DogAttention.DOOR,
-            DogAttention.STAFF -> 1f
-            DogAttention.CAMERA -> 0f
-        },
-        animationSpec = tween(420, easing = FastOutSlowInEasing),
-        label = "fallback-attention-shift"
-    )
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -91,15 +55,7 @@ fun PhotorealPoliceDogFallback(
             bitmap = image,
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = 1.018f + breathe * 0.004f + speakingEnergy * 0.002f
-                    scaleY = 1.018f + breathe * 0.006f + speakingEnergy * 0.003f
-                    translationX = attentionShift * 5.5f
-                    translationY = breathe * 1.8f - speakingEnergy * 0.8f
-                    rotationZ = attentionShift * 0.10f
-                }
+            modifier = Modifier.fillMaxSize()
         )
 
         Box(
@@ -108,10 +64,10 @@ fun PhotorealPoliceDogFallback(
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            Color(0x12000000),
+                            Color(0x10000000),
                             Color.Transparent,
                             Color(0x08000000),
-                            Color(0x34000000)
+                            Color(0x30000000)
                         )
                     )
                 )
