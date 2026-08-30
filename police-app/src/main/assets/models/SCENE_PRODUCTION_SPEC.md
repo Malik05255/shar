@@ -2,6 +2,23 @@
 
 The reference is a **feature-film stylized-realistic 3D police dog in a living police office**. It must not look like a flat mascot, mobile-game NPC, photographed real dog, or a frozen render.
 
+## Non-negotiable release gate
+
+The hero dog is the product. **No visual downgrade is acceptable.** The 3D path is rejected unless it is at least as convincing on a phone screen as the approved 2D reference frame.
+
+A build is NOT visually releasable if any of these are true:
+- fur reads as plastic, painted color, a low-detail shell, or obvious game-style cards;
+- eyes look glassy/dead, cross-eyed, or lack wet-line/corneal depth;
+- muzzle, lips or jaw move as a simple open/close flap;
+- teeth, gums or tongue look flat, oversized, detached, or toy-like;
+- uniform reads as painted texture rather than cloth with seams, folds, stitching and material response;
+- breathing, blinking, eye saccades, ear motion, shoulder/torso micro-motion or hand/forearm life are missing;
+- lighting makes the face flatter or less premium than the 2D reference;
+- animation reveals rig deformation, skin collapse, clipping or texture stretching;
+- the final Android render looks like a mobile game NPC rather than a feature-film animated character.
+
+Approval requires a side-by-side phone-screen review against the 2D reference. If Full 3D loses the comparison, we do not ship it and keep the cinematic 2.5D path until the 3D asset is upgraded.
+
 ## Required GLB files
 
 All assets MUST use the same coordinate system, metric scale, authored world placement and camera composition.
@@ -19,11 +36,27 @@ Do not bake all performers into one GLB. They must remain independently animated
 - German Shepherd / Belgian Malinois inspired anatomy.
 - Feature-film stylization with believable canine proportions; not chibi.
 - Layered fur direction and breakup, especially muzzle, cheeks, ears, brows, neck and forearms.
-- PBR nose, wet-line around eyes, subtle roughness variation, convincing teeth/gums/tongue.
+- PBR nose with micro-roughness and moist highlight breakup, wet-line around eyes, subtle skin/fur roughness variation, convincing teeth/gums/tongue.
+- Eyes need readable iris depth, corneal highlight, sclera tint, tear-line and tiny asymmetric motion; no static doll eyes.
 - Police uniform with stitched fabric, seams, folds, badge, utility details and believable cloth weight.
 - Seated naturally behind the desk with forearms/hands able to rest, gesture, point and move.
 - Eye contact aimed at the child/camera by default.
 - No real police agency logo is required; use a fictional police identity.
+- Hero face must hold up in a medium close-up on a 1080p phone without exposing low-resolution fur, aliasing or faceting.
+
+## Materials / fur quality
+
+Use physically based materials throughout. glTF/Filament PBR response is mandatory for hero-facing materials.
+
+Hero dog should combine:
+- groom-derived/baked fur direction;
+- high-quality normal detail for short facial fur;
+- controlled alpha-card or shell strategy only where silhouette breakup is needed (ears, cheeks, neck, forearms);
+- albedo variation that avoids painted gradients;
+- roughness variation across nose, fur, eyes, teeth, tongue, badge and cloth;
+- correct tangent-space normals and clean mip behavior on Android.
+
+The nose, cornea, teeth, tongue, badge and uniform must each read as different physical materials under the same light.
 
 ## Hero rig
 
@@ -35,6 +68,7 @@ Required animation clips (exact names):
 - `Smile` — believable canine smile, cheeks/eyes involved, not just mouth corners.
 - `Serious` — calmer face and posture, never aggressive or threatening.
 - `LookDoor`
+- `LookDesk`
 - `LookOfficerA`
 - `LookOfficerB`
 - `TalkRest`
@@ -57,6 +91,8 @@ Recommended additional blendshapes/morph targets if supported by the authored pi
 - mouth_round
 - tongue_up
 - cheek_raise
+
+Facial shapes must be sculpted to preserve canine anatomy while producing readable Arabic visemes. The face cannot look human pasted onto a dog.
 
 ## Background actors
 
@@ -90,6 +126,7 @@ Handle rotation and latch movement should be visible. Opening/closing timing sho
 - Medium close-up: hero head/torso dominate frame while desk and background remain readable.
 - Warm key light on hero, cooler practical/background separation.
 - Soft rim on ears/shoulders to separate fur from background.
+- Add subtle eye/corneal catchlights; never let both eyes lose specular readability.
 - Avoid crushed blacks; fur silhouette must remain readable on a phone screen.
 - Background should be lower contrast and slightly softer than hero.
 - Mild depth-of-field look may be baked into art/material strategy, but the hero face must remain crisp.
@@ -106,6 +143,7 @@ Target modern Android flagship/mid-high devices:
 - Minimize transparent fur cards. Prefer groom baked into cards/normal/roughness strategy appropriate for Filament mobile rendering.
 - Keep draw calls controlled; atlas small props where appropriate.
 - 30 FPS is the minimum acceptable fallback; target 60 FPS on capable phones.
+- If quality and frame rate conflict, preserve hero face quality first and reduce background complexity/LOD before touching the hero.
 
 ## Scene choreography implemented in app
 
