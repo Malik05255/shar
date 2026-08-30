@@ -76,6 +76,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // CI/private test APKs use the permanent app certificate whenever the signing secrets
+            // are available. That lets a test APK receive later signed updates in-place instead of
+            // being stranded on a one-off Android debug certificate.
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
