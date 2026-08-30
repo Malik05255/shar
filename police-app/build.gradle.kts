@@ -60,8 +60,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
@@ -92,9 +92,12 @@ dependencies {
     implementation("io.github.sceneview:sceneview:4.33.0")
     implementation("org.codeshipping:llama-kotlin-android:0.1.7")
 
-    // Local multilingual whisper.cpp STT. The model is downloaded separately on first use.
-    // This removes Android SpeechRecognizer chimes and replaces the previous 318 MB Vosk pack.
+    // Local multilingual whisper.cpp STT. Model is downloaded separately on first use.
     implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
+
+    // Fully on-device neural TTS runtime (Sherpa-ONNX backend).
+    implementation("io.github.sanchitmonga22:runanywhere-sdk:0.20.31")
+    implementation("io.github.sanchitmonga22:runanywhere-onnx:0.20.31")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
