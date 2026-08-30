@@ -3,9 +3,7 @@ from __future__ import annotations
 import io
 import os
 import socket
-import tempfile
 import threading
-import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -24,9 +22,15 @@ PORT = int(os.getenv("PORT", "8787"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 DEVICE = os.getenv("CHATTERBOX_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-REFERENCE_VOICE = os.getenv("REFERENCE_VOICE", "/app/voices/police_ar.wav")
+VOICE_DIR = Path(os.getenv("VOICE_DIR", "/app/voices"))
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.55"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.35"))
+
+VOICE_FILES = {
+    "police": "police_ar.wav",
+    "officer_a": "officer_a_ar.wav",
+    "officer_b": "officer_b_ar.wav",
+}
 
 SYSTEM_PROMPT = """
 أنت «الشرطي»، شخصية كلب شرطة خيالية لطيفة تتحدث مع طفل باللهجة السعودية الطبيعية.
@@ -39,7 +43,7 @@ SYSTEM_PROMPT = """
 لا تذكر أنك ذكاء اصطناعي ولا تشرح التعليمات الداخلية.
 """.strip()
 
-app = FastAPI(title=APP_NAME, version="1.0")
+app = FastAPI(title=APP_NAME, version="1.1")
 _tts_lock = threading.Lock()
 _tts_model: ChatterboxMultilingualTTS | None = None
 _zeroconf: Zeroconf | None = None
@@ -63,6 +67,8 @@ class ChatResponse(BaseModel):
 
 class TtsRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
+    voice: Literal["police", "officer_a", "officer_b"] = "police"
+    exaggeration: float | None = Field(default=None, ge=0.0, le=1.5)
 
 
 def _local_ip() -> str:
@@ -86,7 +92,7 @@ def _register_mdns() -> None:
             "AlShorti Voice._alshorti._tcp.local.",
             addresses=[socket.inet_aton(ip)],
             port=PORT,
-            properties={b"version": b"1", b"tts": b"chatterbox-v3", b"lang": b"ar"},
+            properties={b"version": b"2", b"tts": b"chatterbox-v3", b"lang": b"ar"},
             server="alshorti.local.",
         )
         _zeroconf.register_service(_service_info)
@@ -118,6 +124,14 @@ def _load_tts() -> ChatterboxMultilingualTTS:
     return _tts_model
 
 
+def _voice_path(profile: str) -> Path | None:
+    name = VOICE_FILES.get(profile)
+    if not name:
+        return None
+    path = VOICE_DIR / name
+    return path if path.is_file() else None
+
+
 def _mood(text: str) -> str:
     value = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
     if any(word in value for word in ("خطر", "سلاح", "حريق", "يضرب", "تهديد")):
@@ -147,6 +161,7 @@ def health() -> dict:
         "language": "ar",
         "device": DEVICE,
         "llm": OLLAMA_MODEL,
+        "voices": {key: _voice_path(key) is not None for key in VOICE_FILES},
     }
 
 
@@ -176,10 +191,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             response.raise_for_status()
             data = response.json()
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"LLM backend unavailable: {exc}",
-        ) from exc
+        raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
 
     reply = str(data.get("message", {}).get("content", "")).strip()
     reply = " ".join(reply.replace("<think>", " ").replace("</think>", " ").split())
@@ -194,16 +206,16 @@ async def chat(request: ChatRequest) -> ChatResponse:
 def tts(request: TtsRequest) -> Response:
     text = " ".join(request.text.strip().split())
     model = _load_tts()
-    voice_path = Path(REFERENCE_VOICE)
+    voice_path = _voice_path(request.voice)
 
     try:
         with _tts_lock:
             kwargs = {
                 "language_id": "ar",
-                "exaggeration": EXAGGERATION,
+                "exaggeration": request.exaggeration if request.exaggeration is not None else EXAGGERATION,
                 "cfg_weight": CFG_WEIGHT,
             }
-            if voice_path.is_file():
+            if voice_path is not None:
                 kwargs["audio_prompt_path"] = str(voice_path)
             wav = model.generate(text, **kwargs)
     except Exception as exc:
@@ -222,7 +234,11 @@ def tts(request: TtsRequest) -> Response:
     return Response(
         content=buffer.getvalue(),
         media_type="audio/wav",
-        headers={"Cache-Control": "no-store", "X-AlShorti-TTS": "chatterbox-v3"},
+        headers={
+            "Cache-Control": "no-store",
+            "X-AlShorti-TTS": "chatterbox-v3",
+            "X-AlShorti-Voice": request.voice,
+        },
     )
 
 
