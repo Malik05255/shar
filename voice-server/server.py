@@ -22,7 +22,8 @@ PORT = int(os.getenv("PORT", "8787"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 DEVICE = os.getenv("CHATTERBOX_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-VOICE_DIR = Path(os.getenv("VOICE_DIR", "/app/voices"))
+DEFAULT_VOICE_DIR = Path(__file__).resolve().parent / "voices"
+VOICE_DIR = Path(os.getenv("VOICE_DIR", str(DEFAULT_VOICE_DIR)))
 EXAGGERATION = float(os.getenv("CHATTERBOX_EXAGGERATION", "0.55"))
 CFG_WEIGHT = float(os.getenv("CHATTERBOX_CFG_WEIGHT", "0.35"))
 
@@ -43,9 +44,12 @@ SYSTEM_PROMPT = """
 لا تذكر أنك ذكاء اصطناعي ولا تشرح التعليمات الداخلية.
 """.strip()
 
-app = FastAPI(title=APP_NAME, version="1.1")
+app = FastAPI(title=APP_NAME, version="1.2")
 _tts_lock = threading.Lock()
 _tts_model: ChatterboxMultilingualTTS | None = None
+_tts_ready = threading.Event()
+_llm_ready = threading.Event()
+_warmup_errors: dict[str, str] = {}
 _zeroconf: Zeroconf | None = None
 _service_info: ServiceInfo | None = None
 
@@ -92,7 +96,7 @@ def _register_mdns() -> None:
             "AlShorti Voice._alshorti._tcp.local.",
             addresses=[socket.inet_aton(ip)],
             port=PORT,
-            properties={b"version": b"2", b"tts": b"chatterbox-v3", b"lang": b"ar"},
+            properties={b"version": b"3", b"tts": b"chatterbox-v3", b"lang": b"ar"},
             server="alshorti.local.",
         )
         _zeroconf.register_service(_service_info)
@@ -124,6 +128,33 @@ def _load_tts() -> ChatterboxMultilingualTTS:
     return _tts_model
 
 
+def _warm_models() -> None:
+    try:
+        _load_tts()
+        _tts_ready.set()
+        _warmup_errors.pop("tts", None)
+    except Exception as exc:
+        _warmup_errors["tts"] = str(exc)
+
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": [{"role": "user", "content": "رد بكلمة واحدة فقط: جاهز /no_think"}],
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": 0.0, "num_predict": 5},
+                },
+            )
+            response.raise_for_status()
+        _llm_ready.set()
+        _warmup_errors.pop("llm", None)
+    except Exception as exc:
+        _warmup_errors["llm"] = str(exc)
+
+
 def _voice_path(profile: str) -> Path | None:
     name = VOICE_FILES.get(profile)
     if not name:
@@ -146,6 +177,7 @@ def _mood(text: str) -> str:
 @app.on_event("startup")
 def startup() -> None:
     _register_mdns()
+    threading.Thread(target=_warm_models, name="alshorti-model-warmup", daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -157,6 +189,10 @@ def shutdown() -> None:
 def health() -> dict:
     return {
         "status": "ok",
+        "ready": _tts_ready.is_set() and _llm_ready.is_set(),
+        "tts_ready": _tts_ready.is_set(),
+        "llm_ready": _llm_ready.is_set(),
+        "warmup_errors": dict(_warmup_errors),
         "tts": "chatterbox-multilingual-v3",
         "language": "ar",
         "device": DEVICE,
@@ -165,8 +201,26 @@ def health() -> dict:
     }
 
 
+@app.get("/v1/ready")
+def ready() -> dict:
+    if not (_tts_ready.is_set() and _llm_ready.is_set()):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "models are still warming",
+                "tts_ready": _tts_ready.is_set(),
+                "llm_ready": _llm_ready.is_set(),
+                "errors": dict(_warmup_errors),
+            },
+        )
+    return {"status": "ready", "tts": "chatterbox-v3", "llm": OLLAMA_MODEL}
+
+
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
+    if not _llm_ready.is_set():
+        raise HTTPException(status_code=503, detail="Qwen is not ready yet")
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in request.history[-10:]:
         messages.append({"role": turn.role, "content": turn.content})
@@ -191,6 +245,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
             response.raise_for_status()
             data = response.json()
     except Exception as exc:
+        _llm_ready.clear()
+        _warmup_errors["llm"] = str(exc)
         raise HTTPException(status_code=503, detail=f"LLM backend unavailable: {exc}") from exc
 
     reply = str(data.get("message", {}).get("content", "")).strip()
@@ -204,6 +260,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/v1/tts")
 def tts(request: TtsRequest) -> Response:
+    if not _tts_ready.is_set():
+        raise HTTPException(status_code=503, detail="Chatterbox is not ready yet")
+
     text = " ".join(request.text.strip().split())
     model = _load_tts()
     voice_path = _voice_path(request.voice)
@@ -219,6 +278,8 @@ def tts(request: TtsRequest) -> Response:
                 kwargs["audio_prompt_path"] = str(voice_path)
             wav = model.generate(text, **kwargs)
     except Exception as exc:
+        _tts_ready.clear()
+        _warmup_errors["tts"] = str(exc)
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {exc}") from exc
 
     if hasattr(wav, "detach"):
