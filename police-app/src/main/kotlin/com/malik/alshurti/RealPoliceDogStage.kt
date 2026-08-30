@@ -10,65 +10,109 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import io.github.sceneview.SceneView
-import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 
 /**
- * Production visual stage for the cinematic stylized-realistic police dog.
+ * Cinematic office stage.
  *
- * Until the final rigged GLB is committed, the app intentionally shows only the
- * cinematic office background. It never exposes developer copy or substitutes a
- * cartoon mascot that could be mistaken for the final character.
+ * Assets are intentionally split so every performer and prop can react independently:
+ * office.glb       = room, desk, lights, phone, static props
+ * police_dog.glb   = hero dog, full-body + facial rig
+ * officer_a.glb    = background officer A
+ * officer_b.glb    = background officer B
+ * door.glb         = independent animated office door
+ *
+ * All five files must be authored/exported in the SAME world coordinate system and
+ * unit scale. We keep their authored pivots instead of auto-scaling each file, which
+ * preserves the exact composition created in Blender/Maya.
  */
 @Composable
 fun RealPoliceDogStage(
     mood: DogMood,
     phase: CallPhase,
     viseme: MouthViseme,
+    officeScene: OfficeSceneState,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val hasRealModel = remember {
-        runCatching {
-            context.assets.list(MODEL_DIRECTORY)
-                ?.any { it.equals(MODEL_FILE, ignoreCase = true) } == true
-        }.getOrDefault(false)
+    val assets = remember {
+        runCatching { context.assets.list(MODEL_DIRECTORY)?.toSet().orEmpty() }.getOrDefault(emptySet())
+    }
+    val hasFullScene = REQUIRED_MODELS.all { required ->
+        assets.any { it.equals(required, ignoreCase = true) }
     }
 
-    if (!hasRealModel) {
+    if (!hasFullScene) {
         CinematicEmptyStage(modifier)
         return
     }
 
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
-    val modelInstance = rememberModelInstance(
-        modelLoader = modelLoader,
-        fileLocation = MODEL_ASSET_PATH
-    )
+    val office = rememberModelInstance(modelLoader, "$MODEL_DIRECTORY/$OFFICE_FILE")
+    val dog = rememberModelInstance(modelLoader, "$MODEL_DIRECTORY/$DOG_FILE")
+    val officerA = rememberModelInstance(modelLoader, "$MODEL_DIRECTORY/$OFFICER_A_FILE")
+    val officerB = rememberModelInstance(modelLoader, "$MODEL_DIRECTORY/$OFFICER_B_FILE")
+    val door = rememberModelInstance(modelLoader, "$MODEL_DIRECTORY/$DOOR_FILE")
 
     SceneView(
         modifier = modifier,
         engine = engine,
         modelLoader = modelLoader,
         cameraManipulator = null,
-        autoCenterContent = true,
-        autoFitContent = true,
-        framingPadding = 0.08f
+        autoCenterContent = false,
+        autoFitContent = false
     ) {
-        modelInstance?.let { instance ->
+        office?.let { instance ->
             ModelNode(
                 modelInstance = instance,
                 autoAnimate = false,
-                animationName = animationFor(mood, phase, viseme),
+                animationName = "OfficeIdle",
                 animationLoop = true,
-                animationSpeed = animationSpeedFor(phase),
-                scaleToUnits = 1.72f,
-                centerOrigin = Position(x = 0f, y = -1f, z = 0f),
-                position = Position(x = 0f, y = -0.18f, z = 0f)
+                animationSpeed = 1f
+            )
+        }
+
+        dog?.let { instance ->
+            ModelNode(
+                modelInstance = instance,
+                autoAnimate = false,
+                animationName = dogAnimation(mood, phase, viseme, officeScene.dogLookTarget),
+                animationLoop = true,
+                animationSpeed = dogAnimationSpeed(phase)
+            )
+        }
+
+        officerA?.let { instance ->
+            ModelNode(
+                modelInstance = instance,
+                autoAnimate = false,
+                animationName = officerAnimation(officeScene.officerA),
+                animationLoop = officeScene.officerA !in setOf(OfficeActorMotion.ENTER, OfficeActorMotion.EXIT),
+                animationSpeed = officerAnimationSpeed(officeScene.officerA)
+            )
+        }
+
+        officerB?.let { instance ->
+            ModelNode(
+                modelInstance = instance,
+                autoAnimate = false,
+                animationName = officerAnimation(officeScene.officerB),
+                animationLoop = officeScene.officerB !in setOf(OfficeActorMotion.ENTER, OfficeActorMotion.EXIT),
+                animationSpeed = officerAnimationSpeed(officeScene.officerB)
+            )
+        }
+
+        door?.let { instance ->
+            ModelNode(
+                modelInstance = instance,
+                autoAnimate = false,
+                animationName = doorAnimation(officeScene.door),
+                animationLoop = officeScene.door == OfficeDoorState.CLOSED || officeScene.door == OfficeDoorState.OPEN,
+                animationSpeed = 1f
             )
         }
     }
@@ -91,7 +135,15 @@ private fun CinematicEmptyStage(modifier: Modifier) {
     )
 }
 
-private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): String = when {
+private fun dogAnimation(
+    mood: DogMood,
+    phase: CallPhase,
+    viseme: MouthViseme,
+    lookTarget: DogLookTarget
+): String = when {
+    lookTarget == DogLookTarget.DOOR -> "LookDoor"
+    lookTarget == DogLookTarget.OFFICER_A -> "LookOfficerA"
+    lookTarget == DogLookTarget.OFFICER_B -> "LookOfficerB"
     phase == CallPhase.SPEAKING -> when (viseme) {
         MouthViseme.OPEN -> "TalkOpen"
         MouthViseme.WIDE -> "TalkWide"
@@ -106,13 +158,42 @@ private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): 
     else -> "Idle"
 }
 
-private fun animationSpeedFor(phase: CallPhase): Float = when (phase) {
-    CallPhase.SPEAKING -> 1.05f
-    CallPhase.LISTENING -> 0.92f
-    CallPhase.THINKING -> 0.82f
-    else -> 0.75f
+private fun dogAnimationSpeed(phase: CallPhase): Float = when (phase) {
+    CallPhase.SPEAKING -> 1.04f
+    CallPhase.LISTENING -> 0.94f
+    CallPhase.THINKING -> 0.84f
+    else -> 0.78f
+}
+
+private fun officerAnimation(motion: OfficeActorMotion): String = when (motion) {
+    OfficeActorMotion.IDLE -> "Idle"
+    OfficeActorMotion.WALK_LEFT -> "WalkLeft"
+    OfficeActorMotion.WALK_RIGHT -> "WalkRight"
+    OfficeActorMotion.DESK_WORK -> "DeskWork"
+    OfficeActorMotion.TURN_TO_DOOR -> "TurnDoor"
+    OfficeActorMotion.ENTER -> "Enter"
+    OfficeActorMotion.TALK -> "Talk"
+    OfficeActorMotion.EXIT -> "Exit"
+}
+
+private fun officerAnimationSpeed(motion: OfficeActorMotion): Float = when (motion) {
+    OfficeActorMotion.WALK_LEFT, OfficeActorMotion.WALK_RIGHT, OfficeActorMotion.ENTER, OfficeActorMotion.EXIT -> 1.0f
+    OfficeActorMotion.TALK -> 0.94f
+    OfficeActorMotion.DESK_WORK -> 0.86f
+    else -> 0.8f
+}
+
+private fun doorAnimation(state: OfficeDoorState): String = when (state) {
+    OfficeDoorState.CLOSED -> "Closed"
+    OfficeDoorState.OPENING -> "Opening"
+    OfficeDoorState.OPEN -> "Open"
+    OfficeDoorState.CLOSING -> "Closing"
 }
 
 private const val MODEL_DIRECTORY = "models"
-private const val MODEL_FILE = "police_dog.glb"
-private const val MODEL_ASSET_PATH = "$MODEL_DIRECTORY/$MODEL_FILE"
+private const val OFFICE_FILE = "office.glb"
+private const val DOG_FILE = "police_dog.glb"
+private const val OFFICER_A_FILE = "officer_a.glb"
+private const val OFFICER_B_FILE = "officer_b.glb"
+private const val DOOR_FILE = "door.glb"
+private val REQUIRED_MODELS = setOf(OFFICE_FILE, DOG_FILE, OFFICER_A_FILE, OFFICER_B_FILE, DOOR_FILE)
