@@ -1,8 +1,8 @@
 package com.malik.alshurti
 
 import android.content.Context
-import com.malik.alshurti.neural.NeuralArabicVoice
 import com.malik.alshurti.stt.LocalArabicRecognizer
+import com.malik.alshurti.voice.NamaaSaudiVoice
 
 class PoliceVoiceEngine(
     context: Context,
@@ -58,15 +58,15 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val neuralVoice = NeuralArabicVoice(
+    private val onlineSaudiVoice = NamaaSaudiVoice(
         context = context.applicationContext,
-        callbacks = object : NeuralArabicVoice.Callbacks {
+        callbacks = object : NamaaSaudiVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
                 listener.onTtsPreparing(percent, message)
             }
 
             override fun onReady() {
-                listener.onTtsReady()
+                if (mode == VoiceMode.ONLINE) listener.onTtsReady()
             }
 
             override fun onSpeechStarted(durationMs: Long) {
@@ -100,9 +100,25 @@ class PoliceVoiceEngine(
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
-        val allowDownload = newMode == VoiceMode.ONLINE
-        localRecognizer.prepare(allowDownload = allowDownload)
-        neuralVoice.prepare(allowDownload = allowDownload)
+        onlineSaudiVoice.interrupt()
+        lastViseme = MouthViseme.REST
+        listener.onViseme(lastViseme)
+
+        // The microphone/STT path is local in both modes. Online is only permitted
+        // to download the Vosk Arabic pack if this is the first run.
+        localRecognizer.prepare(allowDownload = newMode == VoiceMode.ONLINE)
+
+        if (newMode == VoiceMode.ONLINE) {
+            onlineSaudiVoice.prepare()
+        } else {
+            // The rejected Supertonic voice is intentionally NOT used as an offline
+            // fallback. Offline TTS will be enabled only when the local Chatterbox
+            // runtime meets the same listening-quality bar as ONLINE.
+            listener.onTtsPreparing(0, "تجهيز الصوت السعودي المحلي…")
+            listener.onTtsError(
+                "الصوت السعودي الطبيعي بدون إنترنت ما زال قيد التجهيز. اختر الإنترنت حالياً؛ لن أرجع للصوت الروبوتي القديم."
+            )
+        }
     }
 
     fun startListening() {
@@ -114,7 +130,7 @@ class PoliceVoiceEngine(
     }
 
     fun interruptSpeech() {
-        neuralVoice.interrupt()
+        onlineSaudiVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
     }
@@ -126,13 +142,19 @@ class PoliceVoiceEngine(
             listener.onTtsFinished()
             return
         }
-        neuralVoice.speak(spokenText)
+
+        when (mode) {
+            VoiceMode.ONLINE -> onlineSaudiVoice.speak(spokenText)
+            VoiceMode.OFFLINE -> listener.onTtsError(
+                "الصوت السعودي المحلي غير جاهز بعد. لا يوجد fallback روبوتي."
+            )
+        }
     }
 
     fun release() {
         stopListening()
         localRecognizer.release()
-        neuralVoice.release()
+        onlineSaudiVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
     }
