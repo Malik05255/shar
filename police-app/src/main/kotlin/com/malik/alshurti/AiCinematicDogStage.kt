@@ -2,12 +2,8 @@ package com.malik.alshurti
 
 import android.net.Uri
 import android.widget.VideoView
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -15,11 +11,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * Highest-fidelity fallback path before the final rigged GLB is bundled.
+ * Plays state-specific AI motion clips while preserving one master dog identity and camera.
  *
- * If state-specific AI motion clips are present in res/raw, the app plays them as the visual
- * character layer. Missing/corrupt clips never break the call: the photoreal master frame is
- * used immediately instead.
+ * Full-body movement is never faked with zoom/translation. If a required clip is missing,
+ * the exact master frame is shown instead. This keeps quality honest: standing means a real
+ * stand-up clip, walking means a real walk clip, and sitting means a real sit-down clip.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -30,13 +26,20 @@ fun AiCinematicDogStage(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val clipName = remember(phase, officeScene.attention) {
-        when {
-            officeScene.attention == DogAttention.PHONE -> "dog_phone_react"
-            officeScene.attention == DogAttention.DOOR || officeScene.attention == DogAttention.STAFF -> "dog_door_react"
-            phase == CallPhase.SPEAKING -> "dog_speaking_loop"
-            phase == CallPhase.LISTENING -> "dog_listening_loop"
-            else -> "dog_idle_loop"
+    val clipName = remember(officeScene.dogAction, phase) {
+        when (officeScene.dogAction) {
+            DogAction.SEATED_IDLE -> if (phase == CallPhase.LISTENING) "dog_listening_loop" else "dog_idle_loop"
+            DogAction.TALK_SEATED -> "dog_talk_seated"
+            DogAction.STAND_UP -> "dog_stand_up"
+            DogAction.TALK_STANDING -> "dog_talk_standing"
+            DogAction.WALK_AROUND_DESK -> "dog_walk_around_desk"
+            DogAction.APPROACH_CAMERA -> "dog_approach_camera"
+            DogAction.WALK_TO_PHONE -> "dog_walk_to_phone"
+            DogAction.ANSWER_PHONE -> "dog_answer_phone"
+            DogAction.WALK_TO_DOOR -> "dog_walk_to_door"
+            DogAction.GREET_STAFF -> "dog_greet_staff"
+            DogAction.RETURN_TO_DESK -> "dog_return_to_desk"
+            DogAction.SIT_DOWN -> "dog_sit_down"
         }
     }
     val clipResId = remember(clipName) {
@@ -47,13 +50,12 @@ fun AiCinematicDogStage(
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
-            viseme = viseme,
             modifier = modifier
         )
         return
     }
 
-    key(clipResId) {
+    key(clipResId, officeScene.revision) {
         AndroidView(
             modifier = modifier.fillMaxSize(),
             factory = { ctx ->
@@ -61,20 +63,28 @@ fun AiCinematicDogStage(
                     setVideoURI(Uri.parse("android.resource://${ctx.packageName}/$clipResId"))
                     setOnPreparedListener { player ->
                         runCatching {
-                            player.isLooping = true
+                            val looping = officeScene.dogAction in setOf(
+                                DogAction.SEATED_IDLE,
+                                DogAction.TALK_SEATED,
+                                DogAction.TALK_STANDING
+                            )
+                            player.isLooping = looping
                             player.setVolume(0f, 0f)
                             start()
                         }
                     }
-                    setOnErrorListener { _, _, _ ->
-                        // Returning true prevents Android's default error dialog. The next
-                        // composition can safely fall back if the resource becomes unusable.
-                        true
-                    }
+                    setOnErrorListener { _, _, _ -> true }
                 }
             },
             update = { view ->
-                if (!view.isPlaying) runCatching { view.start() }
+                if (!view.isPlaying && officeScene.dogAction in setOf(
+                        DogAction.SEATED_IDLE,
+                        DogAction.TALK_SEATED,
+                        DogAction.TALK_STANDING
+                    )
+                ) {
+                    runCatching { view.start() }
+                }
             }
         )
     }
