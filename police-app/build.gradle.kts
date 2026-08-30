@@ -73,6 +73,10 @@ android {
             "/META-INF/AL2.0",
             "/META-INF/LGPL2.1"
         )
+        // llama-kotlin, whisper-android and RunAnywhere all bundle the same Android
+        // C++ shared runtime. Package exactly one copy per ABI to avoid mergeNativeLibs
+        // collisions while preserving all three native engines.
+        jniLibs.pickFirsts += setOf("lib/**/libc++_shared.so")
     }
 }
 
