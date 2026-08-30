@@ -1,6 +1,7 @@
 package com.malik.alshurti
 
 import android.content.Context
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
 import android.net.Uri
@@ -8,24 +9,31 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.annotation.RawRes
 import kotlin.math.absoluteValue
+import kotlin.math.max
 
 /**
  * Texture-backed, muted cinematic clip player.
  *
- * Unlike VideoView/SurfaceView this view can stay transparent until the first decoded video frame
- * is actually rendered. The master cinematic frame remains visible underneath, eliminating the
- * black flash that otherwise exposes transitions between AI motion clips.
+ * Quality rules:
+ * - The 16:9 AI master/video is always center-cropped with one uniform scale. It is never stretched
+ *   to the phone viewport, so a portrait device cannot make the dog wider/thinner than the still.
+ * - A completed generated clip holds its final rendered frame. It never hard-loops back to frame 0.
+ * - Rebinding to the next action keeps the current TextureView/frame visible while the next decoder
+ *   prepares; the master still is used only for the very first frame or an actual media failure.
  */
 class CinematicClipView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private data class ClipConfig(
         @RawRes val resId: Int,
-        val looping: Boolean,
+        val randomizeStart: Boolean,
         val seed: Long
     )
 
     private var config: ClipConfig? = null
     private var mediaPlayer: MediaPlayer? = null
     private var mediaSurface: Surface? = null
+    private var videoWidth = 0
+    private var videoHeight = 0
+    private var hasRenderedFrame = false
 
     init {
         surfaceTextureListener = this
@@ -33,8 +41,8 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         alpha = 0f
     }
 
-    fun bind(@RawRes resId: Int, looping: Boolean, seed: Long) {
-        val next = ClipConfig(resId, looping, seed)
+    fun bind(@RawRes resId: Int, randomizeStart: Boolean, seed: Long) {
+        val next = ClipConfig(resId, randomizeStart, seed)
         if (config == next && mediaPlayer != null) return
         config = next
         if (isAvailable) startConfiguredClip()
@@ -44,8 +52,10 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         val active = config ?: return
         val texture = surfaceTexture ?: return
 
+        // Keep the last successfully rendered frame visible while the next state prepares. This is
+        // what prevents the scene from visibly snapping back to the master/beginning between clips.
         releasePlayer()
-        alpha = 0f
+        if (!hasRenderedFrame) alpha = 0f
 
         runCatching {
             val surface = Surface(texture)
@@ -57,64 +67,102 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 context,
                 Uri.parse("android.resource://${context.packageName}/${active.resId}")
             )
-            player.isLooping = active.looping
+            player.isLooping = false
             player.setVolume(0f, 0f)
+
+            player.setOnVideoSizeChangedListener { _, width, height ->
+                videoWidth = width
+                videoHeight = height
+                applyCenterCropTransform()
+            }
 
             player.setOnPreparedListener { prepared ->
                 runCatching {
-                    if (active.looping && prepared.duration > 1_000) {
-                        val usableMs = (prepared.duration - 650).coerceAtLeast(1)
-                        val offset = (
-                            (active.seed xor (active.resId.toLong() shl 17)).absoluteValue %
-                                usableMs.toLong()
-                            )
-
-                        // Tiny visual tempo variance makes repeated idle/talk loops less mechanical.
-                        val speedBucket = ((active.seed ushr 7).absoluteValue % 7).toInt()
-                        val speed = 0.97f + speedBucket * 0.01f
-                        prepared.playbackParams = prepared.playbackParams.setSpeed(speed)
+                    val durationMs = prepared.duration.toLong().coerceAtLeast(0L)
+                    if (active.randomizeStart && durationMs > 2_200L) {
+                        // Vary only the early, low-amplitude portion. Starting near the end would
+                        // make a state feel like a truncated replay and expose the generated edit.
+                        val maxStartMs = minOf(
+                            (durationMs * 0.35f).toLong(),
+                            (durationMs - 1_800L).coerceAtLeast(0L)
+                        )
+                        val raw = (active.seed xor (active.resId.toLong() shl 17)).absoluteValue
+                        val offset = if (maxStartMs > 0L) raw % (maxStartMs + 1L) else 0L
                         prepared.setOnSeekCompleteListener { seeked ->
-                            runCatching { seeked.start() }.onFailure { alpha = 0f }
+                            runCatching { seeked.start() }
                         }
                         prepared.seekTo(offset, MediaPlayer.SEEK_CLOSEST_SYNC)
                     } else {
                         prepared.start()
                     }
                 }.onFailure {
-                    alpha = 0f
+                    if (!hasRenderedFrame) alpha = 0f
                 }
             }
 
             player.setOnInfoListener { _, what, _ ->
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                    hasRenderedFrame = true
                     animate().cancel()
-                    animate().alpha(1f).setDuration(170L).start()
+                    if (alpha < 1f) animate().alpha(1f).setDuration(140L).start()
                 }
                 false
             }
 
+            // Do not loop generated actions. The final frame remains on the TextureView until the
+            // state actually changes; this removes the obvious end -> beginning replay artifact.
+            player.setOnCompletionListener { completed ->
+                runCatching { completed.setOnSeekCompleteListener(null) }
+            }
+
             player.setOnErrorListener { _, _, _ ->
-                animate().cancel()
-                alpha = 0f
+                // If we already have a good rendered frame, preserve it rather than flashing the
+                // master image. On first-load failure, fall back to the master underneath.
+                if (!hasRenderedFrame) alpha = 0f
                 releasePlayer()
                 true
             }
 
             player.prepareAsync()
         }.onFailure {
-            alpha = 0f
+            if (!hasRenderedFrame) alpha = 0f
             releasePlayer()
         }
     }
 
+    /**
+     * TextureView normally stretches video independently on X/Y. Correct that distortion by
+     * applying the same center-crop geometry Compose's ContentScale.Crop uses for the master image.
+     */
+    private fun applyCenterCropTransform() {
+        if (width <= 0 || height <= 0 || videoWidth <= 0 || videoHeight <= 0) return
+
+        val sourceScaleX = width.toFloat() / videoWidth.toFloat()
+        val sourceScaleY = height.toFloat() / videoHeight.toFloat()
+        val uniformScale = max(sourceScaleX, sourceScaleY)
+        val correctionX = uniformScale / sourceScaleX
+        val correctionY = uniformScale / sourceScaleY
+
+        val matrix = Matrix().apply {
+            setScale(correctionX, correctionY, width / 2f, height / 2f)
+        }
+        setTransform(matrix)
+    }
+
     fun releasePlayback() {
         animate().cancel()
-        alpha = 0f
         releasePlayer()
+        hasRenderedFrame = false
+        alpha = 0f
     }
 
     private fun releasePlayer() {
         runCatching { mediaPlayer?.setOnSeekCompleteListener(null) }
+        runCatching { mediaPlayer?.setOnPreparedListener(null) }
+        runCatching { mediaPlayer?.setOnInfoListener(null) }
+        runCatching { mediaPlayer?.setOnCompletionListener(null) }
+        runCatching { mediaPlayer?.setOnErrorListener(null) }
+        runCatching { mediaPlayer?.setOnVideoSizeChangedListener(null) }
         runCatching { mediaPlayer?.setSurface(null) }
         runCatching { mediaPlayer?.stop() }
         runCatching { mediaPlayer?.reset() }
@@ -128,7 +176,9 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         startConfiguredClip()
     }
 
-    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
+    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+        applyCenterCropTransform()
+    }
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
         releasePlayback()
