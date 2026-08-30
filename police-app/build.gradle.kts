@@ -27,8 +27,6 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Permanent Android identity. Never change this after distribution: it is
-        // what lets Al-Shorti coexist with VibeApp and receive in-place updates.
         applicationId = "com.malik.alshurti"
         minSdk = 29
         targetSdk = 36
@@ -62,8 +60,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
@@ -75,6 +73,8 @@ android {
             "/META-INF/AL2.0",
             "/META-INF/LGPL2.1"
         )
+        // llama-kotlin and whisper-android both bundle the Android C++ runtime.
+        jniLibs.pickFirsts += setOf("lib/**/libc++_shared.so")
     }
 }
 
@@ -91,11 +91,11 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // Supertonic 3 runs the Arabic neural voice locally after the first model download.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
-
-    // Filament-based real GLB character renderer. The old Canvas dog is only a fallback.
     implementation("io.github.sceneview:sceneview:4.33.0")
+    implementation("org.codeshipping:llama-kotlin-android:0.1.7")
+
+    // Local multilingual whisper.cpp STT. Model is downloaded separately on first use.
+    implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
