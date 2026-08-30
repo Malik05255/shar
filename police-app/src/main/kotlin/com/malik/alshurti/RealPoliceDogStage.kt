@@ -2,24 +2,13 @@ package com.malik.alshurti
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
@@ -28,14 +17,11 @@ import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 
 /**
- * Production visual stage.
+ * Production visual stage for the cinematic stylized-realistic police dog.
  *
- * The final character is a cinematic stylized-realistic 3D animated police dog:
- * believable canine anatomy/materials with expressive feature-film facial animation.
- * It is NOT a photographed real dog and NOT the old flat/cartoon mascot.
- *
- * Required body clips: Idle, Listen, Think, Smile, Serious.
- * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
+ * Until the final rigged GLB is committed, the app intentionally shows only the
+ * cinematic office background. It never exposes developer copy or substitutes a
+ * cartoon mascot that could be mistaken for the final character.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -53,7 +39,7 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        VoicePreviewStage(modifier)
+        CinematicEmptyStage(modifier)
         return
     }
 
@@ -88,51 +74,21 @@ fun RealPoliceDogStage(
     }
 }
 
-/**
- * Deliberately neutral: this is not a fake/cartoon replacement for the final dog.
- * It keeps the voice/conversation build testable while the licensed rigged GLB is
- * authored separately.
- */
 @Composable
-private fun VoicePreviewStage(modifier: Modifier) {
+private fun CinematicEmptyStage(modifier: Modifier) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF07111C)),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(
-                modifier = Modifier.size(112.dp),
-                shape = CircleShape,
-                color = Color(0xFF102B3A),
-                contentColor = Color.White
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "صوت",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF0B1822),
+                        Color(0xFF08131D),
+                        Color(0xFF050C13)
                     )
-                }
-            }
-            Spacer(Modifier.height(18.dp))
-            Text(
-                text = "معاينة صوتية",
-                color = Color.White.copy(alpha = 0.88f),
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center
+                )
             )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "المجسم السينمائي النهائي يُركّب بشكل مستقل",
-                color = Color.White.copy(alpha = 0.46f),
-                fontSize = 12.sp,
-                textAlign = TextAlign.Center
-            )
-        }
-    }
+    )
 }
 
 private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): String = when {
