@@ -13,9 +13,10 @@ import kotlinx.coroutines.launch
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
     private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
 
-    private val initialMode = runCatching {
-        VoiceMode.valueOf(preferences.getString(KEY_MODE, VoiceMode.ONLINE.name) ?: VoiceMode.ONLINE.name)
-    }.getOrDefault(VoiceMode.ONLINE)
+    // Quality contract: production speech is the native Saudi online voice only.
+    // Ignore any OFFLINE value saved by an older build so an upgrade cannot silently
+    // return the user to the robotic/local voice path.
+    private val initialMode = VoiceMode.ONLINE
 
     private val brain: PoliceBrain = LocalPoliceBrain()
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
@@ -28,6 +29,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var sessionStarted = false
 
     init {
+        preferences.edit().putString(KEY_MODE, VoiceMode.ONLINE.name).apply()
         voiceEngine.setMode(initialMode)
     }
 
@@ -49,21 +51,31 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun chooseMode(mode: VoiceMode) {
-        preferences.edit().putString(KEY_MODE, mode.name).apply()
+        if (mode != VoiceMode.ONLINE) {
+            _uiState.update {
+                it.copy(
+                    mode = VoiceMode.ONLINE,
+                    phase = CallPhase.ERROR,
+                    mood = DogMood.SERIOUS,
+                    viseme = MouthViseme.REST,
+                    statusText = "الصوت السعودي الطبيعي يعمل عبر الإنترنت فقط.",
+                    errorMessage = "تم تعطيل الصوت المحلي لأنه لا يحقق الجودة المطلوبة."
+                )
+            }
+            return
+        }
+
+        preferences.edit().putString(KEY_MODE, VoiceMode.ONLINE.name).apply()
         ttsReady = false
         sessionStarted = false
-        voiceEngine.setMode(mode)
+        voiceEngine.setMode(VoiceMode.ONLINE)
         _uiState.update {
             it.copy(
-                mode = mode,
+                mode = VoiceMode.ONLINE,
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
-                statusText = if (mode == VoiceMode.ONLINE) {
-                    "جاري تجهيز الصوت العصبي العربي…"
-                } else {
-                    "جاري تشغيل الصوت المحلي…"
-                },
+                statusText = "جاري تجهيز الصوت السعودي الطبيعي…",
                 errorMessage = null
             )
         }
@@ -228,7 +240,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
-                statusText = "الصوت الطبيعي جاهز"
+                statusText = "الصوت السعودي الطبيعي جاهز"
             )
         }
         tryStartSession()
