@@ -25,8 +25,6 @@ class OfficeSoundscape(context: Context) {
     private val effectsExecutor = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "alshorti-office-foley").apply {
             priority = Thread.NORM_PRIORITY - 1
-            // A Foley failure is non-critical. Do not let an uncaught worker exception
-            // terminate the Android process.
             uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> Unit }
         }
     }
@@ -35,25 +33,42 @@ class OfficeSoundscape(context: Context) {
     private var roomTrack: AudioTrack? = null
 
     @Volatile
+    private var roomStartRequested = false
+
+    @Volatile
     private var released = false
 
+    /**
+     * Room-tone initialization is intentionally asynchronous. AudioTrack construction can
+     * block or behave differently across OEM audio stacks and must never delay/crash the
+     * first Compose frame.
+     */
     fun start() {
-        if (released || roomTrack != null) return
-        runCatching {
-            val samples = roomTone(ROOM_SECONDS)
-            val track = buildStaticTrack(samples)
-            val written = track.write(samples, 0, samples.size)
-            if (written <= 0) {
-                safeRelease(track)
-                return
+        if (released || roomTrack != null || roomStartRequested) return
+        roomStartRequested = true
+        try {
+            effectsExecutor.execute {
+                var candidate: AudioTrack? = null
+                runCatching {
+                    if (released) return@runCatching
+                    val samples = roomTone(ROOM_SECONDS)
+                    val track = buildStaticTrack(samples)
+                    candidate = track
+                    val written = track.write(samples, 0, samples.size)
+                    if (written <= 0 || released) return@runCatching
+                    track.setLoopPoints(0, samples.size, -1)
+                    track.setVolume(ROOM_IDLE_VOLUME)
+                    track.play()
+                    roomTrack = track
+                    candidate = null
+                }
+                candidate?.let(::safeRelease)
+                roomStartRequested = false
             }
-            track.setLoopPoints(0, samples.size, -1)
-            track.setVolume(ROOM_IDLE_VOLUME)
-            track.play()
-            roomTrack = track
-        }.onFailure {
-            roomTrack?.let(::safeRelease)
-            roomTrack = null
+        } catch (_: RejectedExecutionException) {
+            roomStartRequested = false
+        } catch (_: Throwable) {
+            roomStartRequested = false
         }
     }
 
@@ -86,6 +101,7 @@ class OfficeSoundscape(context: Context) {
 
     fun release() {
         released = true
+        roomStartRequested = false
         val track = roomTrack
         roomTrack = null
         if (track != null) safeRelease(track)
@@ -96,8 +112,6 @@ class OfficeSoundscape(context: Context) {
         if (released) return
         try {
             effectsExecutor.execute {
-                // This entire block runs off the main thread. Any AudioTrack exception
-                // must be swallowed here; uncaught worker exceptions can kill the app.
                 runCatching {
                     if (released) return@runCatching
                     val track = buildStaticTrack(samples)
