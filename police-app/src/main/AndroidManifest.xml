@@ -10,7 +10,6 @@
         android:required="true" />
 
     <application
-        android:name=".AlShortiApplication"
         android:allowBackup="false"
         android:icon="@drawable/ic_alshorti_app"
         android:roundIcon="@drawable/ic_alshorti_app"
