@@ -1,6 +1,7 @@
 name: Al-Shorti Android CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -34,6 +35,10 @@ jobs:
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
       - name: Build Al-Shorti
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
+          ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
