@@ -26,10 +26,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var microphonePermissionGranted = false
     private var ttsReady = false
     private var sessionStarted = false
+    private var conversationLoopEnabled = false
+    private var voicePreviewOnly = false
 
     init {
-        // Strict mode semantics: Offline never provisions missing models over the network.
-        brain.prepare(allowDownload = initialMode == VoiceMode.ONLINE)
+        // First launch must stay lightweight. Neither Qwen nor the 318 MB Arabic STT
+        // model is provisioned just because this screen opened.
         voiceEngine.setMode(initialMode)
     }
 
@@ -42,7 +44,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.SERIOUS,
                     viseme = MouthViseme.REST,
                     statusText = "اسمح للشرطي باستخدام الميكروفون حتى يسمعك.",
-                    errorMessage = "إذن الميكروفون مطلوب للمحادثة الصوتية."
+                    errorMessage = "إذن الميكروفون مطلوب للمحادثة الصوتية.",
+                    readyToStart = false
                 )
             }
             return
@@ -54,9 +57,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         preferences.edit().putString(KEY_MODE, mode.name).apply()
         ttsReady = false
         sessionStarted = false
-
-        brain.prepare(allowDownload = mode == VoiceMode.ONLINE)
-        voiceEngine.setMode(mode)
+        conversationLoopEnabled = false
+        voicePreviewOnly = false
 
         _uiState.update {
             it.copy(
@@ -65,30 +67,85 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
                 statusText = if (mode == VoiceMode.ONLINE) {
-                    "جاري تجهيز الاستماع والمحادثة والصوت السعودي…"
+                    "جاري تجهيز الصوت السعودي…"
                 } else {
                     "جاري تشغيل المحركات المحلية…"
                 },
+                errorMessage = null,
+                readyToStart = false
+            )
+        }
+
+        voiceEngine.setMode(mode)
+    }
+
+    /**
+     * Explicitly starts the heavy listening path. Until the user taps this, opening
+     * the screen and previewing the voice never downloads the Arabic STT model.
+     */
+    fun startConversation() {
+        if (!microphonePermissionGranted) return
+        conversationLoopEnabled = true
+        voicePreviewOnly = false
+        _uiState.update { it.copy(readyToStart = false, errorMessage = null) }
+        retryListening()
+    }
+
+    /** Play only the Saudi TTS so the user can judge voice quality immediately. */
+    fun testSaudiVoice() {
+        if (_uiState.value.mode != VoiceMode.ONLINE) {
+            chooseMode(VoiceMode.ONLINE)
+        }
+        conversationLoopEnabled = false
+        voicePreviewOnly = true
+        val preview = "هلا، أنا الشرطي. الصوت واضح عندك؟ أنا معك واسمعك زين."
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.SPEAKING,
+                mood = DogMood.SMILE,
+                replyText = preview,
+                statusText = "اختبار الصوت السعودي…",
+                errorMessage = null,
+                readyToStart = false
+            )
+        }
+        voiceEngine.speak(preview)
+    }
+
+    /**
+     * Qwen is hundreds of megabytes, so provisioning it is an explicit user action.
+     * The download runs in the background and never blocks initial voice preview.
+     */
+    fun downloadLocalConversationModel() {
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.STARTING,
+                statusText = "بدأ تنزيل نموذج المحادثة المحلي في الخلفية…",
                 errorMessage = null
             )
         }
+        brain.prepare(allowDownload = true)
     }
 
     fun retryListening() {
         if (!microphonePermissionGranted) return
+        conversationLoopEnabled = true
         _uiState.update {
             it.copy(
                 phase = CallPhase.LISTENING,
                 mood = DogMood.LISTENING,
                 viseme = MouthViseme.REST,
                 statusText = "تكلم… أنا أسمعك",
-                errorMessage = null
+                errorMessage = null,
+                readyToStart = false
             )
         }
         voiceEngine.startListening()
     }
 
     fun interruptAndListen() {
+        conversationLoopEnabled = true
+        voicePreviewOnly = false
         voiceEngine.interruptSpeech()
         retryListening()
     }
@@ -98,6 +155,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         sessionStarted = true
 
         if (!_uiState.value.firstGreetingDone) {
+            conversationLoopEnabled = false
+            voicePreviewOnly = false
             val greeting = "هلا، أنا معك. وش صار؟"
             _uiState.update {
                 it.copy(
@@ -105,12 +164,21 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.SMILE,
                     replyText = greeting,
                     statusText = "الشرطي يتكلم…",
-                    firstGreetingDone = true
+                    firstGreetingDone = true,
+                    readyToStart = false
                 )
             }
             voiceEngine.speak(greeting)
         } else {
-            retryListening()
+            _uiState.update {
+                it.copy(
+                    phase = CallPhase.STARTING,
+                    mood = DogMood.CALM,
+                    statusText = "الصوت جاهز — اضغط بدء المحادثة",
+                    readyToStart = true,
+                    errorMessage = null
+                )
+            }
         }
     }
 
@@ -127,7 +195,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.THINKING,
                 viseme = MouthViseme.REST,
                 statusText = "ثانية…",
-                errorMessage = null
+                errorMessage = null,
+                readyToStart = false
             )
         }
 
@@ -145,13 +214,15 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     voiceEngine.speak(reply.text)
                 }
                 .onFailure { error ->
+                    val message = error.message ?: "تعذر تجهيز الرد."
                     _uiState.update {
                         it.copy(
                             phase = CallPhase.ERROR,
                             mood = DogMood.SERIOUS,
                             viseme = MouthViseme.REST,
-                            statusText = "تعذر تجهيز المحادثة المحلية.",
-                            errorMessage = error.message
+                            statusText = message.take(110),
+                            errorMessage = message,
+                            readyToStart = true
                         )
                     }
                 }
@@ -165,7 +236,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
                 statusText = if (percent in 1..99) "$message $percent%" else message,
-                errorMessage = null
+                errorMessage = null,
+                readyToStart = false
             )
         }
     }
@@ -177,7 +249,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.LISTENING,
                 viseme = MouthViseme.REST,
                 statusText = "تكلم… أنا أسمعك",
-                errorMessage = null
+                errorMessage = null,
+                readyToStart = false
             )
         }
     }
@@ -200,7 +273,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onFinalText(text: String) = handleRecognizedText(text)
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
-        if (recoverable && microphonePermissionGranted) {
+        if (recoverable && microphonePermissionGranted && conversationLoopEnabled) {
             _uiState.update {
                 it.copy(
                     phase = CallPhase.LISTENING,
@@ -221,7 +294,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.SERIOUS,
                     viseme = MouthViseme.REST,
                     statusText = message,
-                    errorMessage = message
+                    errorMessage = message,
+                    readyToStart = microphonePermissionGranted
                 )
             }
         }
@@ -245,7 +319,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
-                statusText = "جاهز"
+                statusText = "الصوت السعودي جاهز"
             )
         }
         tryStartSession()
@@ -256,7 +330,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.SPEAKING,
                 mood = if (it.mood == DogMood.SMILE || it.mood == DogMood.SERIOUS) it.mood else DogMood.TALKING,
-                statusText = "الشرطي يتكلم…"
+                statusText = if (voicePreviewOnly) "اختبار الصوت السعودي…" else "الشرطي يتكلم…",
+                readyToStart = false
             )
         }
     }
@@ -267,7 +342,33 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onTtsFinished() {
         _uiState.update { it.copy(viseme = MouthViseme.REST) }
+
+        if (voicePreviewOnly) {
+            voicePreviewOnly = false
+            _uiState.update {
+                it.copy(
+                    phase = CallPhase.STARTING,
+                    mood = DogMood.CALM,
+                    statusText = "اختبار الصوت انتهى — الصوت جاهز",
+                    readyToStart = it.firstGreetingDone && microphonePermissionGranted
+                )
+            }
+            return
+        }
+
         if (!microphonePermissionGranted) return
+        if (!conversationLoopEnabled) {
+            _uiState.update {
+                it.copy(
+                    phase = CallPhase.STARTING,
+                    mood = DogMood.CALM,
+                    statusText = "الصوت جاهز — اضغط بدء المحادثة",
+                    readyToStart = true
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             delay(100)
             retryListening()
@@ -275,13 +376,15 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onTtsError(message: String) {
+        voicePreviewOnly = false
         _uiState.update {
             it.copy(
                 phase = CallPhase.ERROR,
                 mood = DogMood.SERIOUS,
                 viseme = MouthViseme.REST,
                 statusText = message,
-                errorMessage = message
+                errorMessage = message,
+                readyToStart = false
             )
         }
     }
