@@ -1,18 +1,29 @@
 package com.malik.alshurti
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+/**
+ * Update UX intentionally contains no written copy. The main product is an audio/cinematic
+ * experience; update state is expressed through familiar icons and a progress bar. Android's
+ * package installer remains responsible for its own system confirmation UI.
+ */
 @Composable
 fun AppUpdatePrompt(
     state: AppUpdateState,
@@ -27,23 +38,18 @@ fun AppUpdatePrompt(
         is AppUpdateState.Available -> {
             AlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text("يتوفر تحديث جديد") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "الإصدار ${state.versionName} جاهز. سيتم تنزيله والتحقق منه ثم يفتح Android شاشة تثبيت التحديث فوق النسخة الحالية.",
-                            fontWeight = FontWeight.Medium
-                        )
-                        if (state.releaseNotes.isNotBlank()) {
-                            Text(state.releaseNotes.take(600))
-                        }
+                icon = { Icon(Icons.Default.Download, contentDescription = null) },
+                title = null,
+                text = null,
+                confirmButton = {
+                    IconButton(onClick = onUpdateNow) {
+                        Icon(Icons.Default.Download, contentDescription = null)
                     }
                 },
-                confirmButton = {
-                    TextButton(onClick = onUpdateNow) { Text("تحديث الآن") }
-                },
                 dismissButton = {
-                    TextButton(onClick = onDismiss) { Text("لاحقًا") }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = null)
+                    }
                 }
             )
         }
@@ -51,15 +57,19 @@ fun AppUpdatePrompt(
         is AppUpdateState.Downloading -> {
             AlertDialog(
                 onDismissRequest = {},
-                title = { Text("جاري تحميل التحديث") },
+                icon = { Icon(Icons.Default.Download, contentDescription = null) },
+                title = null,
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("الإصدار ${state.versionName} — ${state.progressPercent}%")
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         LinearProgressIndicator(
                             progress = { state.progressPercent / 100f },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp)
                         )
-                        Text("لا تغلق التطبيق حتى يكتمل التحقق من ملف التحديث.")
                     }
                 },
                 confirmButton = {}
@@ -69,14 +79,13 @@ fun AppUpdatePrompt(
         is AppUpdateState.PermissionRequired -> {
             AlertDialog(
                 onDismissRequest = {},
-                title = { Text("السماح بتثبيت التحديث") },
-                text = {
-                    Text(
-                        "Android يحتاج سماحًا مرة واحدة لتطبيق الشرطي بتثبيت ملف التحديث. بعد السماح ارجع للتطبيق وسيكمل تلقائيًا."
-                    )
-                },
+                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                title = null,
+                text = null,
                 confirmButton = {
-                    TextButton(onClick = onRetry) { Text("فتح الإعدادات") }
+                    IconButton(onClick = onRetry) {
+                        Icon(Icons.Default.Settings, contentDescription = null)
+                    }
                 }
             )
         }
@@ -84,10 +93,9 @@ fun AppUpdatePrompt(
         is AppUpdateState.Installing -> {
             AlertDialog(
                 onDismissRequest = {},
-                title = { Text("التحديث جاهز للتثبيت") },
-                text = {
-                    Text("أكمل تأكيد Android لتثبيت الإصدار ${state.versionName} فوق النسخة الحالية.")
-                },
+                icon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                title = null,
+                text = null,
                 confirmButton = {}
             )
         }
@@ -95,15 +103,20 @@ fun AppUpdatePrompt(
         is AppUpdateState.Error -> {
             AlertDialog(
                 onDismissRequest = onDismiss,
-                title = { Text("تعذر تحديث التطبيق") },
-                text = { Text(state.message) },
+                icon = { Icon(Icons.Default.Warning, contentDescription = null) },
+                title = null,
+                text = null,
                 confirmButton = {
                     if (state.retryable) {
-                        TextButton(onClick = onRetry) { Text("إعادة المحاولة") }
+                        IconButton(onClick = onRetry) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                        }
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = onDismiss) { Text("إغلاق") }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = null)
+                    }
                 }
             )
         }
