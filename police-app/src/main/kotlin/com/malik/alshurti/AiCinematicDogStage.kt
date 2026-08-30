@@ -18,11 +18,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Plays real state-specific AI motion clips while preserving one master dog identity/camera.
+ * State-specific cinematic performance player.
  *
- * Full-body motion is never faked with bitmap zoom/translation. If a requested clip is missing,
- * the exact cinematic master frame is shown instead. One persistent TextureView is kept across
- * action changes so transitions cannot visibly reset through the master frame between clips.
+ * Large body actions never fake motion with bitmap transforms. Idle and talking states use
+ * specially prepared seamless living cycles so blinking/breathing/ears/mouth do not disappear
+ * after the first few seconds.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -37,8 +37,6 @@ fun AiCinematicDogStage(
     var stickyAction by remember { mutableStateOf<DogAction?>(null) }
     var stickyJob by remember { mutableStateOf<Job?>(null) }
 
-    // Office cues can be intentionally short. Keep their physical performance clip alive long
-    // enough to finish instead of cutting back to the seated frame after the sound cue ends.
     LaunchedEffect(officeScene.revision) {
         val eventAction = when {
             officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
@@ -78,29 +76,33 @@ fun AiCinematicDogStage(
         else -> DogAction.SEATED_IDLE
     }
 
-    val clipName = remember(requestedAction) {
+    val candidateClipNames = remember(requestedAction) {
         when (requestedAction) {
-            DogAction.SEATED_IDLE -> "dog_idle_loop"
-            DogAction.TALK_SEATED -> "dog_talk_seated"
-            DogAction.STAND_UP -> "dog_stand_up"
-            DogAction.TALK_STANDING -> "dog_talk_standing"
-            DogAction.WALK_AROUND_DESK -> "dog_walk_around_desk"
-            DogAction.APPROACH_CAMERA -> "dog_approach_camera"
-            DogAction.RETURN_FROM_CAMERA -> "dog_return_from_camera"
-            DogAction.WALK_TO_PHONE -> "dog_walk_to_phone"
-            DogAction.ANSWER_PHONE -> "dog_answer_phone"
-            DogAction.WALK_TO_DOOR -> "dog_walk_to_door"
-            DogAction.GREET_STAFF -> "dog_greet_staff"
-            DogAction.RETURN_TO_DESK -> "dog_return_to_desk"
-            DogAction.SIT_DOWN -> "dog_sit_down"
+            DogAction.SEATED_IDLE -> listOf("dog_idle_living", "dog_idle_loop")
+            DogAction.TALK_SEATED -> listOf("dog_talk_seated_living", "dog_talk_seated")
+            DogAction.STAND_UP -> listOf("dog_stand_up")
+            DogAction.TALK_STANDING -> listOf("dog_talk_standing_living", "dog_talk_standing")
+            DogAction.WALK_AROUND_DESK -> listOf("dog_walk_around_desk")
+            DogAction.APPROACH_CAMERA -> listOf("dog_approach_camera")
+            DogAction.RETURN_FROM_CAMERA -> listOf("dog_return_from_camera")
+            DogAction.WALK_TO_PHONE -> listOf("dog_walk_to_phone")
+            DogAction.ANSWER_PHONE -> listOf("dog_answer_phone")
+            DogAction.WALK_TO_DOOR -> listOf("dog_walk_to_door")
+            DogAction.GREET_STAFF -> listOf("dog_greet_staff", "dog_walk_to_door")
+            DogAction.RETURN_TO_DESK -> listOf("dog_return_to_desk")
+            DogAction.SIT_DOWN -> listOf("dog_sit_down")
         }
     }
 
-    val clipResId = remember(clipName) {
-        context.resources.getIdentifier(clipName, "raw", context.packageName)
+    val resolvedClip = remember(candidateClipNames) {
+        candidateClipNames.firstNotNullOfOrNull { name ->
+            context.resources.getIdentifier(name, "raw", context.packageName)
+                .takeIf { it != 0 }
+                ?.let { name to it }
+        }
     }
 
-    if (clipResId == 0) {
+    if (resolvedClip == null) {
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
@@ -109,23 +111,17 @@ fun AiCinematicDogStage(
         return
     }
 
-    // Only low-amplitude idle/talk states may begin from a different internal point. Physical
-    // actions such as stand/walk/sit always start at frame 0 so their body continuity is preserved.
-    val randomizeStart = requestedAction in setOf(
-        DogAction.SEATED_IDLE,
-        DogAction.TALK_SEATED,
-        DogAction.TALK_STANDING
-    )
+    val (clipName, clipResId) = resolvedClip
+    val continuous = clipName.endsWith("_living")
 
-    // Stable while the same action remains active. Unrelated officeScene.revision changes must not
-    // restart the same video. Entering another action and later returning creates a fresh seed.
+    // Living clips are already long seamless cycles; begin at their continuity frame. One-shot
+    // body actions also always start at frame zero so feet/chair/desk continuity is deterministic.
+    val randomizeStart = false
     val playbackSeed = remember(requestedAction, clipResId) {
         System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor clipResId.toLong()
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Kept underneath for first-load/failure only. Once the TextureView has rendered, the same
-        // surface remains alive across action changes and holds the previous final frame.
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
@@ -136,11 +132,21 @@ fun AiCinematicDogStage(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 CinematicClipView(ctx).apply {
-                    bind(clipResId, randomizeStart, playbackSeed)
+                    bind(
+                        resId = clipResId,
+                        randomizeStart = randomizeStart,
+                        seed = playbackSeed,
+                        continuous = continuous
+                    )
                 }
             },
             update = { view ->
-                view.bind(clipResId, randomizeStart, playbackSeed)
+                view.bind(
+                    resId = clipResId,
+                    randomizeStart = randomizeStart,
+                    seed = playbackSeed,
+                    continuous = continuous
+                )
             }
         )
     }
