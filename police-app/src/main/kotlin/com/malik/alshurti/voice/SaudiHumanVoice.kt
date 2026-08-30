@@ -12,6 +12,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -19,7 +20,10 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * There is deliberately no Android TTS or generic/local robotic fallback. The main
  * police persona and the background staff persona can use different ElevenLabs voice
- * ids while sharing the same proven Arabic model and playback path.
+ * ids while sharing the same Arabic model and playback path.
+ *
+ * Runtime media failures are treated as recoverable engine errors. They must never
+ * escape a MediaPlayer callback or worker thread and terminate the Android process.
  */
 class SaudiHumanVoice(
     context: Context,
@@ -44,6 +48,9 @@ class SaudiHumanVoice(
             if (role == VoiceRole.POLICE) "alshorti-saudi-voice" else "alshorti-staff-voice"
         ).apply {
             priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable ->
+                mainHandler.post { reportError(throwable.message) }
+            }
         }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -55,10 +62,14 @@ class SaudiHumanVoice(
     @Volatile
     private var activeAudioFile: File? = null
 
+    @Volatile
+    private var released = false
+
     fun prepare() {
+        if (released) return
         val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
         if (apiKey.isBlank()) {
-            callbacks.onError(
+            reportError(
                 if (role == VoiceRole.POLICE) {
                     "الصوت السعودي غير مهيأ. أضف ELEVENLABS_API_KEY إلى بيئة البناء. لن أستخدم صوتاً روبوتياً كبديل."
                 } else {
@@ -70,31 +81,34 @@ class SaudiHumanVoice(
 
         val voiceId = configuredVoiceId()
         if (voiceId.isBlank()) {
-            callbacks.onError(
+            reportError(
                 if (role == VoiceRole.POLICE) "لم يتم تحديد صوت سعودي للتطبيق."
                 else "لم يتم تحديد صوت موظف المكتب."
             )
             return
         }
 
-        callbacks.onPreparing(
-            100,
-            if (role == VoiceRole.POLICE) "جاري تجهيز الصوت السعودي الطبيعي…" else "جاري تجهيز صوت المكتب…"
-        )
-        callbacks.onReady()
+        safeCallback {
+            callbacks.onPreparing(
+                100,
+                if (role == VoiceRole.POLICE) "جاري تجهيز الصوت السعودي الطبيعي…" else "جاري تجهيز صوت المكتب…"
+            )
+            callbacks.onReady()
+        }
     }
 
     fun speak(text: String) {
+        if (released) return
         val normalized = normalizeSaudiText(text)
         if (normalized.isBlank()) {
-            callbacks.onSpeechFinished()
+            safeCallback(callbacks::onSpeechFinished)
             return
         }
 
         val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
         val voiceId = configuredVoiceId()
         if (apiKey.isBlank() || voiceId.isBlank()) {
-            callbacks.onError(
+            reportError(
                 if (role == VoiceRole.POLICE) "الصوت السعودي غير مهيأ في نسخة التطبيق الحالية."
                 else "صوت موظف المكتب غير مهيأ في نسخة التطبيق الحالية."
             )
@@ -103,45 +117,45 @@ class SaudiHumanVoice(
 
         val ticket = generation.incrementAndGet()
         stopPlayback()
-        callbacks.onPreparing(
-            0,
-            if (role == VoiceRole.POLICE) "جاري تجهيز رد الشرطي بصوت سعودي…" else "جاري تجهيز صوت الموظف…"
-        )
+        safeCallback {
+            callbacks.onPreparing(
+                0,
+                if (role == VoiceRole.POLICE) "جاري تجهيز رد الشرطي بصوت سعودي…" else "جاري تجهيز صوت الموظف…"
+            )
+        }
 
-        networkExecutor.execute {
-            try {
-                val audioFile = synthesizeToFile(
-                    ticket = ticket,
-                    apiKey = apiKey,
-                    voiceId = voiceId,
-                    text = normalized
-                ) ?: return@execute
+        try {
+            networkExecutor.execute {
+                runCatching {
+                    val audioFile = synthesizeToFile(
+                        ticket = ticket,
+                        apiKey = apiKey,
+                        voiceId = voiceId,
+                        text = normalized
+                    ) ?: return@runCatching
 
-                if (ticket != generation.get()) {
-                    audioFile.delete()
-                    return@execute
-                }
-
-                mainHandler.post {
-                    if (ticket == generation.get()) {
-                        startPlayback(ticket, audioFile)
-                    } else {
+                    if (ticket != generation.get() || released) {
                         audioFile.delete()
+                        return@runCatching
                     }
-                }
-            } catch (t: Throwable) {
-                if (ticket == generation.get()) {
+
                     mainHandler.post {
-                        callbacks.onError(
-                            t.message ?: if (role == VoiceRole.POLICE) {
-                                "تعذر تشغيل الصوت السعودي الطبيعي."
-                            } else {
-                                "تعذر تشغيل صوت موظف المكتب."
-                            }
-                        )
+                        if (ticket == generation.get() && !released) {
+                            startPlaybackSafely(ticket, audioFile)
+                        } else {
+                            audioFile.delete()
+                        }
+                    }
+                }.onFailure { throwable ->
+                    if (ticket == generation.get() && !released) {
+                        mainHandler.post { reportError(throwable.message) }
                     }
                 }
             }
+        } catch (_: RejectedExecutionException) {
+            if (!released) reportError(null)
+        } catch (t: Throwable) {
+            if (!released) reportError(t.message)
         }
     }
 
@@ -151,9 +165,10 @@ class SaudiHumanVoice(
     }
 
     fun release() {
+        released = true
         generation.incrementAndGet()
         mainHandler.post { stopPlayback() }
-        networkExecutor.shutdownNow()
+        runCatching { networkExecutor.shutdownNow() }
     }
 
     private fun configuredVoiceId(): String = when (role) {
@@ -191,15 +206,11 @@ class SaudiHumanVoice(
                 "voice_settings",
                 JSONObject().apply {
                     if (role == VoiceRole.POLICE) {
-                        // Calm, confident and conversational. Avoid over-stability so the
-                        // delivery does not flatten into a synthetic cadence.
                         put("stability", 0.42)
                         put("similarity_boost", 0.86)
                         put("style", 0.22)
                         put("speed", 1.0)
                     } else {
-                        // The staff voice is intentionally a little quieter/faster and less
-                        // styled so it reads as another person briefly entering the room.
                         put("stability", 0.54)
                         put("similarity_boost", 0.78)
                         put("style", 0.08)
@@ -232,7 +243,7 @@ class SaudiHumanVoice(
                 )
             }
 
-            if (ticket != generation.get()) return null
+            if (ticket != generation.get() || released) return null
 
             val prefix = if (role == VoiceRole.POLICE) "alshorti-saudi-" else "alshorti-staff-"
             val destination = File.createTempFile(prefix, ".mp3", appContext.cacheDir)
@@ -252,64 +263,103 @@ class SaudiHumanVoice(
         }
     }
 
+    private fun startPlaybackSafely(ticket: Long, audioFile: File) {
+        runCatching {
+            startPlayback(ticket, audioFile)
+        }.onFailure { throwable ->
+            cleanupAudioFile(audioFile)
+            if (ticket == generation.get() && !released) reportError(throwable.message)
+        }
+    }
+
     private fun startPlayback(ticket: Long, audioFile: File) {
         stopPlayback()
+        if (released) {
+            audioFile.delete()
+            return
+        }
         activeAudioFile = audioFile
 
-        val player = MediaPlayer().apply {
-            setAudioAttributes(
+        val player = MediaPlayer()
+        try {
+            player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ASSISTANT)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
-            setDataSource(audioFile.absolutePath)
-            setVolume(if (role == VoiceRole.POLICE) 1f else 0.78f, if (role == VoiceRole.POLICE) 1f else 0.78f)
-            setOnPreparedListener { prepared ->
-                if (ticket != generation.get()) {
+            player.setDataSource(audioFile.absolutePath)
+            val volume = if (role == VoiceRole.POLICE) 1f else 0.78f
+            player.setVolume(volume, volume)
+
+            player.setOnPreparedListener { prepared ->
+                runCatching {
+                    if (ticket != generation.get() || released) {
+                        releasePlayer(prepared)
+                        return@runCatching
+                    }
+                    val duration = prepared.duration.coerceAtLeast(1)
+                    safeCallback { callbacks.onSpeechStarted(duration.toLong()) }
+                    prepared.start()
+                    scheduleCursor(ticket, prepared, duration)
+                }.onFailure { throwable ->
+                    if (mediaPlayer === prepared) mediaPlayer = null
                     releasePlayer(prepared)
-                    return@setOnPreparedListener
+                    cleanupAudioFile(audioFile)
+                    if (ticket == generation.get() && !released) reportError(throwable.message)
                 }
-                val duration = prepared.duration.coerceAtLeast(1)
-                callbacks.onSpeechStarted(duration.toLong())
-                prepared.start()
-                scheduleCursor(ticket, prepared, duration)
             }
-            setOnCompletionListener { completed ->
-                if (ticket == generation.get()) {
-                    callbacks.onSpeechCursor(1f)
-                    callbacks.onSpeechFinished()
+
+            player.setOnCompletionListener { completed ->
+                runCatching {
+                    if (ticket == generation.get() && !released) {
+                        safeCallback {
+                            callbacks.onSpeechCursor(1f)
+                            callbacks.onSpeechFinished()
+                        }
+                    }
                 }
                 if (mediaPlayer === completed) mediaPlayer = null
                 releasePlayer(completed)
                 cleanupAudioFile(audioFile)
             }
-            setOnErrorListener { failed, _, _ ->
+
+            player.setOnErrorListener { failed, _, _ ->
                 if (mediaPlayer === failed) mediaPlayer = null
                 releasePlayer(failed)
                 cleanupAudioFile(audioFile)
-                if (ticket == generation.get()) {
-                    callbacks.onError(
+                if (ticket == generation.get() && !released) {
+                    reportError(
                         if (role == VoiceRole.POLICE) "تعذر تشغيل ملف الصوت السعودي."
                         else "تعذر تشغيل ملف صوت موظف المكتب."
                     )
                 }
                 true
             }
-            prepareAsync()
+
+            mediaPlayer = player
+            player.prepareAsync()
+        } catch (t: Throwable) {
+            if (mediaPlayer === player) mediaPlayer = null
+            releasePlayer(player)
+            cleanupAudioFile(audioFile)
+            throw t
         }
-        mediaPlayer = player
     }
 
     private fun scheduleCursor(ticket: Long, player: MediaPlayer, durationMs: Int) {
         val tick = object : Runnable {
             override fun run() {
-                if (ticket != generation.get() || mediaPlayer !== player) return
-                val position = runCatching { player.currentPosition }.getOrDefault(0)
-                val fraction = (position.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                callbacks.onSpeechCursor(fraction)
-                if (runCatching { player.isPlaying }.getOrDefault(false)) {
-                    mainHandler.postDelayed(this, 42L)
+                if (ticket != generation.get() || mediaPlayer !== player || released) return
+                runCatching {
+                    val position = player.currentPosition
+                    val fraction = (position.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                    safeCallback { callbacks.onSpeechCursor(fraction) }
+                    if (player.isPlaying) mainHandler.postDelayed(this, 42L)
+                }.onFailure { throwable ->
+                    if (mediaPlayer === player) mediaPlayer = null
+                    releasePlayer(player)
+                    if (ticket == generation.get() && !released) reportError(throwable.message)
                 }
             }
         }
@@ -333,6 +383,23 @@ class SaudiHumanVoice(
     private fun cleanupAudioFile(file: File) {
         runCatching { file.delete() }
         if (activeAudioFile == file) activeAudioFile = null
+    }
+
+    private fun reportError(message: String?) {
+        if (released) return
+        safeCallback {
+            callbacks.onError(
+                message ?: if (role == VoiceRole.POLICE) {
+                    "تعذر تشغيل الصوت السعودي الطبيعي."
+                } else {
+                    "تعذر تشغيل صوت موظف المكتب."
+                }
+            )
+        }
+    }
+
+    private inline fun safeCallback(block: () -> Unit) {
+        runCatching(block)
     }
 
     private fun normalizeSaudiText(value: String): String = value
