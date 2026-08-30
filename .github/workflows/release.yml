@@ -1,14 +1,21 @@
-name: Al-Shorti Signed Release
+name: Publish Al-Shorti Release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: alshorti-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  signed-release:
-    name: Build signed updateable APK
+  release:
+    name: Build and publish signed release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,39 +31,147 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Load version
+      - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
 
-      - name: Validate signing secrets
+      - name: Check signing and voice prerequisites
+        id: prerequisites
+        shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.ALSHORTI_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
         run: |
-          test -n "$KEYSTORE_BASE64" || (echo "Missing ALSHORTI_KEYSTORE_BASE64" && exit 1)
-          test -n "$KEYSTORE_PASSWORD" || (echo "Missing ALSHORTI_KEYSTORE_PASSWORD" && exit 1)
-          test -n "$KEY_ALIAS" || (echo "Missing ALSHORTI_KEY_ALIAS" && exit 1)
-          test -n "$KEY_PASSWORD" || (echo "Missing ALSHORTI_KEY_PASSWORD" && exit 1)
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" || -z "$ELEVENLABS_API_KEY" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Signed release skipped: configure permanent signing secrets and ELEVENLABS_API_KEY first."
+            exit 0
+          fi
 
-      - name: Restore release keystore
+          KEYSTORE_FILE="$RUNNER_TEMP/alshorti-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version is already published
+        if: steps.prerequisites.outputs.ready == 'true'
+        id: release_check
+        shell: bash
         env:
-          KEYSTORE_BASE64: ${{ secrets.ALSHORTI_KEYSTORE_BASE64 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/alshorti-release.jks"
-          chmod 600 "$RUNNER_TEMP/alshorti-release.jks"
+          set -euo pipefail
+          TAG="v${VERSION_NAME}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already published."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare cinematic dog motion assets
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
+        shell: bash
+        env:
+          MASTER_FRAME_URL: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+          DOG_IDLE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142010_21ee919f-e378-4db1-b7ed-66e367acc0e3.mp4
+          DOG_TALK_SEATED_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142018_248ecb5a-3804-457a-9a43-9b19de5f8121.mp4
+          DOG_STAND_UP_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_141957_53df74a5-4bcb-445d-95a5-69182cd4f0d5.mp4
+          DOG_TALK_STANDING_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142642_29bd6e49-40ad-484b-97f2-ebed9197a923.mp4
+          DOG_APPROACH_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142734_345318c2-5f9c-4f87-b067-8ca5bb5c5b54.mp4
+          DOG_PHONE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_140952_4319b02c-dc65-4750-b24f-f5459350058b.mp4
+          DOG_DOOR_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142029_d4e858db-fdfa-46ce-a248-34ccf47f19de.mp4
+        run: |
+          set -euo pipefail
+          RAW_DIR="police-app/src/main/res/raw"
+          DRAW_DIR="police-app/src/main/res/drawable-nodpi"
+          mkdir -p "$RAW_DIR" "$DRAW_DIR"
+
+          fetch_asset() {
+            local url="$1"
+            local out="$2"
+            echo "Downloading $(basename "$out")"
+            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 \
+              --max-time 180 "$url" --output "$out"
+            test -s "$out"
+          }
+
+          rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
+          fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
+          fetch_asset "$DOG_IDLE_URL" "$RAW_DIR/dog_idle_loop.mp4"
+          fetch_asset "$DOG_TALK_SEATED_URL" "$RAW_DIR/dog_talk_seated.mp4"
+          fetch_asset "$DOG_STAND_UP_URL" "$RAW_DIR/dog_stand_up.mp4"
+          fetch_asset "$DOG_TALK_STANDING_URL" "$RAW_DIR/dog_talk_standing.mp4"
+          fetch_asset "$DOG_APPROACH_URL" "$RAW_DIR/dog_approach_camera.mp4"
+          fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
+          fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
+
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" \
+            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" \
+            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" \
+            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
 
       - name: Build signed release APK
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         env:
-          ALSHORTI_KEYSTORE_FILE: ${{ runner.temp }}/alshorti-release.jks
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
+          ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
         run: ./gradlew --no-daemon :police-app:assembleRelease
 
-      - name: Upload signed APK
+      - name: Verify and prepare release files
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_APK="police-app/build/outputs/apk/release/police-app-release.apk"
+          test -s "$SOURCE_APK"
+
+          mkdir -p release-out
+          RELEASE_APK="release-out/AlShorti-${VERSION_NAME}.apk"
+          cp "$SOURCE_APK" "$RELEASE_APK"
+          sha256sum "$RELEASE_APK" > "${RELEASE_APK}.sha256"
+
+          echo "RELEASE_APK=$RELEASE_APK" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=${RELEASE_APK}.sha256" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION_NAME}"
+          gh release create "$TAG" "$RELEASE_APK" "$RELEASE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "الشرطي ${VERSION_NAME}" \
+            --generate-notes \
+            --latest
+
+      - name: Upload signed APK artifact
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: AlShorti-${{ env.VERSION_NAME }}-signed-release
-          path: police-app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
+          path: |
+            ${{ env.RELEASE_APK }}
+            ${{ env.RELEASE_SHA }}
