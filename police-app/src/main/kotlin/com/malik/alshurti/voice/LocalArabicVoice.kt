@@ -21,6 +21,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -134,11 +136,21 @@ class LocalArabicVoice(
                     RATTSOptions()
                 )
                 if (ticket != generation.get() || released) return@launch
-                val bytes = output.audio_data.toByteArray()
-                check(bytes.size > MIN_WAV_BYTES) { "المحرك المحلي لم يرجع ملف صوت صالح." }
+
+                // RunAnywhere/Sherpa returns raw Float32 PCM, not a WAV container.
+                // Convert it explicitly before MediaPlayer so local synthesis is audible.
+                val floatPcm = output.audio_data.toByteArray()
+                check(floatPcm.size >= MIN_FLOAT_PCM_BYTES) {
+                    "المحرك المحلي لم يرجع صوتاً صالحاً."
+                }
+                val sampleRate = output.sample_rate.takeIf { it > 0 } ?: DEFAULT_SAMPLE_RATE
+                val wavBytes = float32PcmToWav(floatPcm, sampleRate)
 
                 val wav = File.createTempFile("alshorti-local-voice-", ".wav", appContext.cacheDir)
-                wav.outputStream().use { it.write(bytes) }
+                wav.outputStream().use { outputStream ->
+                    outputStream.write(wavBytes)
+                    outputStream.flush()
+                }
                 main.post {
                     callbacks.onPreparing(95, "تم توليد الصوت — جاري تشغيله…")
                     play(ticket, wav)
@@ -167,12 +179,63 @@ class LocalArabicVoice(
         if (!modelRegistered.compareAndSet(false, true)) return
         RunAnywhere.registerModel(
             id = MODEL_ID,
-            name = "Arabic Jordan/Saudi Dii High",
+            name = "Arabic Saudi Miro V2 High",
             url = MODEL_URL,
             framework = RAInferenceFramework.INFERENCE_FRAMEWORK_ONNX,
             modality = ModelCategory.MODEL_CATEGORY_SPEECH_SYNTHESIS,
             memoryRequirement = MODEL_MEMORY_REQUIREMENT
         )
+    }
+
+    private fun float32PcmToWav(floatPcm: ByteArray, sampleRate: Int): ByteArray {
+        val sampleCount = floatPcm.size / 4
+        val pcm16 = ByteArray(sampleCount * 2)
+        var source = 0
+        var target = 0
+        repeat(sampleCount) {
+            val bits =
+                (floatPcm[source].toInt() and 0xff) or
+                    ((floatPcm[source + 1].toInt() and 0xff) shl 8) or
+                    ((floatPcm[source + 2].toInt() and 0xff) shl 16) or
+                    ((floatPcm[source + 3].toInt() and 0xff) shl 24)
+            val sample = Float.fromBits(bits).coerceIn(-1f, 1f)
+            val value = (sample * 32767f).toInt().coerceIn(-32768, 32767)
+            pcm16[target] = (value and 0xff).toByte()
+            pcm16[target + 1] = ((value ushr 8) and 0xff).toByte()
+            source += 4
+            target += 2
+        }
+
+        val buffer = ByteArrayOutputStream(44 + pcm16.size)
+        DataOutputStream(buffer).use { out ->
+            fun ascii(value: String) = out.writeBytes(value)
+            fun intLE(value: Int) {
+                out.writeByte(value and 0xff)
+                out.writeByte((value ushr 8) and 0xff)
+                out.writeByte((value ushr 16) and 0xff)
+                out.writeByte((value ushr 24) and 0xff)
+            }
+            fun shortLE(value: Int) {
+                out.writeByte(value and 0xff)
+                out.writeByte((value ushr 8) and 0xff)
+            }
+
+            ascii("RIFF")
+            intLE(36 + pcm16.size)
+            ascii("WAVE")
+            ascii("fmt ")
+            intLE(16)
+            shortLE(1)
+            shortLE(1)
+            intLE(sampleRate)
+            intLE(sampleRate * 2)
+            shortLE(2)
+            shortLE(16)
+            ascii("data")
+            intLE(pcm16.size)
+            out.write(pcm16)
+        }
+        return buffer.toByteArray()
     }
 
     private fun play(ticket: Long, file: File) {
@@ -256,11 +319,13 @@ class LocalArabicVoice(
         .trim()
 
     private companion object {
-        const val MODEL_ID = "vits-piper-ar_JO-SA_dii-high"
-        const val MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ar_JO-SA_dii-high.tar.bz2"
+        // Miro V2 is the newer ar-SA-oriented high-quality Sherpa/Piper voice.
+        const val MODEL_ID = "vits-piper-ar_JO-SA_miro_V2-high"
+        const val MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ar_JO-SA_miro_V2-high.tar.bz2"
         const val MODEL_MEMORY_REQUIREMENT = 180_000_000L
         const val MAX_TEXT_CHARS = 260
-        const val MIN_WAV_BYTES = 1_024
+        const val MIN_FLOAT_PCM_BYTES = 4_096
+        const val DEFAULT_SAMPLE_RATE = 22_050
         const val CURSOR_INTERVAL_MS = 55L
         val modelRegistered = AtomicBoolean(false)
     }
