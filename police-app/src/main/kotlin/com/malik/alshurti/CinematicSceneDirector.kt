@@ -72,17 +72,18 @@ class CinematicSceneDirector(seed: Long = System.nanoTime()) {
             )
         }
 
-        if (majorEventGap > 0) {
-            SceneContextRegistry.consumeExplicitCue()
-            majorEventGap -= 1
-            return remember(quietOrPaper(context))
-        }
-
+        // A literal event mentioned by the child outranks spontaneous pacing/cooldowns. Cooldowns
+        // exist to prevent random repetition, not to make the app ignore what is happening now.
         val explicit = SceneContextRegistry.consumeExplicitCue()
         val explicitBeat = explicit.toBeatOrNull()
-        if (explicitBeat != null && isAllowed(explicitBeat, context) && isAvailable(explicitBeat)) {
+        if (explicitBeat != null && isAllowed(explicitBeat, context)) {
             registerMajorIfNeeded(explicitBeat)
             return remember(explicitBeat)
+        }
+
+        if (majorEventGap > 0) {
+            majorEventGap -= 1
+            return remember(quietOrPaper(context))
         }
 
         val candidates = candidatesFor(context)
