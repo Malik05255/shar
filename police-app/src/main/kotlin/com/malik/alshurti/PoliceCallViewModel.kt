@@ -29,6 +29,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var sessionStarted = false
     private var completedPoliceTurns = 0
     private var staffScenarioActive = false
+    private var standingReplyActive = false
     private var officeEventJob: Job? = null
 
     private val staffVoice = SaudiHumanVoice(
@@ -99,6 +100,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     fun chooseMode(mode: VoiceMode) {
         if (mode != VoiceMode.ONLINE) {
+            standingReplyActive = false
             setPhase(CallPhase.ERROR)
             _uiState.update {
                 it.copy(
@@ -116,6 +118,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         preferences.edit().putString(KEY_MODE, VoiceMode.ONLINE.name).apply()
         ttsReady = false
         sessionStarted = false
+        standingReplyActive = false
         voiceEngine.setMode(VoiceMode.ONLINE)
         setPhase(CallPhase.STARTING)
         _uiState.update {
@@ -132,6 +135,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     fun retryListening() {
         if (!microphonePermissionGranted) return
+        standingReplyActive = false
         staffScenarioActive = false
         staffVoice.interrupt()
         officeEventJob = null
@@ -187,6 +191,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
+        standingReplyActive = false
         staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
@@ -206,8 +211,45 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         viewModelScope.launch {
-            runCatching { brain.reply(text) }
-                .onSuccess { reply ->
+            try {
+                val reply = brain.reply(text)
+                val shouldStandForReply = completedPoliceTurns % SCENARIO_CYCLE == 1
+
+                if (shouldStandForReply) {
+                    setPhase(CallPhase.THINKING)
+                    _uiState.update {
+                        it.copy(
+                            replyText = reply.text,
+                            mood = reply.mood,
+                            statusText = "…",
+                            officeScene = it.officeScene.copy(
+                                cue = OfficeCue.NONE,
+                                attention = DogAttention.CAMERA,
+                                dogAction = DogAction.STAND_UP,
+                                scenario = CinematicScenario.STAND_AND_TALK,
+                                revision = it.officeScene.revision + 1
+                            )
+                        )
+                    }
+                    delay(STAND_UP_MS)
+
+                    standingReplyActive = true
+                    setPhase(CallPhase.SPEAKING)
+                    _uiState.update {
+                        it.copy(
+                            replyText = reply.text,
+                            mood = reply.mood,
+                            statusText = "الشرطي يرد عليك…",
+                            officeScene = it.officeScene.copy(
+                                attention = DogAttention.CAMERA,
+                                dogAction = DogAction.TALK_STANDING,
+                                scenario = CinematicScenario.STAND_AND_TALK,
+                                revision = it.officeScene.revision + 1
+                            )
+                        )
+                    }
+                    voiceEngine.speak(reply.text)
+                } else {
                     setPhase(CallPhase.SPEAKING)
                     _uiState.update {
                         it.copy(
@@ -216,27 +258,30 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                             statusText = "الشرطي يرد عليك…",
                             officeScene = it.officeScene.copy(
                                 dogAction = DogAction.TALK_SEATED,
+                                scenario = CinematicScenario.NONE,
                                 revision = it.officeScene.revision + 1
                             )
                         )
                     }
                     voiceEngine.speak(reply.text)
                 }
-                .onFailure { error ->
-                    setPhase(CallPhase.ERROR)
-                    _uiState.update {
-                        it.copy(
-                            mood = DogMood.SERIOUS,
-                            viseme = MouthViseme.REST,
-                            statusText = "صار خطأ بسيط، حاول مرة ثانية.",
-                            errorMessage = error.message,
-                            officeScene = it.officeScene.copy(
-                                dogAction = DogAction.SEATED_IDLE,
-                                revision = it.officeScene.revision + 1
-                            )
+            } catch (error: Throwable) {
+                standingReplyActive = false
+                setPhase(CallPhase.ERROR)
+                _uiState.update {
+                    it.copy(
+                        mood = DogMood.SERIOUS,
+                        viseme = MouthViseme.REST,
+                        statusText = "صار خطأ بسيط، حاول مرة ثانية.",
+                        errorMessage = error.message,
+                        officeScene = it.officeScene.copy(
+                            dogAction = DogAction.SEATED_IDLE,
+                            scenario = CinematicScenario.NONE,
+                            revision = it.officeScene.revision + 1
                         )
-                    }
+                    )
                 }
+            }
         }
     }
 
@@ -250,6 +295,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 errorMessage = null,
                 officeScene = it.officeScene.copy(
                     dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
@@ -257,6 +303,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onSpeechStarted() {
+        standingReplyActive = false
         staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
@@ -268,6 +315,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 statusText = "أسمعك…",
                 officeScene = it.officeScene.copy(
                     dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
@@ -291,6 +339,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     errorMessage = null,
                     officeScene = it.officeScene.copy(
                         dogAction = DogAction.SEATED_IDLE,
+                        scenario = CinematicScenario.NONE,
                         revision = it.officeScene.revision + 1
                     )
                 )
@@ -309,6 +358,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     errorMessage = message,
                     officeScene = it.officeScene.copy(
                         dogAction = DogAction.SEATED_IDLE,
+                        scenario = CinematicScenario.NONE,
                         revision = it.officeScene.revision + 1
                     )
                 )
@@ -341,6 +391,23 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onTtsStarted() {
+        if (standingReplyActive) {
+            setPhase(CallPhase.SPEAKING)
+            _uiState.update {
+                it.copy(
+                    mood = if (it.mood == DogMood.SMILE || it.mood == DogMood.SERIOUS) it.mood else DogMood.TALKING,
+                    statusText = "الشرطي يتكلم واقفًا…",
+                    officeScene = it.officeScene.copy(
+                        attention = DogAttention.CAMERA,
+                        dogAction = DogAction.TALK_STANDING,
+                        scenario = CinematicScenario.STAND_AND_TALK,
+                        revision = it.officeScene.revision + 1
+                    )
+                )
+            }
+            return
+        }
+
         staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
@@ -351,6 +418,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 statusText = "الشرطي يتكلم…",
                 officeScene = it.officeScene.copy(
                     dogAction = DogAction.TALK_SEATED,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
@@ -364,11 +432,20 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onTtsFinished() {
         _uiState.update { it.copy(viseme = MouthViseme.REST) }
         if (!microphonePermissionGranted) return
+
+        if (standingReplyActive) {
+            standingReplyActive = false
+            completedPoliceTurns += 1
+            runSitAfterStandingReply()
+            return
+        }
+
         completedPoliceTurns += 1
         runOfficeBeatThenListen()
     }
 
     override fun onTtsError(message: String) {
+        standingReplyActive = false
         setPhase(CallPhase.ERROR)
         _uiState.update {
             it.copy(
@@ -378,24 +455,45 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 errorMessage = message,
                 officeScene = it.officeScene.copy(
                     dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
         }
     }
 
+    private fun runSitAfterStandingReply() {
+        cancelOfficeEvent(resetScene = false)
+        officeEventJob = viewModelScope.launch {
+            setPhase(CallPhase.THINKING)
+            _uiState.update {
+                it.copy(
+                    mood = DogMood.CALM,
+                    statusText = "…",
+                    officeScene = it.officeScene.copy(
+                        attention = DogAttention.CAMERA,
+                        dogAction = DogAction.SIT_DOWN,
+                        scenario = CinematicScenario.STAND_AND_TALK,
+                        revision = it.officeScene.revision + 1
+                    )
+                )
+            }
+            delay(SIT_DOWN_MS)
+            retryListening()
+        }
+    }
+
     /**
-     * Deterministic cinematic cadence. The first greeting ends quietly. After the first full
-     * answer the child sees an unmistakable stand/sit performance; later turns rotate through
-     * desk Foley, phone interaction and a door visitor without talking over the microphone.
+     * Deterministic cinematic cadence. Greeting is quiet. The first full reply stands and talks;
+     * later turns rotate through paper, phone, approach/return and a door visitor.
      */
     private fun runOfficeBeatThenListen() {
         cancelOfficeEvent(resetScene = false)
         officeEventJob = viewModelScope.launch {
-            when (completedPoliceTurns % 6) {
-                2 -> runStandAndSitBeat()
+            when (completedPoliceTurns % SCENARIO_CYCLE) {
                 3 -> runPaperBeat()
                 4 -> runPhoneBeat()
+                5 -> runApproachBeat()
                 0 -> runDoorStaffBeat()
                 else -> {
                     delay(140)
@@ -403,35 +501,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
-    }
-
-    private suspend fun runStandAndSitBeat() {
-        setPhase(CallPhase.THINKING)
-        _uiState.update {
-            it.copy(
-                mood = DogMood.CALM,
-                statusText = "…",
-                officeScene = it.officeScene.copy(
-                    cue = OfficeCue.NONE,
-                    attention = DogAttention.CAMERA,
-                    dogAction = DogAction.STAND_UP,
-                    scenario = CinematicScenario.STAND_AND_TALK,
-                    revision = it.officeScene.revision + 1
-                )
-            )
-        }
-        delay(STAND_UP_MS)
-
-        _uiState.update {
-            it.copy(
-                officeScene = it.officeScene.copy(
-                    dogAction = DogAction.SIT_DOWN,
-                    revision = it.officeScene.revision + 1
-                )
-            )
-        }
-        delay(SIT_DOWN_MS)
-        retryListening()
     }
 
     private suspend fun runPaperBeat() {
@@ -489,6 +558,36 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         retryListening()
     }
 
+    private suspend fun runApproachBeat() {
+        setPhase(CallPhase.THINKING)
+        _uiState.update {
+            it.copy(
+                mood = DogMood.LISTENING,
+                statusText = "…",
+                officeScene = it.officeScene.copy(
+                    cue = OfficeCue.NONE,
+                    attention = DogAttention.CAMERA,
+                    dogAction = DogAction.APPROACH_CAMERA,
+                    scenario = CinematicScenario.APPROACH_CHILD,
+                    revision = it.officeScene.revision + 1
+                )
+            )
+        }
+        delay(APPROACH_MS)
+
+        _uiState.update {
+            it.copy(
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.RETURN_FROM_CAMERA,
+                    scenario = CinematicScenario.APPROACH_CHILD,
+                    revision = it.officeScene.revision + 1
+                )
+            )
+        }
+        delay(RETURN_FROM_CAMERA_MS)
+        retryListening()
+    }
+
     private suspend fun runDoorStaffBeat() {
         staffScenarioActive = true
         setPhase(CallPhase.THINKING)
@@ -511,7 +610,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         officeSoundscape.playCue(OfficeCue.FOOTSTEPS)
         delay(DOOR_WALK_MS)
 
-        val line = staffLines[(completedPoliceTurns / 6) % staffLines.size]
+        val line = staffLines[(completedPoliceTurns / SCENARIO_CYCLE) % staffLines.size]
         _uiState.update {
             it.copy(
                 officeScene = it.officeScene.copy(
@@ -581,6 +680,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun cancelOfficeEvent(resetScene: Boolean = true) {
+        standingReplyActive = false
         staffScenarioActive = false
         officeEventJob?.cancel()
         officeEventJob = null
@@ -599,9 +699,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         const val PREFS_NAME = "alshurti_voice_settings"
         const val KEY_MODE = "voice_mode"
 
+        const val SCENARIO_CYCLE = 7
         const val STAND_UP_MS = 5_100L
         const val SIT_DOWN_MS = 5_100L
         const val PHONE_ACTION_MS = 6_100L
+        const val APPROACH_MS = 6_100L
+        const val RETURN_FROM_CAMERA_MS = 6_100L
         const val DOOR_WALK_MS = 6_100L
         const val RETURN_TO_DESK_MS = 6_100L
 

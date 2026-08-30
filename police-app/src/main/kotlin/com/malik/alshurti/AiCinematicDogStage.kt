@@ -81,12 +81,13 @@ fun AiCinematicDogStage(
 
     val clipName = remember(requestedAction, phase) {
         when (requestedAction) {
-            DogAction.SEATED_IDLE -> if (phase == CallPhase.LISTENING) "dog_idle_loop" else "dog_idle_loop"
+            DogAction.SEATED_IDLE -> "dog_idle_loop"
             DogAction.TALK_SEATED -> "dog_talk_seated"
             DogAction.STAND_UP -> "dog_stand_up"
             DogAction.TALK_STANDING -> "dog_talk_standing"
             DogAction.WALK_AROUND_DESK -> "dog_walk_around_desk"
             DogAction.APPROACH_CAMERA -> "dog_approach_camera"
+            DogAction.RETURN_FROM_CAMERA -> "dog_return_from_camera"
             DogAction.WALK_TO_PHONE -> "dog_walk_to_phone"
             DogAction.ANSWER_PHONE -> "dog_answer_phone"
             DogAction.WALK_TO_DOOR -> "dog_walk_to_door"

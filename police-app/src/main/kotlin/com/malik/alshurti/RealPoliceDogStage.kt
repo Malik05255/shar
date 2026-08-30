@@ -96,6 +96,7 @@ private fun animationFor(
     }
     DogAction.WALK_AROUND_DESK -> "WalkAroundDesk"
     DogAction.APPROACH_CAMERA -> "ApproachCamera"
+    DogAction.RETURN_FROM_CAMERA -> "ReturnFromCamera"
     DogAction.WALK_TO_PHONE -> "WalkToPhone"
     DogAction.ANSWER_PHONE -> "AnswerPhone"
     DogAction.WALK_TO_DOOR -> "WalkToDoor"
