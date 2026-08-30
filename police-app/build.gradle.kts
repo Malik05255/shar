@@ -24,7 +24,7 @@ val releaseSigningReady = listOf(
 
 android {
     namespace = "com.malik.alshurti"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.malik.alshurti"
