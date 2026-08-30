@@ -15,14 +15,6 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * On-device conversational brain.
- *
- * Normal turns are generated from the child's current sentence + recent context.
- * There is deliberately no table of canned behaviour replies. A deterministic
- * emergency guard remains before the model because child safety should not depend
- * solely on a small local LLM.
- */
 class QwenPoliceBrain(context: Context) : PoliceBrain {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -36,24 +28,19 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
     override fun prepare(allowDownload: Boolean) {
         allowNetworkDownloads = allowDownload
         if (loadedModel != null) return
-        scope.launch {
-            runCatching { modelOrLoad() }
-            // Warm-up errors are not made permanent: an explicit user-requested
-            // download can provision the model later without restarting the app.
-        }
+        scope.launch { runCatching { modelOrLoad() } }
     }
 
     override suspend fun reply(userText: String): PoliceReply {
         val cleanUser = userText.trim()
-        require(cleanUser.isNotBlank()) { "لا يوجد كلام واضح للرد عليه." }
+        require(cleanUser.isNotBlank()) { "ما سمعت كلاماً واضحاً." }
 
         emergencyReply(cleanUser)?.let { return it }
 
         return withContext(Dispatchers.IO) {
             val model = modelOrLoad()
-            val prompt = buildPrompt(cleanUser)
-            val generated = sanitize(model.generate(prompt))
-            check(generated.isNotBlank()) { "النموذج لم يولد رداً صالحاً. حاول مرة ثانية." }
+            val generated = sanitize(model.generate(buildPrompt(cleanUser)))
+            check(generated.isNotBlank()) { "تعذر تكوين رد واضح." }
 
             synchronized(historyLock) {
                 history.addLast(Turn(cleanUser, generated))
@@ -72,10 +59,6 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
         runCatching { model?.close() }
     }
 
-    /**
-     * LlamaModel.load is suspend. A coroutine Mutex prevents duplicate model loads
-     * without blocking the Android main thread or wrapping the load in runBlocking.
-     */
     private suspend fun modelOrLoad(): LlamaModel {
         loadedModel?.let { return it }
 
@@ -86,14 +69,14 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
             val modelFile = ensureModel(allowNetworkDownloads)
             val cpuCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
             val model = LlamaModel.load(modelFile.absolutePath) {
-                contextSize = 2048
-                batchSize = 256
+                contextSize = 1792
+                batchSize = 192
                 threads = (cpuCount - 1).coerceIn(2, 6)
-                temperature = 0.78f
-                topP = 0.92f
-                topK = 40
-                repeatPenalty = 1.12f
-                maxTokens = 120
+                temperature = 0.58f
+                topP = 0.88f
+                topK = 30
+                repeatPenalty = 1.08f
+                maxTokens = 72
                 useMmap = true
                 useMlock = false
                 gpuLayers = 0
@@ -136,12 +119,20 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
             .replace("<|im_end|>", "")
             .replace("<|endoftext|>", "")
             .replace("<|im_start|>", "")
+            .replace(Regex("(?i)^assistant\\s*[:：-]?\\s*"), "")
+            .replace(Regex("[*_#`]+"), "")
+            .replace(Regex("\\s+([،؟!.])"), "$1")
             .replace(Regex("\\s+"), " ")
             .trim()
 
-        if (cleaned.length <= MAX_REPLY_CHARS) return cleaned
+        val arabicFirst = cleaned
+            .replace(Regex("\\b[A-Za-z][A-Za-z0-9_-]*\\b"), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
 
-        val window = cleaned.take(MAX_REPLY_CHARS)
+        if (arabicFirst.length <= MAX_REPLY_CHARS) return arabicFirst
+
+        val window = arabicFirst.take(MAX_REPLY_CHARS)
         val boundary = window.indexOfLast { it == '.' || it == '؟' || it == '!' || it == '،' }
         return if (boundary >= MIN_NATURAL_BOUNDARY) {
             window.substring(0, boundary + 1).trim()
@@ -158,7 +149,7 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
         )
         if (danger.none(normalized::contains)) return null
         return PoliceReply(
-            "اسمعني الحين: روح فوراً لشخص كبير تثق فيه وخله يكون معك. وإذا الخطر موجود الآن، خله يتصل بالطوارئ الحقيقية.",
+            "روح الحين لشخص كبير تثق فيه وخله يكون معك. وإذا الخطر موجود الآن، خله يتصل بالطوارئ الحقيقية.",
             DogMood.SERIOUS
         )
     }
@@ -179,7 +170,7 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
         if (target.isFile && target.length() >= MIN_MODEL_BYTES) return target
 
         if (!allowDownload) {
-            error("نموذج المحادثة المحلي غير مثبت. من قائمة ⋮ اختر «تنزيل المحادثة المحلية» إذا أردت تثبيته؛ لن يتم تنزيل مئات الميغابايت تلقائياً.")
+            error("عقل المحادثة غير مثبت. اختر وضع الإنترنت مرة واحدة لتجهيزه.")
         }
 
         val partial = File(dir, "$MODEL_FILE_NAME.part")
@@ -195,7 +186,7 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
         try {
             connection.connect()
             if (connection.responseCode !in 200..299) {
-                error("تعذر تنزيل نموذج المحادثة (${connection.responseCode}).")
+                error("تعذر تنزيل عقل المحادثة (${connection.responseCode}).")
             }
             BufferedInputStream(connection.inputStream, 256 * 1024).use { input ->
                 FileOutputStream(partial).use { output ->
@@ -214,10 +205,10 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
 
         if (partial.length() < MIN_MODEL_BYTES) {
             partial.delete()
-            error("اكتمل تنزيل غير صالح لنموذج المحادثة.")
+            error("تنزيل عقل المحادثة لم يكتمل.")
         }
         if (target.exists()) target.delete()
-        check(partial.renameTo(target)) { "تعذر تثبيت نموذج المحادثة المحلي." }
+        check(partial.renameTo(target)) { "تعذر تثبيت عقل المحادثة." }
         return target
     }
 
@@ -232,9 +223,9 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
     private data class Turn(val user: String, val assistant: String)
 
     private companion object {
-        const val MAX_HISTORY_TURNS = 5
-        const val MAX_REPLY_CHARS = 240
-        const val MIN_NATURAL_BOUNDARY = 90
+        const val MAX_HISTORY_TURNS = 4
+        const val MAX_REPLY_CHARS = 175
+        const val MIN_NATURAL_BOUNDARY = 55
         const val MODEL_FILE_NAME = "Qwen3-0.6B-Q4_K_M.gguf"
         const val MIN_MODEL_BYTES = 430_000_000L
         const val MODEL_URL = "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true"
