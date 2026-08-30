@@ -39,6 +39,7 @@ fun AiCinematicDogStage(
 
     LaunchedEffect(officeScene.revision) {
         val eventAction = when {
+            officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
             officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
             officeScene.cue == OfficeCue.DOOR_OPEN -> DogAction.WALK_TO_DOOR
             officeScene.cue == OfficeCue.STAFF_SPEAK || officeScene.staffSpeaking -> DogAction.GREET_STAFF
@@ -49,6 +50,7 @@ fun AiCinematicDogStage(
             stickyJob?.cancel()
             stickyAction = eventAction
             val holdMs = when (eventAction) {
+                DogAction.REVIEW_FILE -> 5_100L
                 DogAction.ANSWER_PHONE -> 6_100L
                 DogAction.WALK_TO_DOOR -> 6_100L
                 DogAction.GREET_STAFF -> 4_800L
@@ -90,6 +92,7 @@ fun AiCinematicDogStage(
             DogAction.WALK_TO_DOOR -> listOf("dog_walk_to_door")
             DogAction.GREET_STAFF -> listOf("dog_greet_staff", "dog_walk_to_door")
             DogAction.RETURN_TO_DESK -> listOf("dog_return_to_desk")
+            DogAction.REVIEW_FILE -> listOf("dog_review_file")
             DogAction.SIT_DOWN -> listOf("dog_sit_down")
         }
     }
