@@ -10,14 +10,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -25,7 +21,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -105,7 +100,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 contentColor = Color.White
             ) {
                 IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "خيارات التشغيل")
+                    Icon(Icons.Default.MoreVert, contentDescription = "طريقة التشغيل")
                 }
             }
 
@@ -115,65 +110,14 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 modifier = Modifier.background(Color(0xFF10232E))
             ) {
                 DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "اختبار الصوت المحلي",
-                            "يختبر محرك النطق فقط؛ أول مرة قد ينزل الصوت في وضع الإنترنت",
-                            false
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.testSaudiVoice()
-                    }
-                )
-                DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "بدء المحادثة",
-                            "يشغّل الشرطي؛ أول إعداد يثبت المحركات المحلية الناقصة",
-                            false
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.startConversation()
-                    }
-                )
-                DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "تنزيل عقل المحادثة",
-                            "يثبّت Qwen على الجهاز مسبقاً لتقليل انتظار أول رد",
-                            false
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.downloadLocalConversationModel()
-                    }
-                )
-                DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "الإنترنت",
-                            "يسمح فقط بتنزيل النماذج الناقصة؛ التحدث والمعالجة محليان",
-                            state.mode == VoiceMode.ONLINE
-                        )
-                    },
+                    text = { ModeMenuText("الإنترنت", state.mode == VoiceMode.ONLINE) },
                     onClick = {
                         menuExpanded = false
                         viewModel.chooseMode(VoiceMode.ONLINE)
                     }
                 )
                 DropdownMenuItem(
-                    text = {
-                        ModeMenuText(
-                            "بدون إنترنت",
-                            "لا يستخدم الشبكة إطلاقاً؛ يشغّل النماذج المثبتة مسبقاً",
-                            state.mode == VoiceMode.OFFLINE
-                        )
-                    },
+                    text = { ModeMenuText("بدون إنترنت", state.mode == VoiceMode.OFFLINE) },
                     onClick = {
                         menuExpanded = false
                         viewModel.chooseMode(VoiceMode.OFFLINE)
@@ -183,87 +127,22 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
         }
 
         Column(
-            Modifier
+            modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth()
                 .padding(horizontal = 18.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            AnimatedVisibility(
-                visible = state.heardText.isNotBlank() && state.phase == CallPhase.THINKING,
-                enter = fadeIn(),
-                exit = fadeOut()
+            Surface(
+                color = Color(0xCC0B1820),
+                shape = RoundedCornerShape(24.dp)
             ) {
-                Surface(color = Color.Black.copy(alpha = 0.38f), shape = RoundedCornerShape(18.dp)) {
-                    Text(
-                        "سمعتك: ${state.heardText}",
-                        color = Color.White.copy(alpha = 0.88f),
-                        fontSize = 13.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-                    )
-                }
-            }
-
-            AnimatedVisibility(
-                visible = state.phase != CallPhase.SPEAKING && state.phase != CallPhase.LISTENING,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Button(onClick = viewModel::testSaudiVoice) {
-                        Text("اختبار الصوت المحلي")
-                    }
-                    Text(
-                        if (state.mode == VoiceMode.ONLINE) {
-                            "أول مرة فقط قد ينزل نموذج الصوت، وبعدها يعمل من الجهاز"
-                        } else {
-                            "يعمل فقط إذا كان نموذج الصوت مثبتاً مسبقاً"
-                        },
-                        color = Color.White.copy(alpha = 0.56f),
-                        fontSize = 11.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 5.dp)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            AnimatedVisibility(
-                visible = state.readyToStart,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Button(onClick = viewModel::startConversation) {
-                        Text("بدء المحادثة")
-                    }
-                    Text(
-                        if (state.mode == VoiceMode.ONLINE) {
-                            "الإعداد الأول فقط يحتاج تنزيل Whisper والصوت وQwen"
-                        } else {
-                            "بدون إنترنت لن يتم أي تنزيل"
-                        },
-                        color = Color.White.copy(alpha = 0.56f),
-                        fontSize = 11.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 5.dp)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            Surface(color = Color(0xCC0B1820), shape = RoundedCornerShape(24.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    modifier = Modifier.padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
                 ) {
                     PhaseDot(state.phase)
                     Text(
-                        state.statusText,
+                        text = state.statusText,
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
@@ -271,7 +150,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
                     if (state.phase == CallPhase.ERROR) {
-                        IconButton(onClick = viewModel::startConversation, modifier = Modifier.size(34.dp)) {
+                        IconButton(onClick = viewModel::startConversation, modifier = Modifier.size(36.dp)) {
                             Icon(Icons.Default.Refresh, contentDescription = "إعادة المحاولة", tint = Color.White)
                         }
                     }
@@ -284,10 +163,10 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 exit = fadeOut()
             ) {
                 Text(
-                    "المس الشاشة إذا أردت مقاطعة الشرطي",
-                    color = Color.White.copy(alpha = 0.55f),
+                    text = "المس الشاشة إذا أردت مقاطعة الشرطي",
+                    color = Color.White.copy(alpha = 0.52f),
                     fontSize = 11.sp,
-                    modifier = Modifier.padding(top = 6.dp)
+                    modifier = Modifier.padding(top = 7.dp)
                 )
             }
         }
@@ -295,27 +174,19 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
 }
 
 @Composable
-private fun ModeMenuText(title: String, subtitle: String, selected: Boolean) {
-    Column(Modifier.padding(vertical = 2.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(if (selected) Color(0xFF75D4A8) else Color(0xFF637783))
-            )
-            Text(
-                title,
-                color = Color.White,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                modifier = Modifier.padding(start = 8.dp)
-            )
-        }
+private fun ModeMenuText(title: String, selected: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(9.dp)
+                .clip(CircleShape)
+                .background(if (selected) Color(0xFF75D4A8) else Color(0xFF637783))
+        )
         Text(
-            subtitle,
-            color = Color.White.copy(alpha = 0.58f),
-            fontSize = 11.sp,
-            modifier = Modifier.padding(start = 17.dp, top = 2.dp)
+            title,
+            color = Color.White,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            modifier = Modifier.padding(start = 8.dp)
         )
     }
 }
