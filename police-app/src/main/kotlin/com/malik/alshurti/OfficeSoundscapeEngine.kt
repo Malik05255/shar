@@ -21,7 +21,7 @@ import kotlin.random.Random
 /**
  * Scene Foley engine.
  *
- * Priority is real recorded assets in assets/sfx/*.wav. When an optional asset is
+ * Priority is real recorded assets in the assets/sfx directory. When an optional asset is
  * missing the app synthesizes a short spatial cue instead of going silent. That
  * lets choreography remain deterministic while production-quality Foley can be
  * swapped in later without touching scene code.
@@ -64,7 +64,7 @@ class OfficeSoundscapeEngine(context: Context) {
             descriptor.createInputStream().use { input -> temp.outputStream().use(input::copyTo) }
             descriptor.close()
             val completed = kotlinx.coroutines.CompletableDeferred<Boolean>()
-            val player = MediaPlayer().apply {
+            MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
