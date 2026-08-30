@@ -28,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,17 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
     val officeScene by viewModel.officeSceneState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
+    val soundscape = remember { OfficeSoundscapeEngine(context.applicationContext) }
+
+    DisposableEffect(soundscape) {
+        onDispose { soundscape.release() }
+    }
+
+    LaunchedEffect(officeScene.soundCueNonce) {
+        if (officeScene.soundCue != OfficeSoundCue.NONE) {
+            soundscape.play(officeScene.soundCue)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
