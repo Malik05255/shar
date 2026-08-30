@@ -21,11 +21,14 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * The character shown to users must be a licensed photorealistic PBR GLB.
- * We intentionally DO NOT fall back to the old Canvas mascot: showing a cartoon
- * when the product promises a realistic police dog is a product bug, not a fallback.
+ * The character shown to users must be a licensed cinematic stylized-realistic 3D
+ * police dog: feature-film animation quality, believable fur/anatomy/materials and
+ * expressive facial rig. It is NOT a photographed real dog and NOT a flat mascot.
  *
- * Required body clips: Idle, Listen, Think, Smile, Serious.
+ * We intentionally do not fall back to the old Canvas dog. Showing a cheap cartoon
+ * when the product promises a high-end animated character is a product bug.
+ *
+ * Required body clips: Idle, Listen, Think, Smile, Laugh, Serious.
  * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
  */
 @Composable
@@ -88,7 +91,7 @@ private fun MissingProductionCharacter(modifier: Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = "الأصل الواقعي للشرطي غير مثبت في هذه النسخة",
+            text = "شخصية الشرطي السينمائية غير مثبتة في هذه النسخة",
             color = Color.White.copy(alpha = 0.72f),
             textAlign = TextAlign.Center
         )
