@@ -171,29 +171,35 @@ class NamaaSaudiVoice(
         return findAudioRecursive(root)
     }
 
-    private fun findAudioRecursive(value: Any?): AudioLocation? = when (value) {
-        is JSONObject -> {
-            value.optString("url").takeIf { it.isNotBlank() }?.let {
-                return AudioLocation(url = it, path = null)
+    private fun findAudioRecursive(value: Any?): AudioLocation? {
+        return when (value) {
+            is JSONObject -> {
+                val directUrl = value.optString("url").takeIf { it.isNotBlank() }
+                if (directUrl != null) {
+                    AudioLocation(url = directUrl, path = null)
+                } else {
+                    val directPath = value.optString("path").takeIf { it.isNotBlank() }
+                    if (directPath != null) {
+                        AudioLocation(url = null, path = directPath)
+                    } else {
+                        value.keys().asSequence()
+                            .mapNotNull { key -> findAudioRecursive(value.opt(key)) }
+                            .firstOrNull()
+                    }
+                }
             }
-            value.optString("path").takeIf { it.isNotBlank() }?.let {
-                return AudioLocation(url = null, path = it)
-            }
-            value.keys().asSequence()
-                .mapNotNull { key -> findAudioRecursive(value.opt(key)) }
+            is JSONArray -> (0 until value.length()).asSequence()
+                .mapNotNull { index -> findAudioRecursive(value.opt(index)) }
                 .firstOrNull()
-        }
-        is JSONArray -> (0 until value.length()).asSequence()
-            .mapNotNull { index -> findAudioRecursive(value.opt(index)) }
-            .firstOrNull()
-        is String -> when {
-            value.startsWith("http://") || value.startsWith("https://") -> AudioLocation(value, null)
-            value.contains("/gradio_api/file=") -> AudioLocation(value, null)
-            value.endsWith(".wav") || value.endsWith(".flac") || value.endsWith(".mp3") ->
-                AudioLocation(null, value)
+            is String -> when {
+                value.startsWith("http://") || value.startsWith("https://") -> AudioLocation(value, null)
+                value.contains("/gradio_api/file=") -> AudioLocation(value, null)
+                value.endsWith(".wav") || value.endsWith(".flac") || value.endsWith(".mp3") ->
+                    AudioLocation(null, value)
+                else -> null
+            }
             else -> null
         }
-        else -> null
     }
 
     private fun downloadAudio(location: AudioLocation, ticket: Long): File {
