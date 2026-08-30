@@ -12,6 +12,7 @@ import com.runanywhere.sdk.public.extensions.loadModel
 import com.runanywhere.sdk.public.extensions.registerModel
 import com.runanywhere.sdk.public.extensions.synthesize
 import com.runanywhere.sdk.public.types.RAInferenceFramework
+import com.runanywhere.sdk.public.types.RAModelInfo
 import com.runanywhere.sdk.public.types.RAModelLoadRequest
 import com.runanywhere.sdk.public.types.RATTSOptions
 import kotlinx.coroutines.CoroutineScope
@@ -19,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
@@ -30,9 +30,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Fully local Arabic neural TTS using the Sherpa-ONNX runtime.
  *
- * The selected voice is a high-quality Arabic Piper/VITS model. The model is downloaded
- * once when network provisioning is allowed; subsequent synthesis runs on the phone and
- * does not consume API minutes or depend on a cloud service.
+ * The model is downloaded once when ONLINE provisioning is explicitly allowed.
+ * Synthesis after that runs on the phone without metered API minutes.
  */
 class LocalArabicVoice(
     context: Context,
@@ -56,6 +55,7 @@ class LocalArabicVoice(
     @Volatile private var ready = false
     @Volatile private var released = false
     @Volatile private var player: MediaPlayer? = null
+    @Volatile private var registeredModel: RAModelInfo? = null
     private var cursorJob: Job? = null
 
     fun prepare(allowDownload: Boolean) {
@@ -68,10 +68,11 @@ class LocalArabicVoice(
 
         scope.launch {
             try {
-                registerVoiceModel()
+                val modelInfo = registerVoiceModel()
+
                 if (allowDownload) {
                     postPreparing(8, "جاري تجهيز الصوت العربي المحلي لأول مرة…")
-                    RunAnywhere.downloadModel(MODEL_ID).collect {
+                    RunAnywhere.downloadModel(modelInfo) {
                         postPreparing(35, "جاري تنزيل الصوت العربي المحلي…")
                     }
                 } else {
@@ -137,8 +138,7 @@ class LocalArabicVoice(
                 )
                 if (ticket != generation.get() || released) return@launch
 
-                // RunAnywhere/Sherpa returns raw Float32 PCM, not a WAV container.
-                // Convert it explicitly before MediaPlayer so local synthesis is audible.
+                // Sherpa output is raw Float32 PCM. MediaPlayer needs a WAV container.
                 val floatPcm = output.audio_data.toByteArray()
                 check(floatPcm.size >= MIN_FLOAT_PCM_BYTES) {
                     "المحرك المحلي لم يرجع صوتاً صالحاً."
@@ -175,9 +175,9 @@ class LocalArabicVoice(
         scope.cancel()
     }
 
-    private fun registerVoiceModel() {
-        if (!modelRegistered.compareAndSet(false, true)) return
-        RunAnywhere.registerModel(
+    private suspend fun registerVoiceModel(): RAModelInfo {
+        registeredModel?.let { return it }
+        val model = RunAnywhere.registerModel(
             id = MODEL_ID,
             name = "Arabic Saudi Miro V2 High",
             url = MODEL_URL,
@@ -185,6 +185,8 @@ class LocalArabicVoice(
             modality = ModelCategory.MODEL_CATEGORY_SPEECH_SYNTHESIS,
             memoryRequirement = MODEL_MEMORY_REQUIREMENT
         )
+        registeredModel = model
+        return model
     }
 
     private fun float32PcmToWav(floatPcm: ByteArray, sampleRate: Int): ByteArray {
@@ -319,7 +321,6 @@ class LocalArabicVoice(
         .trim()
 
     private companion object {
-        // Miro V2 is the newer ar-SA-oriented high-quality Sherpa/Piper voice.
         const val MODEL_ID = "vits-piper-ar_JO-SA_miro_V2-high"
         const val MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ar_JO-SA_miro_V2-high.tar.bz2"
         const val MODEL_MEMORY_REQUIREMENT = 180_000_000L
@@ -327,6 +328,5 @@ class LocalArabicVoice(
         const val MIN_FLOAT_PCM_BYTES = 4_096
         const val DEFAULT_SAMPLE_RATE = 22_050
         const val CURSOR_INTERVAL_MS = 55L
-        val modelRegistered = AtomicBoolean(false)
     }
 }
