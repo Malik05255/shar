@@ -52,8 +52,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             }
 
             override fun onScenarioVoiceError(message: String) {
-                // A background actor must never break the child's call. End the visual cue
-                // quietly and return control to the main conversation.
+                // A background actor must never break the child's call.
                 finishDoorScenario()
             }
         }
@@ -68,6 +67,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var lastScenarioTurn = -1
     private var scenarioCursor = 0
     private var backgroundBeat = 0
+    private var soundCueNonce = 0L
 
     init {
         voiceEngine.setMode(initialMode)
@@ -172,7 +172,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     fun retryListening() {
         if (!microphonePermissionGranted || scenarioInProgress) return
         conversationLoopEnabled = true
-        _officeSceneState.update { it.copy(dogLookTarget = DogLookTarget.CHILD, sideSpeaker = SideSpeaker.NONE) }
+        _officeSceneState.update {
+            it.copy(
+                dogLookTarget = DogLookTarget.CHILD,
+                sideSpeaker = SideSpeaker.NONE
+            )
+        }
         _uiState.update {
             it.copy(
                 phase = CallPhase.LISTENING,
@@ -260,6 +265,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 if (scenarioInProgress || _uiState.value.phase == CallPhase.ERROR) continue
 
                 backgroundBeat += 1
+                val phase = _uiState.value.phase
                 _officeSceneState.update { current ->
                     when (backgroundBeat % 4) {
                         0 -> current.copy(officerA = OfficeActorMotion.DESK_WORK, officerB = OfficeActorMotion.WALK_LEFT)
@@ -267,6 +273,20 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                         2 -> current.copy(officerA = OfficeActorMotion.DESK_WORK, officerB = OfficeActorMotion.WALK_RIGHT)
                         else -> current.copy(officerA = OfficeActorMotion.IDLE, officerB = OfficeActorMotion.DESK_WORK)
                     }
+                }
+
+                // Never play background Foley while the child's microphone is actively listening.
+                if (phase == CallPhase.LISTENING) continue
+
+                when (backgroundBeat % 8) {
+                    0 -> emitCue(OfficeSoundCue.KEYBOARD)
+                    1 -> emitCue(OfficeSoundCue.PAPER)
+                    2 -> emitCue(OfficeSoundCue.FOOTSTEPS_RIGHT_TO_LEFT)
+                    3 -> if (phase == CallPhase.THINKING || phase == CallPhase.SPEAKING) emitCue(OfficeSoundCue.PHONE_RING)
+                    4 -> emitCue(OfficeSoundCue.CHAIR)
+                    5 -> emitCue(OfficeSoundCue.KEYBOARD)
+                    6 -> emitCue(OfficeSoundCue.FOOTSTEPS_LEFT_TO_RIGHT)
+                    else -> if (phase != CallPhase.STARTING) emitCue(OfficeSoundCue.RADIO_BEEP)
                 }
             }
         }
@@ -292,6 +312,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         voiceEngine.stopListening()
 
         viewModelScope.launch {
+            // Knock first, then the handle and hinge. Every cue is spatialized from the door side.
+            emitCue(OfficeSoundCue.KNOCK)
+            delay(520)
+            emitCue(OfficeSoundCue.DOOR_HANDLE)
+            delay(180)
+
             _officeSceneState.update {
                 it.copy(
                     door = OfficeDoorState.OPENING,
@@ -300,7 +326,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     scenarioLabel = "door-opening"
                 )
             }
-            delay(500)
+            emitCue(OfficeSoundCue.DOOR_OPEN)
+            delay(720)
 
             _officeSceneState.update { current ->
                 current.copy(
@@ -312,7 +339,14 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     scenarioLabel = "officer-entering"
                 )
             }
-            delay(650)
+            emitCue(
+                if (scenario.speaker == SideSpeaker.OFFICER_A) {
+                    OfficeSoundCue.FOOTSTEPS_LEFT_TO_RIGHT
+                } else {
+                    OfficeSoundCue.FOOTSTEPS_RIGHT_TO_LEFT
+                }
+            )
+            delay(760)
 
             _officeSceneState.update { current ->
                 current.copy(
@@ -338,7 +372,14 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     scenarioLabel = "officer-exiting"
                 )
             }
-            delay(650)
+            emitCue(
+                if (speaker == SideSpeaker.OFFICER_A) {
+                    OfficeSoundCue.FOOTSTEPS_RIGHT_TO_LEFT
+                } else {
+                    OfficeSoundCue.FOOTSTEPS_LEFT_TO_RIGHT
+                }
+            )
+            delay(720)
 
             _officeSceneState.update { current ->
                 current.copy(
@@ -347,13 +388,24 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     scenarioLabel = "door-closing"
                 )
             }
-            delay(450)
+            emitCue(OfficeSoundCue.DOOR_CLOSE)
+            delay(620)
 
             scenarioInProgress = false
             resetOfficeScene()
             conversationLoopEnabled = true
-            delay(120)
+            delay(140)
             retryListening()
+        }
+    }
+
+    private fun emitCue(cue: OfficeSoundCue) {
+        soundCueNonce += 1L
+        _officeSceneState.update {
+            it.copy(
+                soundCue = cue,
+                soundCueNonce = soundCueNonce
+            )
         }
     }
 
@@ -361,7 +413,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _officeSceneState.value = OfficeSceneState(
             officerA = OfficeActorMotion.DESK_WORK,
             officerB = OfficeActorMotion.IDLE,
-            dogLookTarget = DogLookTarget.CHILD
+            dogLookTarget = DogLookTarget.CHILD,
+            soundCueNonce = soundCueNonce
         )
     }
 
