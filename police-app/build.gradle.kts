@@ -89,16 +89,13 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // Current neural audio runtime. This remains isolated behind the voice engine so
-    // it can be replaced without touching conversation/UI code.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
-
-    // Real GLB character renderer powered by Google Filament.
     implementation("io.github.sceneview:sceneview:4.33.0")
-
-    // Real on-device conversation model via llama.cpp. The GGUF itself is downloaded
-    // after install; it is not bundled into the APK.
     implementation("org.codeshipping:llama-kotlin-android:0.1.7")
+
+    // Raw AudioRecord-based local speech recognition. Unlike Android SpeechRecognizer,
+    // this does not invoke the OEM/Google recognition UI or its start/stop chime.
+    implementation("com.alphacephei:vosk-android:0.3.75")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
