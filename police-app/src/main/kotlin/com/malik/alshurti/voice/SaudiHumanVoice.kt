@@ -15,20 +15,19 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Production TTS path for Al-Shorti.
+ * Production Saudi speech engine.
  *
- * This intentionally does NOT fall back to Android TTS or the legacy local neural voice.
- * The product requirement is a native Saudi, human-sounding male voice. If the remote
- * voice is unavailable or not configured, we fail loudly instead of emitting a robotic
- * substitute.
- *
- * Default voice: Jeddawi (Saudi male, Jeddah accent). The voice id can be overridden at
- * build time through ALSHORTI_ELEVENLABS_VOICE_ID without changing source code.
+ * There is deliberately no Android TTS or generic/local robotic fallback. The main
+ * police persona and the background staff persona can use different ElevenLabs voice
+ * ids while sharing the same proven Arabic model and playback path.
  */
 class SaudiHumanVoice(
     context: Context,
-    private val callbacks: Callbacks
+    private val callbacks: Callbacks,
+    private val role: VoiceRole = VoiceRole.POLICE
 ) {
+    enum class VoiceRole { POLICE, STAFF }
+
     interface Callbacks {
         fun onPreparing(percent: Int, message: String)
         fun onReady()
@@ -40,8 +39,11 @@ class SaudiHumanVoice(
 
     private val appContext = context.applicationContext
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "alshorti-saudi-voice").apply {
-            priority = Thread.NORM_PRIORITY + 1
+        Thread(
+            runnable,
+            if (role == VoiceRole.POLICE) "alshorti-saudi-voice" else "alshorti-staff-voice"
+        ).apply {
+            priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
         }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,18 +59,28 @@ class SaudiHumanVoice(
         val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
         if (apiKey.isBlank()) {
             callbacks.onError(
-                "الصوت السعودي غير مهيأ. أضف ELEVENLABS_API_KEY إلى بيئة البناء. لن أستخدم صوتاً روبوتياً كبديل."
+                if (role == VoiceRole.POLICE) {
+                    "الصوت السعودي غير مهيأ. أضف ELEVENLABS_API_KEY إلى بيئة البناء. لن أستخدم صوتاً روبوتياً كبديل."
+                } else {
+                    "صوت موظف المكتب غير مهيأ."
+                }
             )
             return
         }
 
-        val voiceId = BuildConfig.ELEVENLABS_VOICE_ID.trim()
+        val voiceId = configuredVoiceId()
         if (voiceId.isBlank()) {
-            callbacks.onError("لم يتم تحديد صوت سعودي للتطبيق.")
+            callbacks.onError(
+                if (role == VoiceRole.POLICE) "لم يتم تحديد صوت سعودي للتطبيق."
+                else "لم يتم تحديد صوت موظف المكتب."
+            )
             return
         }
 
-        callbacks.onPreparing(100, "جاري تجهيز الصوت السعودي الطبيعي…")
+        callbacks.onPreparing(
+            100,
+            if (role == VoiceRole.POLICE) "جاري تجهيز الصوت السعودي الطبيعي…" else "جاري تجهيز صوت المكتب…"
+        )
         callbacks.onReady()
     }
 
@@ -80,15 +92,21 @@ class SaudiHumanVoice(
         }
 
         val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
-        val voiceId = BuildConfig.ELEVENLABS_VOICE_ID.trim()
+        val voiceId = configuredVoiceId()
         if (apiKey.isBlank() || voiceId.isBlank()) {
-            callbacks.onError("الصوت السعودي غير مهيأ في نسخة التطبيق الحالية.")
+            callbacks.onError(
+                if (role == VoiceRole.POLICE) "الصوت السعودي غير مهيأ في نسخة التطبيق الحالية."
+                else "صوت موظف المكتب غير مهيأ في نسخة التطبيق الحالية."
+            )
             return
         }
 
         val ticket = generation.incrementAndGet()
         stopPlayback()
-        callbacks.onPreparing(0, "جاري تجهيز رد الشرطي بصوت سعودي…")
+        callbacks.onPreparing(
+            0,
+            if (role == VoiceRole.POLICE) "جاري تجهيز رد الشرطي بصوت سعودي…" else "جاري تجهيز صوت الموظف…"
+        )
 
         networkExecutor.execute {
             try {
@@ -115,7 +133,11 @@ class SaudiHumanVoice(
                 if (ticket == generation.get()) {
                     mainHandler.post {
                         callbacks.onError(
-                            t.message ?: "تعذر تشغيل الصوت السعودي الطبيعي."
+                            t.message ?: if (role == VoiceRole.POLICE) {
+                                "تعذر تشغيل الصوت السعودي الطبيعي."
+                            } else {
+                                "تعذر تشغيل صوت موظف المكتب."
+                            }
                         )
                     }
                 }
@@ -132,6 +154,13 @@ class SaudiHumanVoice(
         generation.incrementAndGet()
         mainHandler.post { stopPlayback() }
         networkExecutor.shutdownNow()
+    }
+
+    private fun configuredVoiceId(): String = when (role) {
+        VoiceRole.POLICE -> BuildConfig.ELEVENLABS_VOICE_ID.trim()
+        VoiceRole.STAFF -> BuildConfig.ELEVENLABS_STAFF_VOICE_ID.trim().ifBlank {
+            BuildConfig.ELEVENLABS_VOICE_ID.trim()
+        }
     }
 
     private fun synthesizeToFile(
@@ -161,13 +190,22 @@ class SaudiHumanVoice(
             put(
                 "voice_settings",
                 JSONObject().apply {
-                    // Lower stability preserves natural conversational variation while
-                    // similarity keeps the selected Saudi speaker identity consistent.
-                    put("stability", 0.42)
-                    put("similarity_boost", 0.86)
-                    put("style", 0.22)
+                    if (role == VoiceRole.POLICE) {
+                        // Calm, confident and conversational. Avoid over-stability so the
+                        // delivery does not flatten into a synthetic cadence.
+                        put("stability", 0.42)
+                        put("similarity_boost", 0.86)
+                        put("style", 0.22)
+                        put("speed", 1.0)
+                    } else {
+                        // The staff voice is intentionally a little quieter/faster and less
+                        // styled so it reads as another person briefly entering the room.
+                        put("stability", 0.54)
+                        put("similarity_boost", 0.78)
+                        put("style", 0.08)
+                        put("speed", 1.06)
+                    }
                     put("use_speaker_boost", true)
-                    put("speed", 1.0)
                 }
             )
         }.toString()
@@ -196,7 +234,8 @@ class SaudiHumanVoice(
 
             if (ticket != generation.get()) return null
 
-            val destination = File.createTempFile("alshorti-saudi-", ".mp3", appContext.cacheDir)
+            val prefix = if (role == VoiceRole.POLICE) "alshorti-saudi-" else "alshorti-staff-"
+            val destination = File.createTempFile(prefix, ".mp3", appContext.cacheDir)
             connection.inputStream.use { input ->
                 FileOutputStream(destination).buffered(128 * 1024).use { output ->
                     input.copyTo(output, 128 * 1024)
@@ -225,7 +264,7 @@ class SaudiHumanVoice(
                     .build()
             )
             setDataSource(audioFile.absolutePath)
-            setVolume(1f, 1f)
+            setVolume(if (role == VoiceRole.POLICE) 1f else 0.78f, if (role == VoiceRole.POLICE) 1f else 0.78f)
             setOnPreparedListener { prepared ->
                 if (ticket != generation.get()) {
                     releasePlayer(prepared)
@@ -250,7 +289,10 @@ class SaudiHumanVoice(
                 releasePlayer(failed)
                 cleanupAudioFile(audioFile)
                 if (ticket == generation.get()) {
-                    callbacks.onError("تعذر تشغيل ملف الصوت السعودي.")
+                    callbacks.onError(
+                        if (role == VoiceRole.POLICE) "تعذر تشغيل ملف الصوت السعودي."
+                        else "تعذر تشغيل ملف صوت موظف المكتب."
+                    )
                 }
                 true
             }
@@ -299,8 +341,6 @@ class SaudiHumanVoice(
         .trim()
 
     private companion object {
-        // Multilingual v2 is deliberately selected over the low-latency presets because
-        // the product requirement prioritizes lifelike Arabic/Saudi delivery over speed.
         const val ELEVENLABS_MODEL = "eleven_multilingual_v2"
     }
 }
