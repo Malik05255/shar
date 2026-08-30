@@ -27,24 +27,27 @@ Release builds must use the same signing key for the lifetime of the app. Never 
 
 - Android, Arabic-first, minSdk 29 / targetSdk 36.
 - Opens directly into a police-dog voice-call scene.
-- Primary priorities: cinematic character realism, natural Arabic speech, and low time-to-first-audio.
-- Three-dot menu switches ONLINE / OFFLINE.
-- OFFLINE must never silently fall back to network speech recognition.
+- Primary priorities: cinematic character realism, a native Saudi human-sounding male voice, and low conversational delay.
+- Production TTS must not fall back to Android TextToSpeech, Supertonic, or another robotic/general-Arabic voice.
+- Current production TTS is ElevenLabs `eleven_multilingual_v2` with a native Saudi male voice.
+- The production voice path is ONLINE. Do not expose an offline voice option until an offline engine can genuinely satisfy the same Saudi/natural quality bar.
 - STT, brain, TTS, lip-sync, and 3D rendering remain independent replaceable engines.
 - The character is fictional and must not claim a real police unit was contacted or dispatched.
 - Real danger routes the child to a trusted adult / real emergency help and never solicits sensitive child data.
 
-## Architecture
+## Voice configuration
 
-Current buildable baseline:
+- `ELEVENLABS_API_KEY` must come from the build environment or Gradle property; never commit it.
+- `ALSHORTI_ELEVENLABS_VOICE_ID` may override the default Saudi voice id.
+- Any replacement voice must be native Saudi Arabic, male, conversational, and verified by listening on real app dialogue before release.
+- Never accept “supports Arabic” as sufficient evidence of Saudi pronunciation quality.
+- Do not claim a voice is natural/production-ready until it is listened to on an Android device using representative Saudi dialogue.
 
-`SpeechRecognizer -> PoliceBrain -> Android TTS -> Arabic visemes -> animated character`
+## Visual contract
 
-Target neural path:
+The production character is `RealPoliceDogStage` with a rigged PBR GLB rendered through SceneView/Filament. `PoliceDogStage` is a development fallback only.
 
-`streaming/on-device STT -> Qwen-class conversational brain -> Arabic neural TTS -> timed visemes -> rigged GLB/Filament`
-
-Do not claim photorealistic 3D, neural Arabic TTS, or measured latency until those components are actually present and validated on a device.
+The final office should feel alive rather than like a static wallpaper: subtle staff movement, door activity, phone ringing, environmental sounds, and scenario-driven interruptions. Background dialogue must use a distinct voice and must not talk over the child without an intentional scene event.
 
 ## Verification
 
@@ -53,3 +56,5 @@ Do not claim photorealistic 3D, neural Arabic TTS, or measured latency until tho
 ./gradlew :police-app:testDebugUnitTest
 ./gradlew :police-app:lintDebug
 ```
+
+A build passing is necessary but not sufficient for release. Voice and GLB realism require device validation.
