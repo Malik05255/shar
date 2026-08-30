@@ -50,6 +50,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                         officeScene = it.officeScene.copy(
                             cue = OfficeCue.STAFF_SPEAK,
                             attention = DogAttention.STAFF,
+                            // Keep WALK_TO_DOOR on its final frame while the visitor talks.
                             staffSpeaking = true,
                             revision = it.officeScene.revision + 1
                         )
@@ -166,7 +167,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.SMILE,
                     replyText = greeting,
                     statusText = "الشرطي يتكلم…",
-                    firstGreetingDone = true
+                    firstGreetingDone = true,
+                    officeScene = it.officeScene.copy(
+                        dogAction = DogAction.TALK_SEATED,
+                        scenario = CinematicScenario.NONE,
+                        revision = it.officeScene.revision + 1
+                    )
                 )
             }
             voiceEngine.speak(greeting)
@@ -192,7 +198,10 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 viseme = MouthViseme.REST,
                 statusText = "لحظة… أفكر في كلامك",
                 errorMessage = null,
-                officeScene = OfficeSceneState()
+                officeScene = OfficeSceneState(
+                    dogAction = DogAction.SEATED_IDLE,
+                    revision = it.officeScene.revision + 1
+                )
             )
         }
 
@@ -204,7 +213,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                         it.copy(
                             replyText = reply.text,
                             mood = reply.mood,
-                            statusText = "الشرطي يرد عليك…"
+                            statusText = "الشرطي يرد عليك…",
+                            officeScene = it.officeScene.copy(
+                                dogAction = DogAction.TALK_SEATED,
+                                revision = it.officeScene.revision + 1
+                            )
                         )
                     }
                     voiceEngine.speak(reply.text)
@@ -216,7 +229,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                             mood = DogMood.SERIOUS,
                             viseme = MouthViseme.REST,
                             statusText = "صار خطأ بسيط، حاول مرة ثانية.",
-                            errorMessage = error.message
+                            errorMessage = error.message,
+                            officeScene = it.officeScene.copy(
+                                dogAction = DogAction.SEATED_IDLE,
+                                revision = it.officeScene.revision + 1
+                            )
                         )
                     }
                 }
@@ -230,7 +247,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.LISTENING,
                 viseme = MouthViseme.REST,
                 statusText = "تكلم… أنا أسمعك",
-                errorMessage = null
+                errorMessage = null,
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.SEATED_IDLE,
+                    revision = it.officeScene.revision + 1
+                )
             )
         }
     }
@@ -244,7 +265,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 mood = DogMood.LISTENING,
                 viseme = MouthViseme.REST,
-                statusText = "أسمعك…"
+                statusText = "أسمعك…",
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.SEATED_IDLE,
+                    revision = it.officeScene.revision + 1
+                )
             )
         }
     }
@@ -263,7 +288,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.LISTENING,
                     viseme = MouthViseme.REST,
                     statusText = message,
-                    errorMessage = null
+                    errorMessage = null,
+                    officeScene = it.officeScene.copy(
+                        dogAction = DogAction.SEATED_IDLE,
+                        revision = it.officeScene.revision + 1
+                    )
                 )
             }
             viewModelScope.launch {
@@ -277,7 +306,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     mood = DogMood.SERIOUS,
                     viseme = MouthViseme.REST,
                     statusText = message,
-                    errorMessage = message
+                    errorMessage = message,
+                    officeScene = it.officeScene.copy(
+                        dogAction = DogAction.SEATED_IDLE,
+                        revision = it.officeScene.revision + 1
+                    )
                 )
             }
         }
@@ -315,7 +348,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update {
             it.copy(
                 mood = if (it.mood == DogMood.SMILE || it.mood == DogMood.SERIOUS) it.mood else DogMood.TALKING,
-                statusText = "الشرطي يتكلم…"
+                statusText = "الشرطي يتكلم…",
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.TALK_SEATED,
+                    revision = it.officeScene.revision + 1
+                )
             )
         }
     }
@@ -338,24 +375,63 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.SERIOUS,
                 viseme = MouthViseme.REST,
                 statusText = message,
-                errorMessage = message
+                errorMessage = message,
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.SEATED_IDLE,
+                    revision = it.officeScene.revision + 1
+                )
             )
         }
     }
 
+    /**
+     * Deterministic cinematic cadence. The first greeting ends quietly. After the first full
+     * answer the child sees an unmistakable stand/sit performance; later turns rotate through
+     * desk Foley, phone interaction and a door visitor without talking over the microphone.
+     */
     private fun runOfficeBeatThenListen() {
         cancelOfficeEvent(resetScene = false)
         officeEventJob = viewModelScope.launch {
-            when (completedPoliceTurns % 8) {
-                2 -> runPaperBeat()
+            when (completedPoliceTurns % 6) {
+                2 -> runStandAndSitBeat()
+                3 -> runPaperBeat()
                 4 -> runPhoneBeat()
                 0 -> runDoorStaffBeat()
                 else -> {
-                    delay(120)
+                    delay(140)
                     retryListening()
                 }
             }
         }
+    }
+
+    private suspend fun runStandAndSitBeat() {
+        setPhase(CallPhase.THINKING)
+        _uiState.update {
+            it.copy(
+                mood = DogMood.CALM,
+                statusText = "…",
+                officeScene = it.officeScene.copy(
+                    cue = OfficeCue.NONE,
+                    attention = DogAttention.CAMERA,
+                    dogAction = DogAction.STAND_UP,
+                    scenario = CinematicScenario.STAND_AND_TALK,
+                    revision = it.officeScene.revision + 1
+                )
+            )
+        }
+        delay(STAND_UP_MS)
+
+        _uiState.update {
+            it.copy(
+                officeScene = it.officeScene.copy(
+                    dogAction = DogAction.SIT_DOWN,
+                    revision = it.officeScene.revision + 1
+                )
+            )
+        }
+        delay(SIT_DOWN_MS)
+        retryListening()
     }
 
     private suspend fun runPaperBeat() {
@@ -367,6 +443,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.PAPER_RUSTLE,
                     attention = DogAttention.CAMERA,
+                    dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
@@ -385,19 +463,23 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.PHONE_RING,
                     attention = DogAttention.PHONE,
+                    dogAction = DogAction.ANSWER_PHONE,
+                    scenario = CinematicScenario.PHONE_CALL,
                     phoneRinging = true,
                     revision = it.officeScene.revision + 1
                 )
             )
         }
         officeSoundscape.playCue(OfficeCue.PHONE_RING)
-        delay(1500)
+        delay(PHONE_ACTION_MS)
         _uiState.update {
             it.copy(
                 mood = DogMood.CALM,
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.NONE,
                     attention = DogAttention.CAMERA,
+                    dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     phoneRinging = false,
                     revision = it.officeScene.revision + 1
                 )
@@ -417,6 +499,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.DOOR_OPEN,
                     attention = DogAttention.DOOR,
+                    dogAction = DogAction.WALK_TO_DOOR,
+                    scenario = CinematicScenario.DOOR_VISITOR,
                     doorOpen = true,
                     staffAtDoor = false,
                     revision = it.officeScene.revision + 1
@@ -424,26 +508,17 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
         officeSoundscape.playCue(OfficeCue.DOOR_OPEN)
-        delay(520)
         officeSoundscape.playCue(OfficeCue.FOOTSTEPS)
-        _uiState.update {
-            it.copy(
-                officeScene = it.officeScene.copy(
-                    cue = OfficeCue.FOOTSTEPS,
-                    attention = DogAttention.DOOR,
-                    staffAtDoor = true,
-                    revision = it.officeScene.revision + 1
-                )
-            )
-        }
-        delay(720)
+        delay(DOOR_WALK_MS)
 
-        val line = staffLines[(completedPoliceTurns / 8) % staffLines.size]
+        val line = staffLines[(completedPoliceTurns / 6) % staffLines.size]
         _uiState.update {
             it.copy(
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.STAFF_SPEAK,
                     attention = DogAttention.STAFF,
+                    // Keep the final frame at the doorway while the staff member talks.
+                    dogAction = DogAction.WALK_TO_DOOR,
                     staffAtDoor = true,
                     staffSpeaking = true,
                     staffLine = line,
@@ -456,7 +531,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             officeEventJob = null
             staffVoice.speak(line)
         } else {
-            delay(900)
+            delay(1_000)
             closeDoorThenListen()
         }
     }
@@ -471,15 +546,18 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     officeScene = it.officeScene.copy(
                         cue = OfficeCue.DOOR_CLOSE,
                         attention = DogAttention.DOOR,
+                        dogAction = DogAction.RETURN_TO_DESK,
+                        scenario = CinematicScenario.DOOR_VISITOR,
                         staffSpeaking = false,
                         staffAtDoor = false,
                         staffLine = "",
+                        doorOpen = false,
                         revision = it.officeScene.revision + 1
                     )
                 )
             }
             officeSoundscape.playCue(OfficeCue.DOOR_CLOSE)
-            delay(520)
+            delay(RETURN_TO_DESK_MS)
             retryListening()
         }
     }
@@ -494,6 +572,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 officeScene = OfficeSceneState(
                     staffVisible = true,
+                    dogAction = DogAction.SEATED_IDLE,
+                    scenario = CinematicScenario.NONE,
                     revision = it.officeScene.revision + 1
                 )
             )
@@ -518,6 +598,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private companion object {
         const val PREFS_NAME = "alshurti_voice_settings"
         const val KEY_MODE = "voice_mode"
+
+        const val STAND_UP_MS = 5_100L
+        const val SIT_DOWN_MS = 5_100L
+        const val PHONE_ACTION_MS = 6_100L
+        const val DOOR_WALK_MS = 6_100L
+        const val RETURN_TO_DESK_MS = 6_100L
 
         val staffLines = listOf(
             "سيدي، الملف جاهز.",
