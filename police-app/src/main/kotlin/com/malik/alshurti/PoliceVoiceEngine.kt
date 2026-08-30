@@ -104,16 +104,12 @@ class PoliceVoiceEngine(
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
 
-        // The microphone/STT path is local in both modes. Online is only permitted
-        // to download the Vosk Arabic pack if this is the first run.
-        localRecognizer.prepare(allowDownload = newMode == VoiceMode.ONLINE)
-
+        // Critical startup rule: do NOT provision the 318 MB Arabic Vosk model merely
+        // because the call screen opened. It is prepared only when listening actually
+        // starts. This lets the Saudi voice preview start immediately on first launch.
         if (newMode == VoiceMode.ONLINE) {
             onlineSaudiVoice.prepare()
         } else {
-            // The rejected Supertonic voice is intentionally NOT used as an offline
-            // fallback. Offline TTS will be enabled only when the local Chatterbox
-            // runtime meets the same listening-quality bar as ONLINE.
             listener.onTtsPreparing(0, "تجهيز الصوت السعودي المحلي…")
             listener.onTtsError(
                 "الصوت السعودي الطبيعي بدون إنترنت ما زال قيد التجهيز. اختر الإنترنت حالياً؛ لن أرجع للصوت الروبوتي القديم."
@@ -122,6 +118,9 @@ class PoliceVoiceEngine(
     }
 
     fun startListening() {
+        // ONLINE is allowed to provision the local Arabic recognizer on first use.
+        // OFFLINE never reaches the network for a missing model.
+        localRecognizer.prepare(allowDownload = mode == VoiceMode.ONLINE)
         localRecognizer.startListening()
     }
 
@@ -132,7 +131,7 @@ class PoliceVoiceEngine(
     fun interruptSpeech() {
         onlineSaudiVoice.interrupt()
         lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        listener.onViseme(lastViseme)
     }
 
     fun speak(text: String) {
@@ -156,7 +155,7 @@ class PoliceVoiceEngine(
         localRecognizer.release()
         onlineSaudiVoice.release()
         lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        listener.onViseme(lastViseme)
     }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
