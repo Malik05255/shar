@@ -206,6 +206,28 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
             }
 
             AnimatedVisibility(
+                visible = state.mode == VoiceMode.ONLINE &&
+                    state.phase != CallPhase.SPEAKING &&
+                    state.phase != CallPhase.LISTENING,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(onClick = viewModel::testSaudiVoice) {
+                        Text("اختبار الصوت الآن")
+                    }
+                    Text(
+                        "لا يحتاج Qwen ولا نموذج الاستماع",
+                        color = Color.White.copy(alpha = 0.56f),
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            AnimatedVisibility(
                 visible = state.readyToStart,
                 enter = fadeIn(),
                 exit = fadeOut()
@@ -241,8 +263,8 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
                     if (state.phase == CallPhase.ERROR) {
-                        IconButton(onClick = viewModel::retryListening, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Default.Refresh, contentDescription = "إعادة المحاولة", tint = Color.White)
+                        IconButton(onClick = viewModel::testSaudiVoice, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Default.Refresh, contentDescription = "إعادة اختبار الصوت", tint = Color.White)
                         }
                     }
                 }
