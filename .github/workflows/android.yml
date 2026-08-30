@@ -34,15 +34,18 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-      - name: Validate production Saudi voice
+      - name: Check production Saudi voice
+        id: voice
         shell: bash
         env:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "$ELEVENLABS_API_KEY" ]]; then
-            echo "::error::ELEVENLABS_API_KEY is missing. Refusing to publish a test APK with broken/silent production voice."
-            exit 1
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ELEVENLABS_API_KEY is missing. Build/tests will continue, but the APK will not be uploaded for user testing."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Restore permanent signing key when configured
         shell: bash
@@ -138,6 +141,7 @@ jobs:
           ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
       - name: Upload APK
+        if: steps.voice.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: AlShorti-${{ env.VERSION_NAME }}-debug
