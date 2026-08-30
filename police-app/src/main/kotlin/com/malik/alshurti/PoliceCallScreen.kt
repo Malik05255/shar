@@ -89,8 +89,39 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 mood = state.mood,
                 phase = state.phase,
                 viseme = state.viseme,
+                officeScene = state.officeScene,
                 modifier = Modifier.fillMaxSize()
             )
+
+            // The office layer is intentionally independent of the GLB. It gives both the
+            // production character and the build-safe fallback the same living environment.
+            OfficeLiveOverlay(
+                scene = state.officeScene,
+                phase = state.phase,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.officeScene.staffSpeaking && state.officeScene.staffLine.isNotBlank(),
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 28.dp, bottom = 92.dp)
+        ) {
+            Surface(
+                color = Color(0xC5151D22),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(
+                    state.officeScene.staffLine,
+                    color = Color.White.copy(alpha = 0.86f),
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                )
+            }
         }
 
         Box(
@@ -137,7 +168,9 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             AnimatedVisibility(
-                visible = state.heardText.isNotBlank() && state.phase == CallPhase.THINKING,
+                visible = state.heardText.isNotBlank() &&
+                    state.phase == CallPhase.THINKING &&
+                    state.officeScene.cue == OfficeCue.NONE,
                 enter = fadeIn(),
                 exit = fadeOut()
             ) {

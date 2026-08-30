@@ -37,6 +37,10 @@ val elevenLabsVoiceId = buildSetting(
     // generic multilingual English voice.
     "yXEnnEln9armDCyhkXcA"
 )
+val elevenLabsStaffVoiceId = buildSetting(
+    "ALSHORTI_ELEVENLABS_STAFF_VOICE_ID",
+    elevenLabsVoiceId
+)
 
 android {
     namespace = "com.malik.alshurti"
@@ -57,6 +61,7 @@ android {
         // or the ELEVENLABS_API_KEY environment variable.
         buildConfigField("String", "ELEVENLABS_API_KEY", quotedBuildConfig(elevenLabsApiKey))
         buildConfigField("String", "ELEVENLABS_VOICE_ID", quotedBuildConfig(elevenLabsVoiceId))
+        buildConfigField("String", "ELEVENLABS_STAFF_VOICE_ID", quotedBuildConfig(elevenLabsStaffVoiceId))
     }
 
     signingConfigs {
@@ -103,8 +108,8 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.runtime.compose.android)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose.android)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)

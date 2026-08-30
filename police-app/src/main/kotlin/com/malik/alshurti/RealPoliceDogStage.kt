@@ -14,20 +14,16 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * The final character is a real PBR GLB rendered by Google Filament through SceneView.
- * The existing Canvas character is kept only as a build-safe placeholder until a
- * licensed `models/police_dog.glb` is present in app assets.
- *
- * Required body clips: Idle, Listen, Think, Smile, Serious.
- * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
- * Those short clips allow the neural speech cursor to change the actual 3D mouth pose
- * while the Arabic audio is playing, instead of merely animating a generic jaw loop.
+ * A licensed PBR GLB is rendered by Filament/SceneView when present. If the GLB is not
+ * bundled yet, the app uses a photoreal cinematic reference frame rather than dropping
+ * back to the old illustrated dog. True jaw/eye/ear/body animation remains the GLB path.
  */
 @Composable
 fun RealPoliceDogStage(
     mood: DogMood,
     phase: CallPhase,
     viseme: MouthViseme,
+    officeScene: OfficeSceneState = OfficeSceneState(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -39,9 +35,11 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        // Never pretend this is the final realistic character. This fallback exists only
-        // so developers can build/test voice and call flow before the licensed GLB lands.
-        PoliceDogStage(mood, phase, viseme, modifier)
+        PhotorealPoliceDogFallback(
+            phase = phase,
+            attention = officeScene.attention,
+            modifier = modifier
+        )
         return
     }
 
@@ -65,9 +63,9 @@ fun RealPoliceDogStage(
             ModelNode(
                 modelInstance = instance,
                 autoAnimate = false,
-                animationName = animationFor(mood, phase, viseme),
+                animationName = animationFor(mood, phase, viseme, officeScene.attention),
                 animationLoop = true,
-                animationSpeed = animationSpeedFor(phase),
+                animationSpeed = animationSpeedFor(phase, officeScene.attention),
                 scaleToUnits = 1.72f,
                 centerOrigin = Position(x = 0f, y = -1f, z = 0f),
                 position = Position(x = 0f, y = -0.18f, z = 0f)
@@ -76,7 +74,12 @@ fun RealPoliceDogStage(
     }
 }
 
-private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): String = when {
+private fun animationFor(
+    mood: DogMood,
+    phase: CallPhase,
+    viseme: MouthViseme,
+    attention: DogAttention
+): String = when {
     phase == CallPhase.SPEAKING -> when (viseme) {
         MouthViseme.OPEN -> "TalkOpen"
         MouthViseme.WIDE -> "TalkWide"
@@ -86,15 +89,18 @@ private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): 
     }
     phase == CallPhase.LISTENING -> "Listen"
     phase == CallPhase.THINKING -> "Think"
+    attention == DogAttention.DOOR || attention == DogAttention.STAFF -> "Listen"
+    attention == DogAttention.PHONE -> "Think"
     mood == DogMood.SMILE -> "Smile"
     mood == DogMood.SERIOUS || phase == CallPhase.ERROR -> "Serious"
     else -> "Idle"
 }
 
-private fun animationSpeedFor(phase: CallPhase): Float = when (phase) {
-    CallPhase.SPEAKING -> 1.05f
-    CallPhase.LISTENING -> 0.92f
-    CallPhase.THINKING -> 0.82f
+private fun animationSpeedFor(phase: CallPhase, attention: DogAttention): Float = when {
+    phase == CallPhase.SPEAKING -> 1.05f
+    phase == CallPhase.LISTENING -> 0.92f
+    phase == CallPhase.THINKING -> 0.82f
+    attention != DogAttention.CAMERA -> 0.88f
     else -> 0.75f
 }
 
