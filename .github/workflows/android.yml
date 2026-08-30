@@ -34,6 +34,24 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
+      - name: Restore permanent signing key when configured
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ALSHORTI_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "Permanent signing not configured; this CI run will use the Android debug certificate."
+            exit 0
+          fi
+          KEYSTORE_FILE="$RUNNER_TEMP/alshorti-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
       - name: Prepare cinematic dog motion assets
         shell: bash
         env:
@@ -92,6 +110,9 @@ jobs:
           du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
       - name: Build Al-Shorti
         env:
+          ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
+          ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
+          ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
           ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
