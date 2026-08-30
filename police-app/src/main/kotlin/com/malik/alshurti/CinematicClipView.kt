@@ -67,7 +67,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                         val offset = (
                             (active.seed xor (active.resId.toLong() shl 17)).absoluteValue %
                                 usableMs.toLong()
-                            ).toInt()
+                            )
 
                         // Tiny visual tempo variance makes repeated idle/talk loops less mechanical.
                         val speedBucket = ((active.seed ushr 7).absoluteValue % 7).toInt()
