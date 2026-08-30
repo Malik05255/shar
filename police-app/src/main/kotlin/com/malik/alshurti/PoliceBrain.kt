@@ -33,6 +33,10 @@ class LocalPoliceBrain : PoliceBrain {
     private var previousTopic: String = ""
 
     override suspend fun reply(userText: String): PoliceReply {
+        // Update the cinematic semantic gate from the same recognized utterance before any scene
+        // can be scheduled. This layer never changes the dialogue; it only constrains later visuals.
+        SceneContextRegistry.observe(userText)
+
         delay(70)
         val text = normalize(userText)
         if (text.isBlank()) return PoliceReply("أنا سامعك يا بطل، قل لي وش صار؟", DogMood.SMILE)

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.malik.alshurti.voice.SaudiHumanVoice
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private val brain: PoliceBrain = LocalPoliceBrain()
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
     private val officeSoundscape = OfficeSoundscape(application.applicationContext)
+    private val sceneDirector = CinematicSceneDirector()
 
     private val _uiState = MutableStateFlow(PoliceUiState(mode = initialMode))
     val uiState: StateFlow<PoliceUiState> = _uiState.asStateFlow()
@@ -115,6 +117,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         cancelOfficeEvent()
+        sceneDirector.reset()
+        completedPoliceTurns = 0
         preferences.edit().putString(KEY_MODE, VoiceMode.ONLINE.name).apply()
         ttsReady = false
         sessionStarted = false
@@ -213,7 +217,10 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             try {
                 val reply = brain.reply(text)
-                val shouldStandForReply = completedPoliceTurns % SCENARIO_CYCLE == 1
+                val shouldStandForReply = sceneDirector.shouldStandForReply(
+                    completedPoliceTurns = completedPoliceTurns,
+                    mood = reply.mood
+                )
 
                 if (shouldStandForReply) {
                     setPhase(CallPhase.THINKING)
@@ -265,6 +272,10 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     voiceEngine.speak(reply.text)
                 }
+            } catch (cancelled: CancellationException) {
+                // Child interruption intentionally cancels delayed cinematic actions. Never surface
+                // that normal cancellation as a conversation error.
+                throw cancelled
             } catch (error: Throwable) {
                 standingReplyActive = false
                 setPhase(CallPhase.ERROR)
@@ -484,21 +495,22 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Deterministic cinematic cadence. Greeting is quiet. The first full reply stands and talks;
-     * later turns rotate through paper, phone, approach/return and a door visitor.
+     * Session-local cinematic cadence. Major events are selected by CinematicSceneDirector with
+     * cooldowns and quiet gaps, so phone/door/approach beats do not expose a mechanical modulo
+     * pattern. Serious exchanges stay visually calm.
      */
     private fun runOfficeBeatThenListen() {
         cancelOfficeEvent(resetScene = false)
         officeEventJob = viewModelScope.launch {
-            when (completedPoliceTurns % SCENARIO_CYCLE) {
-                3 -> runPaperBeat()
-                4 -> runPhoneBeat()
-                5 -> runApproachBeat()
-                0 -> runDoorStaffBeat()
-                else -> {
+            when (sceneDirector.nextBeat(_uiState.value.mood)) {
+                CinematicSceneDirector.Beat.QUIET -> {
                     delay(140)
                     retryListening()
                 }
+                CinematicSceneDirector.Beat.PAPER -> runPaperBeat()
+                CinematicSceneDirector.Beat.PHONE -> runPhoneBeat()
+                CinematicSceneDirector.Beat.APPROACH -> runApproachBeat()
+                CinematicSceneDirector.Beat.DOOR -> runDoorStaffBeat()
             }
         }
     }
@@ -610,7 +622,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         officeSoundscape.playCue(OfficeCue.FOOTSTEPS)
         delay(DOOR_WALK_MS)
 
-        val line = staffLines[(completedPoliceTurns / SCENARIO_CYCLE) % staffLines.size]
+        val line = staffLines[completedPoliceTurns % staffLines.size]
         _uiState.update {
             it.copy(
                 officeScene = it.officeScene.copy(
@@ -699,7 +711,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         const val PREFS_NAME = "alshurti_voice_settings"
         const val KEY_MODE = "voice_mode"
 
-        const val SCENARIO_CYCLE = 7
         const val STAND_UP_MS = 5_100L
         const val SIT_DOWN_MS = 5_100L
         const val PHONE_ACTION_MS = 6_100L
