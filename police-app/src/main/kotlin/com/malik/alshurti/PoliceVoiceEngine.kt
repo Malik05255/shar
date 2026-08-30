@@ -97,18 +97,21 @@ class PoliceVoiceEngine(
         }
     )
 
+    /** Changes policy only. It deliberately performs no model download or initialization. */
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
         localArabicVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
-
-        // ONLINE means the app may provision missing local models once.
-        // OFFLINE never reaches the network and only uses already-installed models.
-        localArabicVoice.prepare(allowDownload = newMode == VoiceMode.ONLINE)
     }
 
+    /** Explicit user action: ONLINE may download once; OFFLINE only opens cached voice. */
+    fun prepareVoice() {
+        localArabicVoice.prepare(allowDownload = mode == VoiceMode.ONLINE)
+    }
+
+    /** Explicit user action. Whisper is never provisioned merely because the app opened. */
     fun startListening() {
         localRecognizer.prepare(allowDownload = mode == VoiceMode.ONLINE)
         localRecognizer.startListening()
