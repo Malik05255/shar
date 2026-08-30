@@ -12,49 +12,78 @@
 
 هذه الهوية لا تتغير في المستقبل. اختلاف applicationId عن VibeApp يسمح بتثبيت التطبيقين معاً، وثباته يسمح بتحديث الشرطي فوق نسخته السابقة.
 
-## مسار الصوت الحالي
+## عقد الصوت الإنتاجي — سعودي بشري فقط
 
-تم حذف Android TextToSpeech من مسار الرد. الرد الصوتي الآن مبني على Supertonic 3 عبر ONNX Runtime Android:
+الصوت المقبول في الإنتاج يجب أن يكون صوت رجل سعودي طبيعي وبشري في الإيقاع والنطق، وليس مجرد محرك يدعم العربية.
+
+المسار الإنتاجي الحالي:
 
 ```text
 Microphone
   -> Android SpeechRecognizer (ar-SA + partial results)
   -> PoliceBrain + child-safety contract
-  -> Supertonic 3 neural Arabic TTS (ONNX, local after first download)
-  -> chunked synthesis + overlapped playback
+  -> ElevenLabs native Saudi male voice (Multilingual v2)
+  -> MP3 playback
   -> Arabic viseme cursor
   -> real GLB animation clips / fallback during development
   -> automatic return to listening
 ```
 
-### تنزيل النموذج
+### ممنوع fallback روبوتي
 
-ملفات النموذج كبيرة ولذلك لا تدخل داخل APK. في وضع الإنترنت يتم تنزيلها مرة واحدة إلى app-private storage. بعد اكتمال التنزيل، نفس TTS يعمل محلياً في وضع الإنترنت وبدون الإنترنت ولا توجد API مدفوعة أو حصة دقائق.
+`PoliceVoiceEngine` لا يعود إلى Android TextToSpeech ولا إلى Supertonic عند فشل الصوت السعودي. إذا تعذر تشغيل الخدمة أو غاب مفتاحها، يظهر خطأ واضح ولا يتم إخراج صوت بديل أقل جودة.
 
-وضع Offline لا يسمح بتنزيل النموذج خفية. إذا لم يكن النموذج موجوداً، يطلب من المستخدم تشغيل Online مرة واحدة.
+هذا قرار مقصود لأن تجربة المنتج تعتبر الصوت الروبوتي أو العربية المكسرة فشلاً، حتى لو كان البديل يعمل محلياً.
 
-### تقليل التأخير
+### الصوت الافتراضي
 
-`NeuralArabicVoice` يقسم الرد إلى مقطع أول قصير ثم مقاطع تالية. أول مقطع يبدأ تشغيله فور انتهاء توليده، وفي الوقت نفسه يستمر توليد المقطع التالي على thread منفصل عن AudioTrack. الهدف هو تحسين Time To First Audio بدون خفض جودة الصوت إلى preset سريع روبوتي.
+الصوت الافتراضي هو صوت سعودي رجالي Native (Jeddawi / Jeddah accent). يمكن استبداله أثناء البناء عبر:
 
-لا يعتبر رقم التأخير مضموناً قبل القياس على هاتف Android حقيقي.
+```text
+ALSHORTI_ELEVENLABS_VOICE_ID
+```
+
+ويجب أن يبقى البديل صوتاً سعودياً Native، لا صوتاً إنجليزياً متعدد اللغات يقرأ العربية بلكنة أجنبية.
+
+نموذج النطق هو:
+
+```text
+eleven_multilingual_v2
+```
+
+تم اختياره لأن الأولوية هنا للطبيعية والثبات وليس لأقل latency ممكنة.
+
+### إعداد مفتاح الصوت
+
+لا يتم حفظ مفتاح ElevenLabs داخل المستودع. أثناء البناء استخدم أحد الخيارين:
+
+```text
+ELEVENLABS_API_KEY=<key>
+```
+
+كـ environment variable، أو:
+
+```text
+./gradlew :police-app:assembleDebug -PELEVENLABS_API_KEY=<key>
+```
+
+ملاحظة أمنية: أي مفتاح API يوضع داخل APK يمكن استخراجه من التطبيق. هذا المسار مناسب للاختبار والتوزيع الخاص. قبل نشر عام واسع يجب نقل استدعاء ElevenLabs إلى backend/proxy مملوك للمشروع بحيث لا يحتوي تطبيق Android على المفتاح السري.
 
 ## الاستماع
 
-STT ما زال حالياً عبر Android SpeechRecognizer:
+STT حالياً عبر Android SpeechRecognizer بلغة `ar-SA` وبـ partial results. مسار الإنتاج الصوتي يعمل ONLINE لأن شرط جودة الصوت السعودي مقدم على شرط الأوفلاين.
 
-- Online: recognizer المتاح على الجهاز.
-- Offline: on-device recognizer فقط، بدون fallback سري للشبكة.
+لا يتم تشغيل وضع Offline في واجهة الإنتاج الحالية حتى لا يعود التطبيق إلى صوت محلي لا يحقق معيار الجودة.
 
-المرحلة التالية للاستقلال الكامل عن حزم الجهاز هي whisper.cpp أو sherpa-onnx Arabic STT.
+المرحلة التالية للاستقلال الكامل عن حزم الجهاز في STT هي whisper.cpp أو sherpa-onnx Arabic STT، لكن أي تغيير في STT لا يسمح بتخفيض جودة TTS.
 
 ## الشخصية الواقعية
 
-واجهة الإنتاج أصبحت `RealPoliceDogStage` المبنية على SceneView + Google Filament. عندما يوجد:
+واجهة الإنتاج هي `RealPoliceDogStage` المبنية على SceneView + Google Filament. عندما يوجد:
 
 `police-app/src/main/assets/models/police_dog.glb`
 
-يتم تشغيله مباشرة. الرسم القديم `PoliceDogStage` أصبح fallback تطوير فقط ولا يمثل الشكل النهائي.
+يتم تشغيله مباشرة. الرسم القديم `PoliceDogStage` هو fallback تطوير فقط ولا يمثل الشكل النهائي.
 
 ### عقد الأصل النهائي
 
@@ -74,9 +103,15 @@ STT ما زال حالياً عبر Android SpeechRecognizer:
 
 SceneView/Filament يفصل أصل الـGLB عن منطق المحادثة؛ يمكن استبدال الكلب لاحقاً بأصل أعلى جودة بدون إعادة كتابة الصوت أو العقل.
 
+## البيئة الحية داخل المكتب
+
+الشكل النهائي ليس خلفية ثابتة. المشهد المستهدف يتضمن حركة محيطية صامتة ومحدودة لا تشتت الطفل: موظفون يتحركون في الخلفية، باب يفتح ويغلق، شخص يمر أو يخاطب الشرطي عند الحاجة، هاتف مكتبي يرن، ورد فعل بصري من الكلب قبل أن يستأنف الحديث.
+
+يجب أن تكون هذه الأحداث scenario-driven وليست loop واضحاً ومتكرراً. الشخصيات الخلفية لا تتحدث فوق الطفل إلا في حدث مقصود، وعند الحديث يجب أن تستخدم نبرة مختلفة عن صوت الشرطي.
+
 ## العقل
 
-`PoliceBrain` ما زال abstraction مستقلاً. النسخة الحالية baseline محلية ومقيدة بقواعد أمان الطفل. الهدف التالي هو Qwen-class model محلي/ذاتي الاستضافة مع نفس contract، بحيث لا تتغير الواجهة أو TTS عند تبديل العقل.
+`PoliceBrain` abstraction مستقل. النسخة الحالية baseline محلية ومقيدة بقواعد أمان الطفل. الهدف التالي هو Qwen-class model محلي/ذاتي الاستضافة مع نفس contract، بحيث لا تتغير الواجهة أو TTS عند تبديل العقل.
 
 ## الأمان
 
