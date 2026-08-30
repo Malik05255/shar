@@ -2,7 +2,7 @@ package com.malik.alshurti
 
 import android.content.Context
 import com.malik.alshurti.stt.LocalArabicRecognizer
-import com.malik.alshurti.voice.NamaaSaudiVoice
+import com.malik.alshurti.voice.LocalArabicVoice
 
 class PoliceVoiceEngine(
     context: Context,
@@ -58,15 +58,15 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val onlineSaudiVoice = NamaaSaudiVoice(
+    private val localArabicVoice = LocalArabicVoice(
         context = context.applicationContext,
-        callbacks = object : NamaaSaudiVoice.Callbacks {
+        callbacks = object : LocalArabicVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
                 listener.onTtsPreparing(percent, message)
             }
 
             override fun onReady() {
-                if (mode == VoiceMode.ONLINE) listener.onTtsReady()
+                listener.onTtsReady()
             }
 
             override fun onSpeechStarted(durationMs: Long) {
@@ -100,26 +100,16 @@ class PoliceVoiceEngine(
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
-        onlineSaudiVoice.interrupt()
+        localArabicVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
 
-        // Critical startup rule: do NOT provision the 318 MB Arabic Vosk model merely
-        // because the call screen opened. It is prepared only when listening actually
-        // starts. This lets the Saudi voice preview start immediately on first launch.
-        if (newMode == VoiceMode.ONLINE) {
-            onlineSaudiVoice.prepare()
-        } else {
-            listener.onTtsPreparing(0, "تجهيز الصوت السعودي المحلي…")
-            listener.onTtsError(
-                "الصوت السعودي الطبيعي بدون إنترنت ما زال قيد التجهيز. اختر الإنترنت حالياً؛ لن أرجع للصوت الروبوتي القديم."
-            )
-        }
+        // ONLINE means the app may provision missing local models once.
+        // OFFLINE never reaches the network and only uses already-installed models.
+        localArabicVoice.prepare(allowDownload = newMode == VoiceMode.ONLINE)
     }
 
     fun startListening() {
-        // ONLINE is allowed to provision the local Arabic recognizer on first use.
-        // OFFLINE never reaches the network for a missing model.
         localRecognizer.prepare(allowDownload = mode == VoiceMode.ONLINE)
         localRecognizer.startListening()
     }
@@ -129,7 +119,7 @@ class PoliceVoiceEngine(
     }
 
     fun interruptSpeech() {
-        onlineSaudiVoice.interrupt()
+        localArabicVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
     }
@@ -141,19 +131,13 @@ class PoliceVoiceEngine(
             listener.onTtsFinished()
             return
         }
-
-        when (mode) {
-            VoiceMode.ONLINE -> onlineSaudiVoice.speak(spokenText)
-            VoiceMode.OFFLINE -> listener.onTtsError(
-                "الصوت السعودي المحلي غير جاهز بعد. لا يوجد fallback روبوتي."
-            )
-        }
+        localArabicVoice.speak(spokenText)
     }
 
     fun release() {
         stopListening()
         localRecognizer.release()
-        onlineSaudiVoice.release()
+        localArabicVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(lastViseme)
     }
