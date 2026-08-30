@@ -15,38 +15,41 @@ class OfficeScenarioVoice(
     }
 
     private var pending: Pair<String, SideSpeaker>? = null
+    private val voice: RemoteArabicVoice
 
-    private val voice = RemoteArabicVoice(
-        context = context.applicationContext,
-        callbacks = object : RemoteArabicVoice.Callbacks {
-            override fun onPreparing(percent: Int, message: String) = Unit
+    init {
+        voice = RemoteArabicVoice(
+            context = context.applicationContext,
+            callbacks = object : RemoteArabicVoice.Callbacks {
+                override fun onPreparing(percent: Int, message: String) = Unit
 
-            override fun onReady() {
-                val next = pending ?: return
-                pending = null
-                voice.speak(
-                    text = next.first,
-                    voiceProfile = profileFor(next.second),
-                    exaggeration = 0.42f
-                )
+                override fun onReady() {
+                    val next = pending ?: return
+                    pending = null
+                    voice.speak(
+                        text = next.first,
+                        voiceProfile = profileFor(next.second),
+                        exaggeration = 0.42f
+                    )
+                }
+
+                override fun onSpeechStarted(durationMs: Long) {
+                    listener.onScenarioVoiceStarted()
+                }
+
+                override fun onSpeechCursor(fraction: Float) = Unit
+
+                override fun onSpeechFinished() {
+                    listener.onScenarioVoiceFinished()
+                }
+
+                override fun onError(message: String) {
+                    pending = null
+                    listener.onScenarioVoiceError(message)
+                }
             }
-
-            override fun onSpeechStarted(durationMs: Long) {
-                listener.onScenarioVoiceStarted()
-            }
-
-            override fun onSpeechCursor(fraction: Float) = Unit
-
-            override fun onSpeechFinished() {
-                listener.onScenarioVoiceFinished()
-            }
-
-            override fun onError(message: String) {
-                pending = null
-                listener.onScenarioVoiceError(message)
-            }
-        }
-    )
+        )
+    }
 
     fun speak(line: String, speaker: SideSpeaker) {
         if (speaker == SideSpeaker.NONE || line.isBlank()) {
