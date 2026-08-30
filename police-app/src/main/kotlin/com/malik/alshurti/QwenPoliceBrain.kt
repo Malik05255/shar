@@ -29,26 +29,22 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
     private val historyLock = Any()
     private val history = ArrayDeque<Turn>()
 
-    @Volatile
-    private var loadedModel: LlamaModel? = null
-
-    @Volatile
-    private var allowNetworkDownloads = true
+    @Volatile private var loadedModel: LlamaModel? = null
+    @Volatile private var allowNetworkDownloads = true
 
     override fun prepare(allowDownload: Boolean) {
         allowNetworkDownloads = allowDownload
         if (loadedModel != null) return
         scope.launch {
             runCatching { modelOrLoad() }
-            // Warm-up errors are intentionally not made permanent. If the app started
-            // Offline before the model existed, switching Online later must still be
-            // able to provision the model and recover without restarting the app.
+            // Warm-up errors are not made permanent: switching from Offline to Online
+            // later can still provision the model without restarting the app.
         }
     }
 
     override suspend fun reply(userText: String): PoliceReply {
         val cleanUser = userText.trim()
-        if (cleanUser.isBlank()) return PoliceReply("إيه، أسمعك. كمل.", DogMood.CALM)
+        require(cleanUser.isNotBlank()) { "لا يوجد كلام واضح للرد عليه." }
 
         emergencyReply(cleanUser)?.let { return it }
 
@@ -56,7 +52,7 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
             val model = modelOrLoad()
             val prompt = buildPrompt(cleanUser)
             val generated = sanitize(model.generate(prompt))
-                .ifBlank { "إيه فهمتك. كمل لي وش صار." }
+            check(generated.isNotBlank()) { "النموذج لم يولد رداً صالحاً. حاول مرة ثانية." }
 
             synchronized(historyLock) {
                 history.addLast(Turn(cleanUser, generated))
@@ -124,17 +120,25 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
     }
 
     private fun sanitize(raw: String): String {
-        var value = raw
+        val cleaned = raw
             .replace(Regex("(?s)<think>.*?</think>"), "")
             .replace("<|im_end|>", "")
             .replace("<|endoftext|>", "")
             .replace("<|im_start|>", "")
+            .replace(Regex("\\s+"), " ")
             .trim()
 
-        // A phone conversation sounds scripted when a small model rambles. Keep the
-        // generated response compact without substituting a canned answer.
-        if (value.length > 260) value = value.take(260).trimEnd()
-        return value
+        if (cleaned.length <= MAX_REPLY_CHARS) return cleaned
+
+        // Keep a phone-call response short at a natural sentence boundary rather than
+        // chopping an Arabic word mid-sentence. Nothing is substituted with canned text.
+        val window = cleaned.take(MAX_REPLY_CHARS)
+        val boundary = window.indexOfLast { it == '.' || it == '؟' || it == '!' || it == '،' }
+        return if (boundary >= MIN_NATURAL_BOUNDARY) {
+            window.substring(0, boundary + 1).trim()
+        } else {
+            window.substringBeforeLast(' ', window).trim()
+        }
     }
 
     private fun emergencyReply(text: String): PoliceReply? {
@@ -220,6 +224,8 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
 
     private companion object {
         const val MAX_HISTORY_TURNS = 5
+        const val MAX_REPLY_CHARS = 240
+        const val MIN_NATURAL_BOUNDARY = 90
         const val MODEL_FILE_NAME = "Qwen3-0.6B-Q4_K_M.gguf"
         const val MIN_MODEL_BYTES = 430_000_000L
         const val MODEL_URL = "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf?download=true"
