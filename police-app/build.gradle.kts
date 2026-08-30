@@ -89,7 +89,6 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
     implementation("io.github.sceneview:sceneview:4.33.0")
     implementation("org.codeshipping:llama-kotlin-android:0.1.7")
 
