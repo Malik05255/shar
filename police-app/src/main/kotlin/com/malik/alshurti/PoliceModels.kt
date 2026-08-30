@@ -23,5 +23,6 @@ data class PoliceUiState(
     val replyText: String = "",
     val statusText: String = "جاري تجهيز الشرطي…",
     val errorMessage: String? = null,
-    val firstGreetingDone: Boolean = false
+    val firstGreetingDone: Boolean = false,
+    val readyToStart: Boolean = false
 )
