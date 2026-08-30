@@ -21,12 +21,9 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Conversational Saudi Arabic voice for ONLINE mode.
  *
- * This talks to the public NAMAA Saudi Voice Gradio Space, whose model is based on
- * NAMAA-Saudi-TTS / Chatterbox Multilingual. No API key is embedded in the app.
- *
- * Important product rule: this class is never used as an "unlimited cloud" promise.
- * Public Spaces can queue, sleep, or become unavailable. The engine is isolated so a
- * self-hosted NAMAA endpoint can replace [BASE_URL] without changing the call UI.
+ * This talks to the public NAMAA Saudi Voice Gradio Space. Public ZeroGPU Spaces can
+ * queue, sleep, rate-limit or exhaust anonymous quota, so every network stage is
+ * surfaced to the UI instead of failing as silent audio.
  */
 class NamaaSaudiVoice(
     context: Context,
@@ -50,10 +47,11 @@ class NamaaSaudiVoice(
 
     @Volatile private var player: MediaPlayer? = null
     @Volatile private var released = false
+    @Volatile private var cachedApiName: String? = null
 
     fun prepare() {
         if (released) return
-        callbacks.onPreparing(100, "الصوت السعودي جاهز")
+        callbacks.onPreparing(100, "الصوت السعودي جاهز للاختبار")
         callbacks.onReady()
     }
 
@@ -66,6 +64,8 @@ class NamaaSaudiVoice(
 
         val ticket = generation.incrementAndGet()
         stopPlayer()
+        callbacks.onPreparing(5, "جاري الاتصال بخدمة الصوت السعودي…")
+
         io.execute {
             try {
                 val audio = synthesize(ticket, clean)
@@ -73,12 +73,23 @@ class NamaaSaudiVoice(
                     audio.delete()
                     return@execute
                 }
-                main.post { play(ticket, audio) }
+                main.post {
+                    callbacks.onPreparing(95, "تم استلام الصوت — جاري تشغيله…")
+                    play(ticket, audio)
+                }
             } catch (t: Throwable) {
                 if (ticket == generation.get() && !released) {
-                    main.post {
-                        callbacks.onError(t.message ?: "تعذر تشغيل الصوت السعودي الآن.")
+                    val detail = when (t) {
+                        is HttpStatusException -> when (t.code) {
+                            401, 403 -> "خدمة NAMAA رفضت الطلب (${t.code}). قد تتطلب هوية Hugging Face/حصة ZeroGPU."
+                            404 -> "تعذر العثور على واجهة NAMAA الصوتية (404)."
+                            429 -> "حصة NAMAA/ZeroGPU المجانية مشغولة أو انتهت مؤقتاً (429)."
+                            503 -> "خدمة NAMAA تستيقظ أو لا يوجد GPU متاح الآن (503)."
+                            else -> "خدمة NAMAA أرجعت HTTP ${t.code}: ${t.detail.take(120)}"
+                        }
+                        else -> t.message ?: "تعذر تشغيل الصوت السعودي الآن."
                     }
+                    main.post { callbacks.onError(detail) }
                 }
             }
         }
@@ -98,19 +109,71 @@ class NamaaSaudiVoice(
 
     private fun synthesize(ticket: Long, text: String): File {
         if (ticket != generation.get()) error("cancelled")
-        val eventId = createJob(text)
-        val output = waitForAudio(eventId, ticket)
+        postPreparing(12, "جاري فحص واجهة NAMAA…")
+        val apiName = resolveApiName()
+        postPreparing(20, "جاري إرسال النص للصوت السعودي…")
+        val eventId = createJob(text, apiName)
+        postPreparing(35, "دخل طلب الصوت الطابور…")
+        val output = waitForAudio(eventId, apiName, ticket)
         if (ticket != generation.get()) error("cancelled")
+        postPreparing(80, "تم توليد الصوت — جاري تنزيله…")
         return downloadAudio(output, ticket)
     }
 
-    private fun createJob(text: String): String {
+    private fun resolveApiName(): String {
+        cachedApiName?.let { return it }
+
+        val discovered = runCatching {
+            val connection = openConnection("$BASE_URL/gradio_api/info", "GET")
+            try {
+                ensureSuccess(connection, "تعذر قراءة واجهة Gradio")
+                val root = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                val named = root.optJSONObject("named_endpoints")
+                if (named != null) {
+                    val keys = named.keys().asSequence().toList()
+                    keys.firstOrNull { it.contains("generate_tts_audio", ignoreCase = true) }
+                        ?: keys.firstOrNull { it.contains("predict", ignoreCase = true) }
+                } else null
+            } finally {
+                connection.disconnect()
+            }
+        }.getOrNull()
+
+        val normalized = discovered
+            ?.trim()
+            ?.trimStart('/')
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_API_NAME
+        cachedApiName = normalized
+        return normalized
+    }
+
+    private fun createJob(text: String, preferredApiName: String): String {
+        val candidates = linkedSetOf(preferredApiName, DEFAULT_API_NAME, "predict")
+        var last404: HttpStatusException? = null
+        for (apiName in candidates) {
+            try {
+                val event = createJobAt(text, apiName)
+                cachedApiName = apiName
+                return event
+            } catch (error: HttpStatusException) {
+                if (error.code == 404) {
+                    last404 = error
+                    continue
+                }
+                throw error
+            }
+        }
+        throw last404 ?: error("تعذر العثور على واجهة توليد الصوت.")
+    }
+
+    private fun createJobAt(text: String, apiName: String): String {
         val payload = JSONObject().apply {
             put(
                 "data",
                 JSONArray().apply {
                     put(text.take(MAX_TEXT_CHARS))
-                    put(JSONObject.NULL) // Space falls back to its built-in Saudi reference voice.
+                    put(JSONObject.NULL)
                     put(EXAGGERATION)
                     put(TEMPERATURE)
                     put(0)
@@ -119,9 +182,10 @@ class NamaaSaudiVoice(
             )
         }
 
-        val connection = openConnection("$BASE_URL/gradio_api/call/$API_NAME", "POST").apply {
+        val connection = openConnection("$BASE_URL/gradio_api/call/$apiName", "POST").apply {
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Accept", "application/json")
         }
         try {
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
@@ -134,8 +198,8 @@ class NamaaSaudiVoice(
         }
     }
 
-    private fun waitForAudio(eventId: String, ticket: Long): AudioLocation {
-        val connection = openConnection("$BASE_URL/gradio_api/call/$API_NAME/$eventId", "GET").apply {
+    private fun waitForAudio(eventId: String, apiName: String, ticket: Long): AudioLocation {
+        val connection = openConnection("$BASE_URL/gradio_api/call/$apiName/$eventId", "GET").apply {
             setRequestProperty("Accept", "text/event-stream")
             readTimeout = EVENT_READ_TIMEOUT_MS
         }
@@ -147,7 +211,10 @@ class NamaaSaudiVoice(
                 while (ticket == generation.get()) {
                     val line = reader.readLine() ?: break
                     when {
-                        line.startsWith("event:") -> event = line.substringAfter(':').trim()
+                        line.startsWith("event:") -> {
+                            event = line.substringAfter(':').trim()
+                            if (event == "generating") postPreparing(55, "NAMAA يولّد الصوت الآن…")
+                        }
                         line.startsWith("data:") -> {
                             val data = line.substringAfter(':').trim()
                             if (event == "error") error(parseServerError(data))
@@ -171,35 +238,32 @@ class NamaaSaudiVoice(
         return findAudioRecursive(root)
     }
 
-    private fun findAudioRecursive(value: Any?): AudioLocation? {
-        return when (value) {
-            is JSONObject -> {
-                val directUrl = value.optString("url").takeIf { it.isNotBlank() }
-                if (directUrl != null) {
-                    AudioLocation(url = directUrl, path = null)
+    private fun findAudioRecursive(value: Any?): AudioLocation? = when (value) {
+        is JSONObject -> {
+            val directUrl = value.optString("url").takeIf { it.isNotBlank() }
+            if (directUrl != null) {
+                AudioLocation(url = directUrl, path = null)
+            } else {
+                val directPath = value.optString("path").takeIf { it.isNotBlank() }
+                if (directPath != null) {
+                    AudioLocation(url = null, path = directPath)
                 } else {
-                    val directPath = value.optString("path").takeIf { it.isNotBlank() }
-                    if (directPath != null) {
-                        AudioLocation(url = null, path = directPath)
-                    } else {
-                        value.keys().asSequence()
-                            .mapNotNull { key -> findAudioRecursive(value.opt(key)) }
-                            .firstOrNull()
-                    }
+                    value.keys().asSequence()
+                        .mapNotNull { key -> findAudioRecursive(value.opt(key)) }
+                        .firstOrNull()
                 }
             }
-            is JSONArray -> (0 until value.length()).asSequence()
-                .mapNotNull { index -> findAudioRecursive(value.opt(index)) }
-                .firstOrNull()
-            is String -> when {
-                value.startsWith("http://") || value.startsWith("https://") -> AudioLocation(value, null)
-                value.contains("/gradio_api/file=") -> AudioLocation(value, null)
-                value.endsWith(".wav") || value.endsWith(".flac") || value.endsWith(".mp3") ->
-                    AudioLocation(null, value)
-                else -> null
-            }
+        }
+        is JSONArray -> (0 until value.length()).asSequence()
+            .mapNotNull { index -> findAudioRecursive(value.opt(index)) }
+            .firstOrNull()
+        is String -> when {
+            value.startsWith("http://") || value.startsWith("https://") -> AudioLocation(value, null)
+            value.contains("/gradio_api/file=") -> AudioLocation(value, null)
+            value.endsWith(".wav") || value.endsWith(".flac") || value.endsWith(".mp3") -> AudioLocation(null, value)
             else -> null
         }
+        else -> null
     }
 
     private fun downloadAudio(location: AudioLocation, ticket: Long): File {
@@ -266,6 +330,7 @@ class NamaaSaudiVoice(
                     .build()
             )
             setDataSource(file.absolutePath)
+            setVolume(1f, 1f)
             setOnPreparedListener { prepared ->
                 if (ticket != generation.get() || released) {
                     prepared.release()
@@ -283,11 +348,13 @@ class NamaaSaudiVoice(
                 file.delete()
                 if (ticket == generation.get() && !released) callbacks.onSpeechFinished()
             }
-            setOnErrorListener { failed, _, _ ->
+            setOnErrorListener { failed, what, extra ->
                 if (player === failed) player = null
                 runCatching { failed.release() }
                 file.delete()
-                if (ticket == generation.get() && !released) callbacks.onError("تعذر تشغيل الرد الصوتي.")
+                if (ticket == generation.get() && !released) {
+                    callbacks.onError("تعذر تشغيل ملف الصوت على الهاتف (MediaPlayer $what/$extra).")
+                }
                 true
             }
         }
@@ -323,7 +390,8 @@ class NamaaSaudiVoice(
             readTimeout = READ_TIMEOUT_MS
             instanceFollowRedirects = true
             useCaches = false
-            setRequestProperty("User-Agent", "AlShorti-Android/0.3")
+            setRequestProperty("User-Agent", "AlShorti-Android/0.3.2")
+            setRequestProperty("Accept-Language", "ar-SA,ar;q=0.9,en;q=0.5")
         }
 
     private fun ensureSuccess(connection: HttpURLConnection, prefix: String) {
@@ -331,8 +399,8 @@ class NamaaSaudiVoice(
         if (code !in 200..299) {
             val detail = runCatching {
                 connection.errorStream?.bufferedReader()?.use { it.readText() }
-            }.getOrNull().orEmpty().take(180)
-            error("$prefix ($code)${if (detail.isBlank()) "" else ": $detail"}")
+            }.getOrNull().orEmpty()
+            throw HttpStatusException(code, "$prefix: $detail")
         }
     }
 
@@ -345,11 +413,18 @@ class NamaaSaudiVoice(
         .replace("…", "،")
         .trim()
 
+    private fun postPreparing(percent: Int, message: String) {
+        main.post {
+            if (!released) callbacks.onPreparing(percent, message)
+        }
+    }
+
     private data class AudioLocation(val url: String?, val path: String?)
+    private class HttpStatusException(val code: Int, val detail: String) : RuntimeException(detail)
 
     private companion object {
         const val BASE_URL = "https://omarelshehy-namaa-saudi-voice.hf.space"
-        const val API_NAME = "generate_tts_audio"
+        const val DEFAULT_API_NAME = "generate_tts_audio"
         const val MAX_TEXT_CHARS = 220
         const val EXAGGERATION = 0.55
         const val TEMPERATURE = 0.72
