@@ -34,6 +34,16 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
+      - name: Validate production Saudi voice
+        shell: bash
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ELEVENLABS_API_KEY" ]]; then
+            echo "::error::ELEVENLABS_API_KEY is missing. Refusing to publish a test APK with broken/silent production voice."
+            exit 1
+          fi
       - name: Restore permanent signing key when configured
         shell: bash
         env:
@@ -112,8 +122,6 @@ jobs:
             -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
             -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
 
-          # Continuous micro-performance cycles. Because the reverse half ends on the exact first
-          # frame, MediaPlayer can loop them without exposing a hard reset to the beginning.
           make_living_cycle "$RAW_DIR/dog_idle_loop.mp4" "$RAW_DIR/dog_idle_living.mp4"
           make_living_cycle "$RAW_DIR/dog_talk_seated.mp4" "$RAW_DIR/dog_talk_seated_living.mp4"
           make_living_cycle "$RAW_DIR/dog_talk_standing.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
