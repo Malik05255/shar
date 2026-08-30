@@ -28,7 +28,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var sessionStarted = false
 
     init {
-        brain.prepare()
+        // Strict mode semantics: Offline never provisions missing models over the network.
+        brain.prepare(allowDownload = initialMode == VoiceMode.ONLINE)
         voiceEngine.setMode(initialMode)
     }
 
@@ -53,7 +54,10 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         preferences.edit().putString(KEY_MODE, mode.name).apply()
         ttsReady = false
         sessionStarted = false
+
+        brain.prepare(allowDownload = mode == VoiceMode.ONLINE)
         voiceEngine.setMode(mode)
+
         _uiState.update {
             it.copy(
                 mode = mode,
@@ -61,7 +65,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
                 statusText = if (mode == VoiceMode.ONLINE) {
-                    "جاري تجهيز المحادثة والصوت…"
+                    "جاري تجهيز الاستماع والمحادثة والصوت السعودي…"
                 } else {
                     "جاري تشغيل المحركات المحلية…"
                 },
