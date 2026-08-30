@@ -1,31 +1,32 @@
 package com.malik.alshurti
 
-import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class LocalPoliceBrainTest {
+class PoliceConversationContractTest {
     @Test
-    fun parentTookToyGetsCalmResponse() = runTest {
-        val reply = LocalPoliceBrain().reply("يا شرطي بابا أخذ كرتي")
-        assertTrue(reply.text.contains("بهدوء"))
-        assertFalse(reply.text.contains("سجن"))
-        assertFalse(reply.text.contains("دورية"))
+    fun promptRequiresNaturalSaudiConversationInsteadOfCannedReplies() {
+        val prompt = PoliceCharacterContract.systemPrompt
+        assertTrue(prompt.contains("اللهجة السعودية"))
+        assertTrue(prompt.contains("مكالمة حقيقية"))
+        assertTrue(prompt.contains("لا تبدأ كل رد"))
+        assertTrue(prompt.contains("سياق الكلام السابق"))
     }
 
     @Test
-    fun realDangerRoutesChildToAdultAndEmergencyHelp() = runTest {
-        val reply = LocalPoliceBrain().reply("في واحد يهددني بسكين")
-        assertTrue(reply.text.contains("شخص بالغ"))
-        assertTrue(reply.text.contains("الطوارئ"))
-        assertTrue(reply.mood == DogMood.SERIOUS)
+    fun promptKeepsChildSafetyBoundaries() {
+        val prompt = PoliceCharacterContract.systemPrompt
+        assertTrue(prompt.contains("لا تهدد بالسجن"))
+        assertTrue(prompt.contains("لا تطلب عنواناً"))
+        assertTrue(prompt.contains("شخص بالغ موثوق"))
+        assertTrue(prompt.contains("الطوارئ الحقيقية"))
     }
 
     @Test
-    fun siblingViolenceIsDeEscalated() = runTest {
-        val reply = LocalPoliceBrain().reply("أخوي ضربني")
-        assertTrue(reply.text.contains("ابتعد"))
-        assertTrue(reply.text.contains("بدون ضرب"))
+    fun promptDoesNotPretendToBeRealPolice() {
+        val prompt = PoliceCharacterContract.systemPrompt
+        assertTrue(prompt.contains("شخصية خيالية"))
+        assertFalse(prompt.contains("سأرسل دورية"))
     }
 }

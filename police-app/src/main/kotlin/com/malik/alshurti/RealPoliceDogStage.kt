@@ -1,8 +1,13 @@
 package com.malik.alshurti
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
@@ -12,16 +17,11 @@ import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 
 /**
- * Production visual stage.
+ * Production visual stage for the cinematic stylized-realistic police dog.
  *
- * The final character is a real PBR GLB rendered by Google Filament through SceneView.
- * The existing Canvas character is kept only as a build-safe placeholder until a
- * licensed `models/police_dog.glb` is present in app assets.
- *
- * Required body clips: Idle, Listen, Think, Smile, Serious.
- * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
- * Those short clips allow the neural speech cursor to change the actual 3D mouth pose
- * while the Arabic audio is playing, instead of merely animating a generic jaw loop.
+ * Until the final rigged GLB is committed, the app intentionally shows only the
+ * cinematic office background. It never exposes developer copy or substitutes a
+ * cartoon mascot that could be mistaken for the final character.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -39,9 +39,7 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        // Never pretend this is the final realistic character. This fallback exists only
-        // so developers can build/test voice and call flow before the licensed GLB lands.
-        PoliceDogStage(mood, phase, viseme, modifier)
+        CinematicEmptyStage(modifier)
         return
     }
 
@@ -74,6 +72,23 @@ fun RealPoliceDogStage(
             )
         }
     }
+}
+
+@Composable
+private fun CinematicEmptyStage(modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF0B1822),
+                        Color(0xFF08131D),
+                        Color(0xFF050C13)
+                    )
+                )
+            )
+    )
 }
 
 private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): String = when {
