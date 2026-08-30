@@ -3,6 +3,7 @@ package com.malik.alshurti
 import android.content.Context
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
+import android.net.Uri
 import android.view.Surface
 import android.view.TextureView
 import androidx.annotation.RawRes
@@ -47,19 +48,15 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         alpha = 0f
 
         runCatching {
-            val descriptor = resources.openRawResourceFd(active.resId)
-                ?: error("Raw video resource ${active.resId} is unavailable")
             val surface = Surface(texture)
             mediaSurface = surface
 
             val player = MediaPlayer().also { mediaPlayer = it }
             player.setSurface(surface)
             player.setDataSource(
-                descriptor.fileDescriptor,
-                descriptor.startOffset,
-                descriptor.length
+                context,
+                Uri.parse("android.resource://${context.packageName}/${active.resId}")
             )
-            descriptor.close()
             player.isLooping = active.looping
             player.setVolume(0f, 0f)
 
@@ -69,14 +66,18 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                         val usableMs = (prepared.duration - 650).coerceAtLeast(1)
                         val offset = ((active.seed xor (active.resId.toLong() shl 17)).absoluteValue % usableMs)
                             .toInt()
-                        prepared.seekTo(offset, MediaPlayer.SEEK_CLOSEST_SYNC)
 
                         // Tiny visual tempo variance makes repeated idle/talk loops less mechanical.
                         val speedBucket = ((active.seed ushr 7).absoluteValue % 7).toInt()
                         val speed = 0.97f + speedBucket * 0.01f
                         prepared.playbackParams = prepared.playbackParams.setSpeed(speed)
+                        prepared.setOnSeekCompleteListener { seeked ->
+                            runCatching { seeked.start() }.onFailure { alpha = 0f }
+                        }
+                        prepared.seekTo(offset, MediaPlayer.SEEK_CLOSEST_SYNC)
+                    } else {
+                        prepared.start()
                     }
-                    prepared.start()
                 }.onFailure {
                     alpha = 0f
                 }
@@ -111,6 +112,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
     }
 
     private fun releasePlayer() {
+        runCatching { mediaPlayer?.setOnSeekCompleteListener(null) }
         runCatching { mediaPlayer?.setSurface(null) }
         runCatching { mediaPlayer?.stop() }
         runCatching { mediaPlayer?.reset() }
