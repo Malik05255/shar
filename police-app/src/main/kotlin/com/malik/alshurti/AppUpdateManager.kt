@@ -1,6 +1,7 @@
 package com.malik.alshurti
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -56,9 +57,9 @@ sealed interface AppUpdateState {
  * Secure self-updater for sideloaded Al-Shorti builds.
  *
  * The updater trusts only the public Malik05255/shar GitHub Releases endpoint. A release must
- * contain one APK plus a matching `.sha256` asset. The APK is verified before Android's package
- * installer is opened. Android still owns the final install confirmation; silent installation is
- * intentionally not attempted.
+ * contain one APK plus a matching `.sha256` asset. Both integrity and Android signing identity are
+ * verified before the package installer opens. Android still owns the final install confirmation;
+ * silent installation is intentionally not attempted.
  */
 class AppUpdateManager(private val activity: ComponentActivity) {
     private data class PendingInstall(
@@ -104,7 +105,7 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             }.onFailure { error ->
                 _state.value = AppUpdateState.Error(
                     message = error.message ?: "تعذر تحميل التحديث.",
-                    retryable = true
+                    retryable = !isSigningMismatch(error)
                 )
             }
         }
@@ -126,11 +127,19 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         }
     }
 
-    /** Call from Activity.onResume after the user returns from Android's unknown-apps settings. */
+    /** Call from Activity.onResume after Android settings/package-installer returns to the app. */
     fun onActivityResumed() {
-        val pending = pendingInstall ?: return
-        if (canInstallPackages()) {
+        val pending = pendingInstall
+        if (pending != null && canInstallPackages()) {
             launchPackageInstaller(pending.apkFile, pending.versionName)
+            return
+        }
+
+        // If the installer was opened and the user came back without completing it, do not leave a
+        // permanent "Installing" dialog over the call screen. Re-check; a successful install will
+        // normally restart/replace this process and the new version will report itself current.
+        if (pending == null && _state.value is AppUpdateState.Installing) {
+            checkForUpdates()
         }
     }
 
@@ -253,6 +262,14 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             error("فشل التحقق من سلامة التحديث؛ لم يتم فتح ملف التثبيت.")
         }
 
+        if (!hasSameSigningCertificate(target)) {
+            target.delete()
+            throw SigningMismatchException(
+                "هذه النسخة الحالية موقعة بمفتاح اختبار مختلف عن التحديث الرسمي. " +
+                    "يلزم الانتقال مرة واحدة إلى النسخة الموقعة رسميًا؛ بعد ذلك ستثبت جميع التحديثات فوق السابقة بدون حذف."
+            )
+        }
+
         return target
     }
 
@@ -274,11 +291,13 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
             Uri.parse("package:${activity.packageName}")
         )
-        runCatching { activity.startActivity(intent) }.onFailure {
-            _state.value = AppUpdateState.Error(
-                "افتح إعدادات الجهاز واسمح لتطبيق الشرطي بتثبيت التحديثات.",
-                retryable = true
-            )
+        activity.runOnUiThread {
+            runCatching { activity.startActivity(intent) }.onFailure {
+                _state.value = AppUpdateState.Error(
+                    "افتح إعدادات الجهاز واسمح لتطبيق الشرطي بتثبيت التحديثات.",
+                    retryable = true
+                )
+            }
         }
     }
 
@@ -302,12 +321,34 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         }
 
         _state.value = AppUpdateState.Installing(versionName)
-        runCatching { activity.startActivity(intent) }.onFailure {
-            _state.value = AppUpdateState.Error(
-                "تعذر فتح مثبت Android. أعد المحاولة.",
-                retryable = true
-            )
+        activity.runOnUiThread {
+            runCatching { activity.startActivity(intent) }
+                .onSuccess { pendingInstall = null }
+                .onFailure {
+                    _state.value = AppUpdateState.Error(
+                        "تعذر فتح مثبت Android. أعد المحاولة.",
+                        retryable = true
+                    )
+                }
         }
+    }
+
+    private fun hasSameSigningCertificate(apkFile: File): Boolean {
+        val flags = PackageManager.GET_SIGNING_CERTIFICATES
+        val installed = activity.packageManager.getPackageInfo(activity.packageName, flags)
+        val candidate = activity.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
+            ?: return false
+
+        val installedDigests = installed.signingInfo?.apkContentsSigners
+            ?.map { certificate -> sha256(certificate.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+        val candidateDigests = candidate.signingInfo?.apkContentsSigners
+            ?.map { certificate -> sha256(certificate.toByteArray()) }
+            ?.toSet()
+            .orEmpty()
+
+        return installedDigests.isNotEmpty() && installedDigests == candidateDigests
     }
 
     private fun downloadText(url: String): String {
@@ -343,6 +384,11 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
     }
 
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { byte -> "%02x".format(byte) }
+
     private fun compareVersions(a: String, b: String): Int {
         val left = a.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
         val right = b.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
@@ -354,6 +400,10 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         }
         return 0
     }
+
+    private fun isSigningMismatch(error: Throwable): Boolean = error is SigningMismatchException
+
+    private class SigningMismatchException(message: String) : IllegalStateException(message)
 
     private companion object {
         const val LATEST_RELEASE_URL = "https://api.github.com/repos/Malik05255/shar/releases/latest"
