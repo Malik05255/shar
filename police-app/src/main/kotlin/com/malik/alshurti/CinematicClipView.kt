@@ -80,11 +80,14 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 runCatching {
                     val durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     if (active.randomizeStart && durationMs > 2_200L) {
-                        // Start from a different quiet portion each time this state is entered, but
-                        // never from the final 1.2 s so enough natural movement remains to play.
-                        val usableMs = (durationMs - 1_200L).coerceAtLeast(1L)
+                        // Vary only the early, low-amplitude portion. Starting near the end would
+                        // make a state feel like a truncated replay and expose the generated edit.
+                        val maxStartMs = minOf(
+                            (durationMs * 0.35f).toLong(),
+                            (durationMs - 1_800L).coerceAtLeast(0L)
+                        )
                         val raw = (active.seed xor (active.resId.toLong() shl 17)).absoluteValue
-                        val offset = raw % usableMs
+                        val offset = if (maxStartMs > 0L) raw % (maxStartMs + 1L) else 0L
                         prepared.setOnSeekCompleteListener { seeked ->
                             runCatching { seeked.start() }
                         }
