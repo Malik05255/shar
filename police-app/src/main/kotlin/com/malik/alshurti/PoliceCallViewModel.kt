@@ -154,6 +154,18 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    override fun onSpeechPreparing(percent: Int, message: String) {
+        _uiState.update {
+            it.copy(
+                phase = CallPhase.STARTING,
+                mood = DogMood.CALM,
+                viseme = MouthViseme.REST,
+                statusText = if (percent in 1..99) "$message $percent%" else message,
+                errorMessage = null
+            )
+        }
+    }
+
     override fun onReadyToListen() {
         _uiState.update {
             it.copy(
