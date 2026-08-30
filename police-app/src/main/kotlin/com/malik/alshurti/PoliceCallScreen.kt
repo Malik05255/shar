@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -104,7 +105,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 contentColor = Color.White
             ) {
                 IconButton(onClick = { menuExpanded = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "اختيار وضع التشغيل")
+                    Icon(Icons.Default.MoreVert, contentDescription = "خيارات التشغيل")
                 }
             }
 
@@ -116,8 +117,47 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
+                            "اختبار الصوت المحلي",
+                            "يختبر محرك النطق فقط؛ أول مرة قد ينزل الصوت في وضع الإنترنت",
+                            false
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        viewModel.testSaudiVoice()
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        ModeMenuText(
+                            "بدء المحادثة",
+                            "يشغّل الشرطي؛ أول إعداد يثبت المحركات المحلية الناقصة",
+                            false
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        viewModel.startConversation()
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        ModeMenuText(
+                            "تنزيل عقل المحادثة",
+                            "يثبّت Qwen على الجهاز مسبقاً لتقليل انتظار أول رد",
+                            false
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        viewModel.downloadLocalConversationModel()
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        ModeMenuText(
                             "الإنترنت",
-                            "يحمّل الصوت العصبي أول مرة ثم يحتفظ به على الجهاز",
+                            "يسمح فقط بتنزيل النماذج الناقصة؛ التحدث والمعالجة محليان",
                             state.mode == VoiceMode.ONLINE
                         )
                     },
@@ -130,7 +170,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "بدون إنترنت",
-                            "يستخدم الصوت العصبي المحفوظ محلياً بدون اشتراك أو دقائق",
+                            "لا يستخدم الشبكة إطلاقاً؛ يشغّل النماذج المثبتة مسبقاً",
                             state.mode == VoiceMode.OFFLINE
                         )
                     },
@@ -165,6 +205,54 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 }
             }
 
+            AnimatedVisibility(
+                visible = state.phase != CallPhase.SPEAKING && state.phase != CallPhase.LISTENING,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(onClick = viewModel::testSaudiVoice) {
+                        Text("اختبار الصوت المحلي")
+                    }
+                    Text(
+                        if (state.mode == VoiceMode.ONLINE) {
+                            "أول مرة فقط قد ينزل نموذج الصوت، وبعدها يعمل من الجهاز"
+                        } else {
+                            "يعمل فقط إذا كان نموذج الصوت مثبتاً مسبقاً"
+                        },
+                        color = Color.White.copy(alpha = 0.56f),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            AnimatedVisibility(
+                visible = state.readyToStart,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(onClick = viewModel::startConversation) {
+                        Text("بدء المحادثة")
+                    }
+                    Text(
+                        if (state.mode == VoiceMode.ONLINE) {
+                            "الإعداد الأول فقط يحتاج تنزيل Whisper والصوت وQwen"
+                        } else {
+                            "بدون إنترنت لن يتم أي تنزيل"
+                        },
+                        color = Color.White.copy(alpha = 0.56f),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
 
             Surface(color = Color(0xCC0B1820), shape = RoundedCornerShape(24.dp)) {
@@ -183,7 +271,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
                     if (state.phase == CallPhase.ERROR) {
-                        IconButton(onClick = viewModel::retryListening, modifier = Modifier.size(34.dp)) {
+                        IconButton(onClick = viewModel::startConversation, modifier = Modifier.size(34.dp)) {
                             Icon(Icons.Default.Refresh, contentDescription = "إعادة المحاولة", tint = Color.White)
                         }
                     }
@@ -196,7 +284,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 exit = fadeOut()
             ) {
                 Text(
-                    "المس الشرطي إذا أردت مقاطعته",
+                    "المس الشاشة إذا أردت مقاطعة الشرطي",
                     color = Color.White.copy(alpha = 0.55f),
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 6.dp)

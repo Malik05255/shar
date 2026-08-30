@@ -1,9 +1,25 @@
 package com.malik.alshurti
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
@@ -14,14 +30,12 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * The final character is a real PBR GLB rendered by Google Filament through SceneView.
- * The existing Canvas character is kept only as a build-safe placeholder until a
- * licensed `models/police_dog.glb` is present in app assets.
+ * The final character is a cinematic stylized-realistic 3D animated police dog:
+ * believable canine anatomy/materials with expressive feature-film facial animation.
+ * It is NOT a photographed real dog and NOT the old flat/cartoon mascot.
  *
  * Required body clips: Idle, Listen, Think, Smile, Serious.
  * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
- * Those short clips allow the neural speech cursor to change the actual 3D mouth pose
- * while the Arabic audio is playing, instead of merely animating a generic jaw loop.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -39,9 +53,7 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        // Never pretend this is the final realistic character. This fallback exists only
-        // so developers can build/test voice and call flow before the licensed GLB lands.
-        PoliceDogStage(mood, phase, viseme, modifier)
+        VoicePreviewStage(modifier)
         return
     }
 
@@ -71,6 +83,53 @@ fun RealPoliceDogStage(
                 scaleToUnits = 1.72f,
                 centerOrigin = Position(x = 0f, y = -1f, z = 0f),
                 position = Position(x = 0f, y = -0.18f, z = 0f)
+            )
+        }
+    }
+}
+
+/**
+ * Deliberately neutral: this is not a fake/cartoon replacement for the final dog.
+ * It keeps the voice/conversation build testable while the licensed rigged GLB is
+ * authored separately.
+ */
+@Composable
+private fun VoicePreviewStage(modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF07111C)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                modifier = Modifier.size(112.dp),
+                shape = CircleShape,
+                color = Color(0xFF102B3A),
+                contentColor = Color.White
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "صوت",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = "معاينة صوتية",
+                color = Color.White.copy(alpha = 0.88f),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "المجسم السينمائي النهائي يُركّب بشكل مستقل",
+                color = Color.White.copy(alpha = 0.46f),
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center
             )
         }
     }

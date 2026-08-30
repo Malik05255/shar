@@ -4,17 +4,56 @@ The production character must be committed here as:
 
 `police_dog.glb`
 
-The app deliberately does **not** label the lightweight Compose fallback as the final character. `RealPoliceDogStage` switches automatically to this GLB when it exists.
+The app deliberately does **not** show the old lightweight Compose/cartoon dog as the final character. `RealPoliceDogStage` switches to this GLB only when the correct production asset exists.
 
-## Visual target
+## Visual target — locked
 
-- Realistic Belgian Malinois or German Shepherd proportions; not a mascot, chibi, cartoon, or low-poly animal.
-- Natural PBR fur using mobile-friendly baked textures / cards rather than desktop strand grooming.
-- Real textile police uniform/vest with believable seams, folds, badge/patch materials and hardware.
-- Character authored seated behind a realistic police desk, facing the child/camera.
-- Eyes, wet nose, teeth, tongue and inner mouth must be modeled/textured for close phone framing.
-- Neutral cinematic office lighting must survive Filament mobile rendering.
-- Default mobile textures: 2K PBR. Use 4K only as an optional high-end LOD, never the mandatory baseline.
+The target is **cinematic realistic 3D animation**, not a photographed real dog and not a flat/cartoon mascot.
+
+Think of a high-end animated feature-film character: believable anatomy, fur, materials and lighting, but with expressive animated eyes, brows, cheeks, ears and mouth.
+
+- Belgian Malinois or German Shepherd inspired dog.
+- Realistic canine proportions and anatomy.
+- High-quality stylized-realistic 3D face: expressive and friendly, but never chibi, mascot, low-poly or children's-TV cartoon.
+- Dense-looking fur rendered with mobile-friendly PBR textures/cards.
+- Natural wet nose, eye reflections, teeth, tongue and inner mouth suitable for close-up phone framing.
+- Wearing a believable dark police uniform/vest with textile weave, seams, folds, badge/patches and hardware.
+- **Seated naturally behind a police desk**, upper body visible, facing the child/camera as if in a live call.
+- Realistic police-office background with desk surface, soft practical lights and cinematic depth of field feel.
+- Film-style key/fill/rim lighting; warm face/eye readability with darker office depth.
+- Character should feel like a frame from a premium 3D animated movie, not a mobile-game avatar.
+
+### Framing
+
+Default portrait composition:
+
+- camera at eye level or slightly below eye level
+- dog centered behind the desk
+- head + chest + forepaws/arms visible
+- desk occupies lower foreground
+- enough headroom for ear motion
+- shallow-perspective cinematic lens; avoid exaggerated wide-angle distortion
+
+## Expression target
+
+The character must look alive even while silent:
+
+- breathing
+- natural blinking
+- tiny eye saccades
+- subtle ear motion
+- small head corrections
+- mild chest/shoulder movement
+
+During dialogue it must support:
+
+- smile
+- laugh
+- listening focus
+- thinking expression
+- serious/concerned expression
+- nods
+- natural jaw/lip movement synchronized to Arabic speech
 
 ## Rig
 
@@ -25,6 +64,7 @@ At minimum:
 - left/right ears
 - left/right eyelids
 - left/right eyes
+- brows / cheek or muzzle controls where topology allows
 - shoulders / forelegs / paws
 
 The face must be deformable. A static mesh with only whole-head rotation is not acceptable.
