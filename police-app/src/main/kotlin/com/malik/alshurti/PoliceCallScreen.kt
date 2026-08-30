@@ -12,9 +12,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -72,9 +75,21 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0xFF07111C))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF07111C),
+                        Color(0xFF0B1823),
+                        Color(0xFF07111C)
+                    )
+                )
+            )
     ) {
         val interactionSource = remember { MutableInteractionSource() }
+
+        // The whole screen remains tappable while the officer speaks, but the actual cinematic
+        // office is now displayed as one intact 16:9 viewport. On portrait phones this deliberately
+        // becomes smaller instead of center-cropping away the glass office and background staff.
         Box(
             Modifier
                 .fillMaxSize()
@@ -85,42 +100,68 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     onClick = viewModel::interruptAndListen
                 )
         ) {
-            RealPoliceDogStage(
-                mood = state.mood,
-                phase = state.phase,
-                viseme = state.viseme,
-                officeScene = state.officeScene,
-                modifier = Modifier.fillMaxSize()
-            )
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val viewportAspect = if (maxHeight.value > 0f) {
+                    maxWidth.value / maxHeight.value
+                } else {
+                    CINEMATIC_ASPECT
+                }
 
-            // The office layer is intentionally independent of the GLB. It gives both the
-            // production character and the build-safe fallback the same living environment.
-            OfficeLiveOverlay(
-                scene = state.officeScene,
-                phase = state.phase,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+                val cinematicModifier = if (viewportAspect < CINEMATIC_ASPECT) {
+                    // Portrait/mobile: show essentially the full source frame. A small outer margin
+                    // keeps the whole glass office readable and avoids edge-to-edge visual pressure.
+                    Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth(0.96f)
+                        .aspectRatio(CINEMATIC_ASPECT)
+                } else {
+                    // Landscape/tablet: grow until height becomes the limiting dimension while
+                    // preserving exactly the same 16:9 composition.
+                    Modifier
+                        .align(Alignment.Center)
+                        .fillMaxHeight(0.90f)
+                        .aspectRatio(CINEMATIC_ASPECT)
+                }
 
-        AnimatedVisibility(
-            visible = state.officeScene.staffSpeaking && state.officeScene.staffLine.isNotBlank(),
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 28.dp, bottom = 92.dp)
-        ) {
-            Surface(
-                color = Color(0xC5151D22),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text(
-                    state.officeScene.staffLine,
-                    color = Color.White.copy(alpha = 0.86f),
-                    fontSize = 11.sp,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
-                )
+                Box(modifier = cinematicModifier) {
+                    RealPoliceDogStage(
+                        mood = state.mood,
+                        phase = state.phase,
+                        viseme = state.viseme,
+                        officeScene = state.officeScene,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Keep every office element in the same cinematic coordinate space as the dog.
+                    // This is critical now that the stage no longer fills the entire portrait phone.
+                    OfficeLiveOverlay(
+                        scene = state.officeScene,
+                        phase = state.phase,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    AnimatedVisibility(
+                        visible = state.officeScene.staffSpeaking && state.officeScene.staffLine.isNotBlank(),
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 18.dp, bottom = 24.dp)
+                    ) {
+                        Surface(
+                            color = Color(0xC5151D22),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text(
+                                state.officeScene.staffLine,
+                                color = Color.White.copy(alpha = 0.86f),
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.End,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -268,3 +309,5 @@ private fun PhaseDot(phase: CallPhase) {
             .background(Brush.radialGradient(colors))
     )
 }
+
+private const val CINEMATIC_ASPECT = 16f / 9f
