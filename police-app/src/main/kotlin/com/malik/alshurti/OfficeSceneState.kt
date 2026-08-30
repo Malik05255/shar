@@ -4,6 +4,20 @@ enum class OfficeDoorState { CLOSED, OPENING, OPEN, CLOSING }
 enum class OfficeActorMotion { IDLE, WALK_LEFT, WALK_RIGHT, DESK_WORK, TURN_TO_DOOR, ENTER, TALK, EXIT }
 enum class DogLookTarget { CHILD, DOOR, OFFICER_A, OFFICER_B, DESK }
 enum class SideSpeaker { NONE, OFFICER_A, OFFICER_B }
+enum class OfficeSoundCue {
+    NONE,
+    DOOR_HANDLE,
+    DOOR_OPEN,
+    DOOR_CLOSE,
+    KNOCK,
+    PHONE_RING,
+    FOOTSTEPS_LEFT_TO_RIGHT,
+    FOOTSTEPS_RIGHT_TO_LEFT,
+    KEYBOARD,
+    PAPER,
+    CHAIR,
+    RADIO_BEEP
+}
 
 data class OfficeSceneState(
     val door: OfficeDoorState = OfficeDoorState.CLOSED,
@@ -11,7 +25,9 @@ data class OfficeSceneState(
     val officerB: OfficeActorMotion = OfficeActorMotion.IDLE,
     val dogLookTarget: DogLookTarget = DogLookTarget.CHILD,
     val sideSpeaker: SideSpeaker = SideSpeaker.NONE,
-    val scenarioLabel: String = "normal"
+    val scenarioLabel: String = "normal",
+    val soundCue: OfficeSoundCue = OfficeSoundCue.NONE,
+    val soundCueNonce: Long = 0L
 )
 
 data class OfficeDoorScenario(
