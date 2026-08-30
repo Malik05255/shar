@@ -14,7 +14,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
@@ -171,7 +170,7 @@ class LocalArabicRecognizer(
 
         try {
             activeRecorder.startRecording()
-            while (isActive && listening) {
+            while (kotlin.coroutines.coroutineContext[Job]?.isActive != false && listening) {
                 val count = activeRecorder.read(frame, 0, frame.size)
                 if (count <= 0) continue
 
@@ -186,7 +185,6 @@ class LocalArabicRecognizer(
                     }
                 }
 
-                // Keep a small leading context even before endpointing decides speech began.
                 captured.write(frame, 0, count)
                 totalMs += FRAME_MS
 
