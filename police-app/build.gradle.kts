@@ -96,8 +96,9 @@ dependencies {
     implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
 
     // Fully on-device neural TTS runtime (Sherpa-ONNX backend).
-    implementation("io.github.sanchitmonga22:runanywhere-sdk:0.20.31")
-    implementation("io.github.sanchitmonga22:runanywhere-onnx:0.20.31")
+    // 0.20.11 is the release actually published to Maven Central by RunAnywhere.
+    implementation("io.github.sanchitmonga22:runanywhere-sdk:0.20.11")
+    implementation("io.github.sanchitmonga22:runanywhere-onnx:0.20.11")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
