@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
@@ -31,13 +32,46 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     )
     val uiState: StateFlow<PoliceUiState> = _uiState.asStateFlow()
 
+    private val _officeSceneState = MutableStateFlow(OfficeSceneState())
+    val officeSceneState: StateFlow<OfficeSceneState> = _officeSceneState.asStateFlow()
+
+    private val scenarioVoice = OfficeScenarioVoice(
+        context = application.applicationContext,
+        listener = object : OfficeScenarioVoice.Listener {
+            override fun onScenarioVoiceStarted() {
+                _officeSceneState.update { state ->
+                    state.copy(
+                        officerA = if (state.sideSpeaker == SideSpeaker.OFFICER_A) OfficeActorMotion.TALK else state.officerA,
+                        officerB = if (state.sideSpeaker == SideSpeaker.OFFICER_B) OfficeActorMotion.TALK else state.officerB
+                    )
+                }
+            }
+
+            override fun onScenarioVoiceFinished() {
+                finishDoorScenario()
+            }
+
+            override fun onScenarioVoiceError(message: String) {
+                // A background actor must never break the child's call. End the visual cue
+                // quietly and return control to the main conversation.
+                finishDoorScenario()
+            }
+        }
+    )
+
     private var microphonePermissionGranted = false
     private var conversationLoopEnabled = false
     private var pendingConversationStart = false
     private var autoStartAttempted = false
+    private var scenarioInProgress = false
+    private var completedReplyTurns = 0
+    private var lastScenarioTurn = -1
+    private var scenarioCursor = 0
+    private var backgroundBeat = 0
 
     init {
         voiceEngine.setMode(initialMode)
+        startBackgroundLife()
     }
 
     fun onMicrophonePermissionResult(granted: Boolean) {
@@ -76,6 +110,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         preferences.edit().putString(KEY_MODE, mode.name).apply()
         conversationLoopEnabled = false
         pendingConversationStart = false
+        scenarioInProgress = false
+        scenarioVoice.interrupt()
+        resetOfficeScene()
         voiceEngine.setMode(mode)
 
         _uiState.update {
@@ -104,6 +141,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
         conversationLoopEnabled = false
         pendingConversationStart = true
+        scenarioInProgress = false
+        scenarioVoice.interrupt()
+        resetOfficeScene()
         voiceEngine.stopListening()
         voiceEngine.interruptSpeech()
 
@@ -123,8 +163,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             )
         }
 
-        // In ONLINE mode neither Qwen nor TTS runs on the phone. The backend owns both,
-        // eliminating the model-load failures seen on real devices.
         if (_uiState.value.mode == VoiceMode.OFFLINE) {
             localBrain.prepare(allowDownload = false)
         }
@@ -132,8 +170,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun retryListening() {
-        if (!microphonePermissionGranted) return
+        if (!microphonePermissionGranted || scenarioInProgress) return
         conversationLoopEnabled = true
+        _officeSceneState.update { it.copy(dogLookTarget = DogLookTarget.CHILD, sideSpeaker = SideSpeaker.NONE) }
         _uiState.update {
             it.copy(
                 phase = CallPhase.LISTENING,
@@ -149,6 +188,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     fun interruptAndListen() {
         pendingConversationStart = false
+        scenarioInProgress = false
+        scenarioVoice.interrupt()
+        resetOfficeScene()
         conversationLoopEnabled = true
         voiceEngine.interruptSpeech()
         retryListening()
@@ -179,6 +221,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch {
             runCatching { activeBrain().reply(clean) }
                 .onSuccess { reply ->
+                    completedReplyTurns += 1
                     _uiState.update {
                         it.copy(
                             replyText = reply.text,
@@ -210,17 +253,125 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    private fun startBackgroundLife() {
+        viewModelScope.launch {
+            while (isActive) {
+                delay(BACKGROUND_BEAT_MS)
+                if (scenarioInProgress || _uiState.value.phase == CallPhase.ERROR) continue
+
+                backgroundBeat += 1
+                _officeSceneState.update { current ->
+                    when (backgroundBeat % 4) {
+                        0 -> current.copy(officerA = OfficeActorMotion.DESK_WORK, officerB = OfficeActorMotion.WALK_LEFT)
+                        1 -> current.copy(officerA = OfficeActorMotion.WALK_RIGHT, officerB = OfficeActorMotion.IDLE)
+                        2 -> current.copy(officerA = OfficeActorMotion.DESK_WORK, officerB = OfficeActorMotion.WALK_RIGHT)
+                        else -> current.copy(officerA = OfficeActorMotion.IDLE, officerB = OfficeActorMotion.DESK_WORK)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun shouldRunDoorScenario(): Boolean =
+        _uiState.value.mode == VoiceMode.ONLINE &&
+            !scenarioInProgress &&
+            completedReplyTurns >= SCENARIO_FIRST_TURN &&
+            completedReplyTurns % SCENARIO_EVERY_TURNS == 0 &&
+            lastScenarioTurn != completedReplyTurns
+
+    private fun startDoorScenario(): Boolean {
+        if (!shouldRunDoorScenario()) return false
+
+        val scenarios = OfficeScenarioLibrary.doorScenarios
+        if (scenarios.isEmpty()) return false
+        val scenario = scenarios[scenarioCursor % scenarios.size]
+        scenarioCursor += 1
+        lastScenarioTurn = completedReplyTurns
+        scenarioInProgress = true
+        conversationLoopEnabled = false
+        voiceEngine.stopListening()
+
+        viewModelScope.launch {
+            _officeSceneState.update {
+                it.copy(
+                    door = OfficeDoorState.OPENING,
+                    dogLookTarget = DogLookTarget.DOOR,
+                    sideSpeaker = SideSpeaker.NONE,
+                    scenarioLabel = "door-opening"
+                )
+            }
+            delay(500)
+
+            _officeSceneState.update { current ->
+                current.copy(
+                    door = OfficeDoorState.OPEN,
+                    officerA = if (scenario.speaker == SideSpeaker.OFFICER_A) scenario.officerMotion else current.officerA,
+                    officerB = if (scenario.speaker == SideSpeaker.OFFICER_B) scenario.officerMotion else current.officerB,
+                    dogLookTarget = if (scenario.speaker == SideSpeaker.OFFICER_A) DogLookTarget.OFFICER_A else DogLookTarget.OFFICER_B,
+                    sideSpeaker = scenario.speaker,
+                    scenarioLabel = "officer-entering"
+                )
+            }
+            delay(650)
+
+            _officeSceneState.update { current ->
+                current.copy(
+                    officerA = if (scenario.speaker == SideSpeaker.OFFICER_A) OfficeActorMotion.TALK else current.officerA,
+                    officerB = if (scenario.speaker == SideSpeaker.OFFICER_B) OfficeActorMotion.TALK else current.officerB,
+                    scenarioLabel = "officer-speaking"
+                )
+            }
+            scenarioVoice.speak(scenario.line, scenario.speaker)
+        }
+        return true
+    }
+
+    private fun finishDoorScenario() {
+        if (!scenarioInProgress) return
+        viewModelScope.launch {
+            val speaker = _officeSceneState.value.sideSpeaker
+            _officeSceneState.update { current ->
+                current.copy(
+                    officerA = if (speaker == SideSpeaker.OFFICER_A) OfficeActorMotion.EXIT else current.officerA,
+                    officerB = if (speaker == SideSpeaker.OFFICER_B) OfficeActorMotion.EXIT else current.officerB,
+                    sideSpeaker = SideSpeaker.NONE,
+                    scenarioLabel = "officer-exiting"
+                )
+            }
+            delay(650)
+
+            _officeSceneState.update { current ->
+                current.copy(
+                    door = OfficeDoorState.CLOSING,
+                    dogLookTarget = DogLookTarget.DOOR,
+                    scenarioLabel = "door-closing"
+                )
+            }
+            delay(450)
+
+            scenarioInProgress = false
+            resetOfficeScene()
+            conversationLoopEnabled = true
+            delay(120)
+            retryListening()
+        }
+    }
+
+    private fun resetOfficeScene() {
+        _officeSceneState.value = OfficeSceneState(
+            officerA = OfficeActorMotion.DESK_WORK,
+            officerB = OfficeActorMotion.IDLE,
+            dogLookTarget = DogLookTarget.CHILD
+        )
+    }
+
     override fun onSpeechPreparing(percent: Int, message: String) {
         _uiState.update {
             it.copy(
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
-                statusText = if (percent in 1..99) {
-                    "جاري تجهيز الاستماع لأول مرة… $percent%"
-                } else {
-                    "جاري تجهيز الاستماع…"
-                },
+                statusText = if (percent in 1..99) "جاري تجهيز الاستماع لأول مرة… $percent%" else "جاري تجهيز الاستماع…",
                 errorMessage = null,
                 readyToStart = false
             )
@@ -257,7 +408,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onFinalText(text: String) = handleRecognizedText(text)
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
-        if (recoverable && microphonePermissionGranted && conversationLoopEnabled) {
+        if (recoverable && microphonePermissionGranted && conversationLoopEnabled && !scenarioInProgress) {
             _uiState.update {
                 it.copy(
                     phase = CallPhase.LISTENING,
@@ -271,7 +422,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 delay(350)
                 retryListening()
             }
-        } else {
+        } else if (!scenarioInProgress) {
             conversationLoopEnabled = false
             _uiState.update {
                 it.copy(
@@ -292,11 +443,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
-                statusText = if (it.mode == VoiceMode.ONLINE) {
-                    "جاري الاتصال بصوت الشرطي الحقيقي…"
-                } else {
-                    "جاري تجهيز صوت الشرطي…"
-                },
+                statusText = if (it.mode == VoiceMode.ONLINE) "جاري الاتصال بصوت الشرطي الحقيقي…" else "جاري تجهيز صوت الشرطي…",
                 errorMessage = null,
                 readyToStart = false
             )
@@ -340,6 +487,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onTtsFinished() {
         _uiState.update { it.copy(viseme = MouthViseme.REST) }
         if (conversationLoopEnabled && microphonePermissionGranted) {
+            if (startDoorScenario()) return
             viewModelScope.launch {
                 delay(110)
                 retryListening()
@@ -367,6 +515,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onCleared() {
+        scenarioVoice.release()
         localBrain.release()
         remoteBrain.release()
         voiceEngine.release()
@@ -376,5 +525,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private companion object {
         const val PREFS_NAME = "alshurti_voice_settings"
         const val KEY_MODE = "voice_mode"
+        const val BACKGROUND_BEAT_MS = 7_500L
+        const val SCENARIO_FIRST_TURN = 3
+        const val SCENARIO_EVERY_TURNS = 3
     }
 }
