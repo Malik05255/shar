@@ -34,6 +34,55 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
+      - name: Prepare cinematic dog motion assets
+        shell: bash
+        env:
+          MASTER_FRAME_URL: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+          DOG_IDLE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142010_21ee919f-e378-4db1-b7ed-66e367acc0e3.mp4
+          DOG_TALK_SEATED_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142018_248ecb5a-3804-457a-9a43-9b19de5f8121.mp4
+          DOG_STAND_UP_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_141957_53df74a5-4bcb-445d-95a5-69182cd4f0d5.mp4
+          DOG_PHONE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_140952_4319b02c-dc65-4750-b24f-f5459350058b.mp4
+          DOG_DOOR_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142029_d4e858db-fdfa-46ce-a248-34ccf47f19de.mp4
+        run: |
+          set -euo pipefail
+          RAW_DIR="police-app/src/main/res/raw"
+          DRAW_DIR="police-app/src/main/res/drawable-nodpi"
+          mkdir -p "$RAW_DIR" "$DRAW_DIR"
+
+          fetch_asset() {
+            local url="$1"
+            local out="$2"
+            echo "Downloading $(basename "$out")"
+            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 \
+              --max-time 180 "$url" --output "$out"
+            test -s "$out"
+          }
+
+          # Replace the tiny build-safe placeholder only inside CI. The repository keeps the
+          # placeholder so local source builds remain self-contained if the media CDN is offline.
+          rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
+          fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
+          fetch_asset "$DOG_IDLE_URL" "$RAW_DIR/dog_idle_loop.mp4"
+          fetch_asset "$DOG_TALK_SEATED_URL" "$RAW_DIR/dog_talk_seated.mp4"
+          fetch_asset "$DOG_STAND_UP_URL" "$RAW_DIR/dog_stand_up.mp4"
+          fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
+          fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
+
+          # The reverse clips guarantee exact visual continuity back to the original seated frame.
+          # They are visual-only; all generated clip audio is muted by the app.
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" \
+            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" \
+            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+            -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
+
+          echo "Cinematic assets bundled:"
+          du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
       - name: Build Al-Shorti
         env:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
