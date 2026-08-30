@@ -14,18 +14,16 @@ import kotlin.math.max
 /**
  * Texture-backed, muted cinematic clip player.
  *
- * Quality rules:
- * - The 16:9 AI master/video is always center-cropped with one uniform scale. It is never stretched
- *   to the phone viewport, so a portrait device cannot make the dog wider/thinner than the still.
- * - A completed generated clip holds its final rendered frame. It never hard-loops back to frame 0.
- * - Rebinding to the next action keeps the current TextureView/frame visible while the next decoder
- *   prepares; the master still is used only for the very first frame or an actual media failure.
+ * Continuous clips are pre-built as forward+reverse cycles, so MediaPlayer can loop them without
+ * exposing the generated clip's hard end -> beginning cut. Physical actions remain one-shot and
+ * hold their final rendered frame until the next action arrives.
  */
 class CinematicClipView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private data class ClipConfig(
-        @RawRes val resId: Int,
+        @param:RawRes val resId: Int,
         val randomizeStart: Boolean,
-        val seed: Long
+        val seed: Long,
+        val continuous: Boolean
     )
 
     private var config: ClipConfig? = null
@@ -41,8 +39,13 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         alpha = 0f
     }
 
-    fun bind(@RawRes resId: Int, randomizeStart: Boolean, seed: Long) {
-        val next = ClipConfig(resId, randomizeStart, seed)
+    fun bind(
+        @RawRes resId: Int,
+        randomizeStart: Boolean,
+        seed: Long,
+        continuous: Boolean
+    ) {
+        val next = ClipConfig(resId, randomizeStart, seed, continuous)
         if (config == next && mediaPlayer != null) return
         config = next
         if (isAvailable) startConfiguredClip()
@@ -52,8 +55,6 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         val active = config ?: return
         val texture = surfaceTexture ?: return
 
-        // Keep the last successfully rendered frame visible while the next state prepares. This is
-        // what prevents the scene from visibly snapping back to the master/beginning between clips.
         releasePlayer()
         if (!hasRenderedFrame) alpha = 0f
 
@@ -67,7 +68,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 context,
                 Uri.parse("android.resource://${context.packageName}/${active.resId}")
             )
-            player.isLooping = false
+            player.isLooping = active.continuous
             player.setVolume(0f, 0f)
 
             player.setOnVideoSizeChangedListener { _, width, height ->
@@ -80,10 +81,8 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 runCatching {
                     val durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     if (active.randomizeStart && durationMs > 2_200L) {
-                        // Vary only the early, low-amplitude portion. Starting near the end would
-                        // make a state feel like a truncated replay and expose the generated edit.
                         val maxStartMs = minOf(
-                            (durationMs * 0.35f).toLong(),
+                            (durationMs * 0.25f).toLong(),
                             (durationMs - 1_800L).coerceAtLeast(0L)
                         )
                         val raw = (active.seed xor (active.resId.toLong() shl 17)).absoluteValue
@@ -104,20 +103,16 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     hasRenderedFrame = true
                     animate().cancel()
-                    if (alpha < 1f) animate().alpha(1f).setDuration(140L).start()
+                    if (alpha < 1f) animate().alpha(1f).setDuration(120L).start()
                 }
                 false
             }
 
-            // Do not loop generated actions. The final frame remains on the TextureView until the
-            // state actually changes; this removes the obvious end -> beginning replay artifact.
             player.setOnCompletionListener { completed ->
                 runCatching { completed.setOnSeekCompleteListener(null) }
             }
 
             player.setOnErrorListener { _, _, _ ->
-                // If we already have a good rendered frame, preserve it rather than flashing the
-                // master image. On first-load failure, fall back to the master underneath.
                 if (!hasRenderedFrame) alpha = 0f
                 releasePlayer()
                 true
@@ -130,10 +125,6 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         }
     }
 
-    /**
-     * TextureView normally stretches video independently on X/Y. Correct that distortion by
-     * applying the same center-crop geometry Compose's ContentScale.Crop uses for the master image.
-     */
     private fun applyCenterCropTransform() {
         if (width <= 0 || height <= 0 || videoWidth <= 0 || videoHeight <= 0) return
 

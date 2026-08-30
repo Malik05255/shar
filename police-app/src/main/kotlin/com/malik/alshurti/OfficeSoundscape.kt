@@ -11,13 +11,7 @@ import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.random.Random
 
-/**
- * Lightweight local office Foley engine.
- *
- * Audio hardware errors must NEVER take down the conversation. Some Android devices
- * throw IllegalStateException/UnsupportedOperationException from AudioTrack even after
- * construction succeeds, so every hardware call is isolated behind a failure boundary.
- */
+/** Lightweight local office Foley engine that always stays behind the conversation voice. */
 class OfficeSoundscape(context: Context) {
     @Suppress("UNUSED_PARAMETER")
     private val appContext = context.applicationContext
@@ -29,20 +23,10 @@ class OfficeSoundscape(context: Context) {
         }
     }
 
-    @Volatile
-    private var roomTrack: AudioTrack? = null
+    @Volatile private var roomTrack: AudioTrack? = null
+    @Volatile private var roomStartRequested = false
+    @Volatile private var released = false
 
-    @Volatile
-    private var roomStartRequested = false
-
-    @Volatile
-    private var released = false
-
-    /**
-     * Room-tone initialization is intentionally asynchronous. AudioTrack construction can
-     * block or behave differently across OEM audio stacks and must never delay/crash the
-     * first Compose frame.
-     */
     fun start() {
         if (released || roomTrack != null || roomStartRequested) return
         roomStartRequested = true
@@ -75,11 +59,13 @@ class OfficeSoundscape(context: Context) {
     fun setConversationPhase(phase: CallPhase) {
         if (released) return
         val volume = when (phase) {
-            CallPhase.LISTENING -> 0.008f
-            CallPhase.SPEAKING -> 0.030f
-            CallPhase.THINKING -> 0.055f
-            CallPhase.STARTING -> 0.050f
-            CallPhase.ERROR -> 0.018f
+            // Listening must be nearly silent so the microphone does not hear our own ambience.
+            CallPhase.LISTENING -> 0.0035f
+            // Police/staff voice is the hero. Room tone is only perceptual depth here.
+            CallPhase.SPEAKING -> 0.0020f
+            CallPhase.THINKING -> 0.018f
+            CallPhase.STARTING -> 0.010f
+            CallPhase.ERROR -> 0.004f
         }
         runCatching { roomTrack?.setVolume(volume) }
     }
@@ -132,9 +118,9 @@ class OfficeSoundscape(context: Context) {
                 }
             }
         } catch (_: RejectedExecutionException) {
-            // ViewModel was already cleared; dropping a background cue is correct.
+            Unit
         } catch (_: Throwable) {
-            // Environmental audio is optional and may never crash the primary call.
+            Unit
         }
     }
 
@@ -196,7 +182,7 @@ class OfficeSoundscape(context: Context) {
             val release = ((0.34 - cycle) / 0.05).coerceIn(0.0, 1.0)
             val env = gate * minOf(attack, release)
             val bell = sin(2.0 * PI * 440.0 * t) * 0.58 + sin(2.0 * PI * 620.0 * t) * 0.42
-            out[index] = toPcm(bell * env * 0.34)
+            out[index] = toPcm(bell * env * 0.30)
         }
         return out
     }
@@ -275,7 +261,7 @@ class OfficeSoundscape(context: Context) {
     private companion object {
         const val SAMPLE_RATE = 16_000
         const val ROOM_SECONDS = 3
-        const val ROOM_IDLE_VOLUME = 0.055f
-        const val EFFECT_VOLUME = 0.72f
+        const val ROOM_IDLE_VOLUME = 0.018f
+        const val EFFECT_VOLUME = 0.48f
     }
 }

@@ -32,12 +32,6 @@ class PoliceVoiceEngine(
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
 
-    /**
-     * Production speech source.
-     *
-     * There is deliberately no Android TTS or Supertonic fallback here. If the Saudi
-     * voice cannot run, the UI shows an error instead of playing a robotic substitute.
-     */
     private val saudiVoice = SaudiHumanVoice(
         context = context.applicationContext,
         callbacks = object : SaudiHumanVoice.Callbacks {
@@ -80,13 +74,10 @@ class PoliceVoiceEngine(
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
-        runCatching { speechRecognizer?.destroy() }
-        speechRecognizer = null
+        destroyRecognizer()
 
         if (newMode == VoiceMode.OFFLINE) {
-            listener.onTtsError(
-                "الصوت السعودي البشري يحتاج اتصالاً بالإنترنت. تم إيقاف الصوت المحلي لأنه لا يحقق الجودة المطلوبة."
-            )
+            listener.onTtsError("الصوت السعودي البشري يحتاج اتصالاً بالإنترنت.")
             return
         }
         saudiVoice.prepare()
@@ -94,7 +85,7 @@ class PoliceVoiceEngine(
 
     fun startListening() {
         if (mode != VoiceMode.ONLINE) {
-            listener.onSpeechError("المحادثة بالصوت السعودي تعمل في وضع الإنترنت فقط.", false)
+            listener.onSpeechError("المحادثة الصوتية تعمل في وضع الإنترنت فقط.", false)
             return
         }
 
@@ -114,11 +105,16 @@ class PoliceVoiceEngine(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ar-SA")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 650L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 420L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 280L)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+
+            // Saudi conversational speech often contains natural pauses between phrases. The old
+            // 650 ms cutoff truncated users mid-sentence; these values allow a human pause without
+            // making the turn feel sluggish after the speaker actually finishes.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_150L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 720L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 450L)
         }
 
         try {
@@ -126,6 +122,7 @@ class PoliceVoiceEngine(
             recognizer.startListening(intent)
         } catch (t: Throwable) {
             listening = false
+            destroyRecognizer()
             listener.onSpeechError(t.message ?: "تعذر تشغيل الميكروفون.", true)
         }
     }
@@ -154,11 +151,15 @@ class PoliceVoiceEngine(
 
     fun release() {
         stopListening()
-        runCatching { speechRecognizer?.destroy() }
-        speechRecognizer = null
+        destroyRecognizer()
         saudiVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
+    }
+
+    private fun destroyRecognizer() {
+        runCatching { speechRecognizer?.destroy() }
+        speechRecognizer = null
     }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
@@ -190,9 +191,17 @@ class PoliceVoiceEngine(
 
         override fun onError(error: Int) {
             listening = false
+
+            // Busy/client failures frequently leave OEM recognizers poisoned for the next call.
+            // Drop that instance so the automatic retry gets a genuinely fresh recognizer.
+            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
+                destroyRecognizer()
+            }
+
             val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH ||
                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
-                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                error == SpeechRecognizer.ERROR_CLIENT
             val message = when (error) {
                 SpeechRecognizer.ERROR_AUDIO -> "مشكلة في صوت الميكروفون."
                 SpeechRecognizer.ERROR_CLIENT -> "توقف الاستماع مؤقتاً."
@@ -202,7 +211,7 @@ class PoliceVoiceEngine(
                 SpeechRecognizer.ERROR_NO_MATCH -> "ما سمعت الكلام بوضوح."
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "الميكروفون مشغول، سأحاول مرة ثانية."
                 SpeechRecognizer.ERROR_SERVER -> "خدمة التعرف على الصوت غير متاحة الآن."
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "أنا سامعك، تكلم متى ما كنت جاهز."
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "تكلم متى ما كنت جاهز."
                 else -> "تعذر فهم الصوت ($error)."
             }
             listener.onSpeechError(message, recoverable)

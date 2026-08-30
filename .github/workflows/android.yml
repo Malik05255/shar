@@ -34,6 +34,19 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
+      - name: Check production Saudi voice
+        id: voice
+        shell: bash
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ELEVENLABS_API_KEY" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ELEVENLABS_API_KEY is missing. Build/tests will continue, but the APK will not be uploaded for user testing."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Restore permanent signing key when configured
         shell: bash
         env:
@@ -78,8 +91,15 @@ jobs:
             test -s "$out"
           }
 
-          # Replace the tiny build-safe placeholder only inside CI. The repository keeps the
-          # placeholder so local source builds remain self-contained if the media CDN is offline.
+          make_living_cycle() {
+            local input="$1"
+            local output="$2"
+            ffmpeg -hide_banner -loglevel error -y -i "$input" \
+              -filter_complex "[0:v]split=2[f][r];[r]reverse[r];[f][r]concat=n=2:v=1:a=0[v]" \
+              -map "[v]" -an -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
+              -movflags +faststart "$output"
+          }
+
           rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
           fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
           fetch_asset "$DOG_IDLE_URL" "$RAW_DIR/dog_idle_loop.mp4"
@@ -90,12 +110,11 @@ jobs:
           fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
           fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
 
-          # Reverse clips guarantee exact continuity back to the matching source pose.
-          # They are visual-only; all generated clip audio is muted by the app.
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq ffmpeg
           fi
+
           ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" \
             -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
             -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
@@ -105,6 +124,10 @@ jobs:
           ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" \
             -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
             -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
+
+          make_living_cycle "$RAW_DIR/dog_idle_loop.mp4" "$RAW_DIR/dog_idle_living.mp4"
+          make_living_cycle "$RAW_DIR/dog_talk_seated.mp4" "$RAW_DIR/dog_talk_seated_living.mp4"
+          make_living_cycle "$RAW_DIR/dog_talk_standing.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
 
           echo "Cinematic assets bundled:"
           du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
@@ -118,6 +141,7 @@ jobs:
           ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
       - name: Upload APK
+        if: steps.voice.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: AlShorti-${{ env.VERSION_NAME }}-debug
