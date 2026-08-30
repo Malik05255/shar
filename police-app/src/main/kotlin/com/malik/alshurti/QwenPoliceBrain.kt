@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.codeshipping.llamakotlin.LlamaModel
 import java.io.BufferedInputStream
@@ -25,7 +26,7 @@ import java.net.URL
 class QwenPoliceBrain(context: Context) : PoliceBrain {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val loadLock = Any()
+    private val modelLoadMutex = Mutex()
     private val historyLock = Any()
     private val history = ArrayDeque<Turn>()
 
@@ -65,34 +66,44 @@ class QwenPoliceBrain(context: Context) : PoliceBrain {
 
     override fun release() {
         scope.cancel()
-        synchronized(loadLock) {
-            runCatching { loadedModel?.cancelGeneration() }
-            runCatching { loadedModel?.close() }
-            loadedModel = null
-        }
+        val model = loadedModel
+        loadedModel = null
+        runCatching { model?.cancelGeneration() }
+        runCatching { model?.close() }
     }
 
-    private fun modelOrLoad(): LlamaModel = synchronized(loadLock) {
-        loadedModel?.let { return@synchronized it }
+    /**
+     * LlamaModel.load is suspend. A coroutine Mutex prevents duplicate model loads
+     * without blocking the Android main thread or wrapping the load in runBlocking.
+     */
+    private suspend fun modelOrLoad(): LlamaModel {
+        loadedModel?.let { return it }
 
-        val modelFile = ensureModel(allowNetworkDownloads)
-        val cpuCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
-        val model = LlamaModel.load(modelFile.absolutePath) {
-            contextSize = 2048
-            batchSize = 256
-            threads = (cpuCount - 1).coerceIn(2, 6)
-            temperature = 0.78f
-            topP = 0.92f
-            topK = 40
-            repeatPenalty = 1.12f
-            maxTokens = 120
-            useMmap = true
-            useMlock = false
-            gpuLayers = 0
-            seed = -1
+        modelLoadMutex.lock()
+        try {
+            loadedModel?.let { return it }
+
+            val modelFile = ensureModel(allowNetworkDownloads)
+            val cpuCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
+            val model = LlamaModel.load(modelFile.absolutePath) {
+                contextSize = 2048
+                batchSize = 256
+                threads = (cpuCount - 1).coerceIn(2, 6)
+                temperature = 0.78f
+                topP = 0.92f
+                topK = 40
+                repeatPenalty = 1.12f
+                maxTokens = 120
+                useMmap = true
+                useMlock = false
+                gpuLayers = 0
+                seed = -1
+            }
+            loadedModel = model
+            return model
+        } finally {
+            modelLoadMutex.unlock()
         }
-        loadedModel = model
-        model
     }
 
     private fun buildPrompt(currentUserText: String): String = buildString {
