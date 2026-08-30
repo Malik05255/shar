@@ -64,8 +64,10 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 runCatching {
                     if (active.looping && prepared.duration > 1_000) {
                         val usableMs = (prepared.duration - 650).coerceAtLeast(1)
-                        val offset = ((active.seed xor (active.resId.toLong() shl 17)).absoluteValue % usableMs)
-                            .toInt()
+                        val offset = (
+                            (active.seed xor (active.resId.toLong() shl 17)).absoluteValue %
+                                usableMs.toLong()
+                            ).toInt()
 
                         // Tiny visual tempo variance makes repeated idle/talk loops less mechanical.
                         val speedBucket = ((active.seed ushr 7).absoluteValue % 7).toInt()
