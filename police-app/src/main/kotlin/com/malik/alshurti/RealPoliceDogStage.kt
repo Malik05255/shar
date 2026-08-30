@@ -1,9 +1,16 @@
 package com.malik.alshurti
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
@@ -14,14 +21,12 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * The final character is a real PBR GLB rendered by Google Filament through SceneView.
- * The existing Canvas character is kept only as a build-safe placeholder until a
- * licensed `models/police_dog.glb` is present in app assets.
+ * The character shown to users must be a licensed photorealistic PBR GLB.
+ * We intentionally DO NOT fall back to the old Canvas mascot: showing a cartoon
+ * when the product promises a realistic police dog is a product bug, not a fallback.
  *
  * Required body clips: Idle, Listen, Think, Smile, Serious.
  * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
- * Those short clips allow the neural speech cursor to change the actual 3D mouth pose
- * while the Arabic audio is playing, instead of merely animating a generic jaw loop.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -39,9 +44,7 @@ fun RealPoliceDogStage(
     }
 
     if (!hasRealModel) {
-        // Never pretend this is the final realistic character. This fallback exists only
-        // so developers can build/test voice and call flow before the licensed GLB lands.
-        PoliceDogStage(mood, phase, viseme, modifier)
+        MissingProductionCharacter(modifier)
         return
     }
 
@@ -73,6 +76,22 @@ fun RealPoliceDogStage(
                 position = Position(x = 0f, y = -0.18f, z = 0f)
             )
         }
+    }
+}
+
+@Composable
+private fun MissingProductionCharacter(modifier: Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF07111C)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "الأصل الواقعي للشرطي غير مثبت في هذه النسخة",
+            color = Color.White.copy(alpha = 0.72f),
+            textAlign = TextAlign.Center
+        )
     }
 }
 
