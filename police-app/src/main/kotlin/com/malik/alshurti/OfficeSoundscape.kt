@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
@@ -13,34 +14,66 @@ import kotlin.random.Random
 /**
  * Lightweight local office Foley engine.
  *
- * Effects are synthesized as PCM at runtime, so the APK does not need stock audio files
- * and there are no licensing surprises. Room tone is a very low-level loop. It is ducked
- * aggressively while the child is listening and reduced while the police character talks.
+ * Audio hardware errors must NEVER take down the conversation. Some Android devices
+ * throw IllegalStateException/UnsupportedOperationException from AudioTrack even after
+ * construction succeeds, so every hardware call is isolated behind a failure boundary.
  */
 class OfficeSoundscape(context: Context) {
+    @Suppress("UNUSED_PARAMETER")
     private val appContext = context.applicationContext
+
     private val effectsExecutor = Executors.newFixedThreadPool(2) { runnable ->
-        Thread(runnable, "alshorti-office-foley").apply { priority = Thread.NORM_PRIORITY - 1 }
+        Thread(runnable, "alshorti-office-foley").apply {
+            priority = Thread.NORM_PRIORITY - 1
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, _ -> Unit }
+        }
     }
 
     @Volatile
     private var roomTrack: AudioTrack? = null
 
+    @Volatile
+    private var roomStartRequested = false
+
+    @Volatile
+    private var released = false
+
+    /**
+     * Room-tone initialization is intentionally asynchronous. AudioTrack construction can
+     * block or behave differently across OEM audio stacks and must never delay/crash the
+     * first Compose frame.
+     */
     fun start() {
-        if (roomTrack != null) return
-        runCatching {
-            val samples = roomTone(ROOM_SECONDS)
-            val track = buildStaticTrack(samples).apply {
-                write(samples, 0, samples.size)
-                setLoopPoints(0, samples.size, -1)
-                setVolume(ROOM_IDLE_VOLUME)
-                play()
+        if (released || roomTrack != null || roomStartRequested) return
+        roomStartRequested = true
+        try {
+            effectsExecutor.execute {
+                var candidate: AudioTrack? = null
+                runCatching {
+                    if (released) return@runCatching
+                    val samples = roomTone(ROOM_SECONDS)
+                    val track = buildStaticTrack(samples)
+                    candidate = track
+                    val written = track.write(samples, 0, samples.size)
+                    if (written <= 0 || released) return@runCatching
+                    track.setLoopPoints(0, samples.size, -1)
+                    track.setVolume(ROOM_IDLE_VOLUME)
+                    track.play()
+                    roomTrack = track
+                    candidate = null
+                }
+                candidate?.let(::safeRelease)
+                roomStartRequested = false
             }
-            roomTrack = track
+        } catch (_: RejectedExecutionException) {
+            roomStartRequested = false
+        } catch (_: Throwable) {
+            roomStartRequested = false
         }
     }
 
     fun setConversationPhase(phase: CallPhase) {
+        if (released) return
         val volume = when (phase) {
             CallPhase.LISTENING -> 0.008f
             CallPhase.SPEAKING -> 0.030f
@@ -52,6 +85,7 @@ class OfficeSoundscape(context: Context) {
     }
 
     fun playCue(cue: OfficeCue) {
+        if (released) return
         val samples = when (cue) {
             OfficeCue.PHONE_RING -> phoneRing()
             OfficeCue.DOOR_OPEN -> doorOpen()
@@ -66,37 +100,59 @@ class OfficeSoundscape(context: Context) {
     }
 
     fun release() {
+        released = true
+        roomStartRequested = false
         val track = roomTrack
         roomTrack = null
-        runCatching { track?.stop() }
-        runCatching { track?.flush() }
-        runCatching { track?.release() }
-        effectsExecutor.shutdownNow()
+        if (track != null) safeRelease(track)
+        runCatching { effectsExecutor.shutdownNow() }
     }
 
     private fun playOneShot(samples: ShortArray) {
-        effectsExecutor.execute {
-            val track = runCatching { buildStaticTrack(samples) }.getOrNull() ?: return@execute
-            try {
-                val written = track.write(samples, 0, samples.size)
-                if (written <= 0) return@execute
-                track.setVolume(EFFECT_VOLUME)
-                track.play()
-                val durationMs = (samples.size * 1000L / SAMPLE_RATE).coerceAtLeast(1L)
-                try {
-                    Thread.sleep(durationMs + 80L)
-                } catch (_: InterruptedException) {
-                    return@execute
+        if (released) return
+        try {
+            effectsExecutor.execute {
+                runCatching {
+                    if (released) return@runCatching
+                    val track = buildStaticTrack(samples)
+                    try {
+                        val written = track.write(samples, 0, samples.size)
+                        if (written <= 0 || released) return@runCatching
+                        track.setVolume(EFFECT_VOLUME)
+                        track.play()
+                        val durationMs = (samples.size * 1000L / SAMPLE_RATE).coerceAtLeast(1L)
+                        try {
+                            Thread.sleep(durationMs + 80L)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                        }
+                    } finally {
+                        safeRelease(track)
+                    }
                 }
-            } finally {
-                runCatching { track.stop() }
-                runCatching { track.flush() }
-                runCatching { track.release() }
             }
+        } catch (_: RejectedExecutionException) {
+            // ViewModel was already cleared; dropping a background cue is correct.
+        } catch (_: Throwable) {
+            // Environmental audio is optional and may never crash the primary call.
         }
     }
 
+    private fun safeRelease(track: AudioTrack) {
+        runCatching { if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop() }
+        runCatching { track.flush() }
+        runCatching { track.release() }
+    }
+
     private fun buildStaticTrack(samples: ShortArray): AudioTrack {
+        val minBuffer = AudioTrack.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).takeIf { it > 0 } ?: 0
+        val requestedBytes = samples.size * Short.SIZE_BYTES
+        val bufferBytes = maxOf(requestedBytes, minBuffer)
+
         val format = AudioFormat.Builder()
             .setSampleRate(SAMPLE_RATE)
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -110,7 +166,7 @@ class OfficeSoundscape(context: Context) {
             .setAudioAttributes(attrs)
             .setAudioFormat(format)
             .setTransferMode(AudioTrack.MODE_STATIC)
-            .setBufferSizeInBytes(samples.size * Short.SIZE_BYTES)
+            .setBufferSizeInBytes(bufferBytes)
             .build()
     }
 

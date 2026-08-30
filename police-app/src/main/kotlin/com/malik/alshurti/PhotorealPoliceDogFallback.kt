@@ -1,5 +1,6 @@
 package com.malik.alshurti
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,19 +14,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
 
 /**
- * High-fidelity visual fallback used only when the licensed rigged GLB is not bundled.
- *
- * It deliberately favors a photoreal cinematic frame over the old illustrated Canvas dog.
- * Micro camera/body movement keeps the scene from reading as a dead wallpaper, while the
- * app still truthfully reserves real jaw/eye/ear/body animation for `police_dog.glb`.
+ * Crash-safe photoreal fallback. Raster decoding is isolated so a vendor-specific
+ * decoder/resource failure cannot crash composition; the lightweight Canvas stage is
+ * used if the bundled JPEG cannot be decoded on a device.
  */
 @Composable
 fun PhotorealPoliceDogFallback(
@@ -33,6 +34,26 @@ fun PhotorealPoliceDogFallback(
     attention: DogAttention,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val image = remember(context) {
+        runCatching {
+            BitmapFactory.decodeResource(context.resources, R.drawable.cinematic_office_reference)
+                ?.asImageBitmap()
+        }.getOrNull()
+    }
+
+    if (image == null) {
+        val mood = when (phase) {
+            CallPhase.LISTENING -> DogMood.LISTENING
+            CallPhase.THINKING -> DogMood.THINKING
+            CallPhase.SPEAKING -> DogMood.TALKING
+            CallPhase.ERROR -> DogMood.SERIOUS
+            CallPhase.STARTING -> DogMood.CALM
+        }
+        PoliceDogStage(mood = mood, phase = phase, viseme = MouthViseme.REST, modifier = modifier)
+        return
+    }
+
     val infinite = rememberInfiniteTransition(label = "photoreal-dog-fallback")
     val breathe by infinite.animateFloat(
         initialValue = 0f,
@@ -67,14 +88,12 @@ fun PhotorealPoliceDogFallback(
             .background(Color(0xFF07111C))
     ) {
         Image(
-            painter = painterResource(R.drawable.cinematic_office_reference),
+            bitmap = image,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    // Sub-pixel-scale breathing and conversational motion: enough to keep
-                    // the frame alive without making the still look like a cheap zoom loop.
                     scaleX = 1.018f + breathe * 0.004f + speakingEnergy * 0.002f
                     scaleY = 1.018f + breathe * 0.006f + speakingEnergy * 0.003f
                     translationX = attentionShift * 5.5f
@@ -83,8 +102,6 @@ fun PhotorealPoliceDogFallback(
                 }
         )
 
-        // A restrained filmic grade keeps UI overlays legible and gives the foreground
-        // more perceived depth on bright phone displays.
         Box(
             Modifier
                 .fillMaxSize()
