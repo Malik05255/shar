@@ -27,8 +27,6 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Permanent Android identity. Never change this after distribution: it is
-        // what lets Al-Shorti coexist with VibeApp and receive in-place updates.
         applicationId = "com.malik.alshurti"
         minSdk = 29
         targetSdk = 36
@@ -91,11 +89,16 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // Supertonic 3 runs the Arabic neural voice locally after the first model download.
+    // Current neural audio runtime. This remains isolated behind the voice engine so
+    // it can be replaced without touching conversation/UI code.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
 
-    // Filament-based real GLB character renderer. The old Canvas dog is only a fallback.
+    // Real GLB character renderer powered by Google Filament.
     implementation("io.github.sceneview:sceneview:4.33.0")
+
+    // Real on-device conversation model via llama.cpp. The GGUF itself is downloaded
+    // after install; it is not bundled into the APK.
+    implementation("org.codeshipping:llama-kotlin-android:0.1.7")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
