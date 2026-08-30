@@ -92,9 +92,9 @@ dependencies {
     implementation("io.github.sceneview:sceneview:4.33.0")
     implementation("org.codeshipping:llama-kotlin-android:0.1.7")
 
-    // Raw AudioRecord-based local speech recognition. Unlike Android SpeechRecognizer,
-    // this does not invoke the OEM/Google recognition UI or its start/stop chime.
-    implementation("com.alphacephei:vosk-android:0.3.75")
+    // Local multilingual whisper.cpp STT. The model is downloaded separately on first use.
+    // This removes Android SpeechRecognizer chimes and replaces the previous 318 MB Vosk pack.
+    implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
