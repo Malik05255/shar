@@ -6,7 +6,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -22,9 +21,8 @@ import kotlinx.coroutines.launch
  * Plays real state-specific AI motion clips while preserving one master dog identity/camera.
  *
  * Full-body motion is never faked with bitmap zoom/translation. If a requested clip is missing,
- * the exact cinematic master frame is shown instead. For available clips the master frame remains
- * behind a transparent TextureView until the first decoded frame is rendered, preventing black
- * flashes between cinematic actions.
+ * the exact cinematic master frame is shown instead. One persistent TextureView is kept across
+ * action changes so transitions cannot visibly reset through the master frame between clips.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -111,34 +109,39 @@ fun AiCinematicDogStage(
         return
     }
 
-    val shouldLoop = requestedAction in setOf(
+    // Only low-amplitude idle/talk states may begin from a different internal point. Physical
+    // actions such as stand/walk/sit always start at frame 0 so their body continuity is preserved.
+    val randomizeStart = requestedAction in setOf(
         DogAction.SEATED_IDLE,
         DogAction.TALK_SEATED,
         DogAction.TALK_STANDING
     )
-    val playbackSeed = officeScene.revision * 1_103L + requestedAction.ordinal * 7_919L
+
+    // Stable while the same action remains active. Unrelated officeScene.revision changes must not
+    // restart the same video. Entering another action and later returning creates a fresh seed.
+    val playbackSeed = remember(requestedAction, clipResId) {
+        System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor clipResId.toLong()
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Always keep the exact master frame under the video. The custom TextureView stays
-        // transparent until MEDIA_INFO_VIDEO_RENDERING_START, then fades in over this frame.
+        // Kept underneath for first-load/failure only. Once the TextureView has rendered, the same
+        // surface remains alive across action changes and holds the previous final frame.
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
             modifier = Modifier.fillMaxSize()
         )
 
-        key(clipResId, requestedAction) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    CinematicClipView(ctx).apply {
-                        bind(clipResId, shouldLoop, playbackSeed)
-                    }
-                },
-                update = { view ->
-                    view.bind(clipResId, shouldLoop, playbackSeed)
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                CinematicClipView(ctx).apply {
+                    bind(clipResId, randomizeStart, playbackSeed)
                 }
-            )
-        }
+            },
+            update = { view ->
+                view.bind(clipResId, randomizeStart, playbackSeed)
+            }
+        )
     }
 }
