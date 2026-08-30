@@ -1,37 +1,25 @@
 package com.malik.alshurti.voice
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.MediaPlayer
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import ai.runanywhere.proto.v1.ModelCategory
-import com.runanywhere.sdk.public.RunAnywhere
-import com.runanywhere.sdk.public.extensions.downloadModel
-import com.runanywhere.sdk.public.extensions.loadModel
-import com.runanywhere.sdk.public.extensions.registerModel
-import com.runanywhere.sdk.public.extensions.synthesize
-import com.runanywhere.sdk.public.types.RAInferenceFramework
-import com.runanywhere.sdk.public.types.RAModelInfo
-import com.runanywhere.sdk.public.types.RAModelLoadRequest
-import com.runanywhere.sdk.public.types.RATTSOptions
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
-import java.io.File
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Fully local Arabic neural TTS using the Sherpa-ONNX runtime.
+ * Stable Arabic voice layer backed by the device TTS engine.
  *
- * The model is downloaded once when ONLINE provisioning is explicitly allowed.
- * Synthesis after that runs on the phone without metered API minutes.
+ * We intentionally do not ship a Piper/VITS model here. On phones that expose a
+ * high-quality Arabic network voice (Google/Samsung/etc.), ONLINE mode prefers it.
+ * OFFLINE mode only considers voices that do not require a network connection.
+ *
+ * This keeps startup instant, removes large native TTS runtimes, and lets Android
+ * choose hardware/engine-specific neural voices where available.
  */
 class LocalArabicVoice(
     context: Context,
@@ -47,286 +35,237 @@ class LocalArabicVoice(
     }
 
     private val appContext = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val main = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
     private val preparing = AtomicBoolean(false)
 
-    @Volatile private var ready = false
     @Volatile private var released = false
-    @Volatile private var player: MediaPlayer? = null
-    @Volatile private var registeredModel: RAModelInfo? = null
-    private var cursorJob: Job? = null
+    @Volatile private var initialized = false
+    @Volatile private var ready = false
+    @Volatile private var configuredNetworkPolicy: Boolean? = null
+    @Volatile private var engine: TextToSpeech? = null
+    @Volatile private var activeUtteranceId: String? = null
+    @Volatile private var activeText: String = ""
 
     fun prepare(allowDownload: Boolean) {
         if (released) return
-        if (ready) {
-            callbacks.onReady()
+
+        val current = engine
+        if (initialized && current != null) {
+            configureVoice(current, allowDownload)
             return
         }
         if (!preparing.compareAndSet(false, true)) return
 
-        scope.launch {
-            try {
-                val modelInfo = registerVoiceModel()
-
-                if (allowDownload) {
-                    postPreparing(8, "جاري تجهيز الصوت العربي المحلي لأول مرة…")
-                    RunAnywhere.downloadModel(modelInfo) {
-                        postPreparing(35, "جاري تنزيل الصوت العربي المحلي…")
-                    }
-                } else {
-                    postPreparing(15, "جاري فتح الصوت العربي المحفوظ…")
-                }
-
-                val load = RunAnywhere.loadModel(
-                    RAModelLoadRequest(
-                        model_id = MODEL_ID,
-                        category = ModelCategory.MODEL_CATEGORY_SPEECH_SYNTHESIS
-                    )
-                )
-                check(load.success) {
-                    if (allowDownload) {
-                        "تعذر تحميل الصوت العربي المحلي: ${load.error_message}"
-                    } else {
-                        "الصوت العربي المحلي غير مثبت بعد. شغّل وضع الإنترنت مرة واحدة لتثبيته."
-                    }
-                }
-
-                ready = true
-                preparing.set(false)
-                main.post {
-                    callbacks.onPreparing(100, "الصوت العربي المحلي جاهز")
-                    callbacks.onReady()
-                }
-            } catch (t: Throwable) {
-                preparing.set(false)
-                ready = false
-                main.post {
-                    callbacks.onError(
-                        t.message ?: if (allowDownload) {
-                            "تعذر تجهيز الصوت العربي المحلي."
-                        } else {
-                            "الصوت العربي المحلي غير مثبت."
-                        }
-                    )
-                }
+        postPreparing(15, "جاري اختيار أفضل صوت عربي…")
+        var created: TextToSpeech? = null
+        created = TextToSpeech(appContext) { status ->
+            if (released) {
+                runCatching { created?.shutdown() }
+                return@TextToSpeech
             }
+            preparing.set(false)
+            if (status != TextToSpeech.SUCCESS || created == null) {
+                initialized = false
+                ready = false
+                main.post { callbacks.onError("تعذر تشغيل محرك الصوت في الجهاز.") }
+                return@TextToSpeech
+            }
+
+            engine = created
+            initialized = true
+            installProgressListener(created!!)
+            configureVoice(created!!, allowDownload)
         }
     }
 
     fun speak(text: String) {
         val clean = normalize(text)
         if (clean.isBlank()) {
-            callbacks.onSpeechFinished()
+            main.post(callbacks::onSpeechFinished)
             return
         }
-        if (!ready) {
-            callbacks.onError("الصوت العربي المحلي غير جاهز بعد.")
+
+        val tts = engine
+        if (!ready || tts == null) {
+            main.post { callbacks.onError("الصوت العربي غير جاهز. جرّب مرة ثانية.") }
             return
         }
 
         val ticket = generation.incrementAndGet()
-        stopPlayer()
-        postPreparing(5, "جاري توليد الصوت على الجهاز…")
+        val utteranceId = "alshorti-$ticket"
+        activeUtteranceId = utteranceId
+        activeText = clean.take(MAX_TEXT_CHARS)
+        callbacks.onPreparing(95, "الشرطي يجهز الرد…")
 
-        scope.launch {
-            try {
-                val output = RunAnywhere.synthesize(
-                    clean.take(MAX_TEXT_CHARS),
-                    RATTSOptions()
-                )
-                if (ticket != generation.get() || released) return@launch
-
-                // Sherpa output is raw Float32 PCM. MediaPlayer needs a WAV container.
-                val floatPcm = output.audio_data.toByteArray()
-                check(floatPcm.size >= MIN_FLOAT_PCM_BYTES) {
-                    "المحرك المحلي لم يرجع صوتاً صالحاً."
-                }
-                val sampleRate = output.sample_rate.takeIf { it > 0 } ?: DEFAULT_SAMPLE_RATE
-                val wavBytes = float32PcmToWav(floatPcm, sampleRate)
-
-                val wav = File.createTempFile("alshorti-local-voice-", ".wav", appContext.cacheDir)
-                wav.outputStream().use { outputStream ->
-                    outputStream.write(wavBytes)
-                    outputStream.flush()
-                }
-                main.post {
-                    callbacks.onPreparing(95, "تم توليد الصوت — جاري تشغيله…")
-                    play(ticket, wav)
-                }
-            } catch (t: Throwable) {
-                if (ticket == generation.get() && !released) {
-                    main.post { callbacks.onError(t.message ?: "تعذر توليد الصوت العربي المحلي.") }
-                }
-            }
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        }
+        val result = tts.speak(activeText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            activeUtteranceId = null
+            main.post { callbacks.onError("تعذر تشغيل الصوت العربي المختار.") }
         }
     }
 
     fun interrupt() {
         generation.incrementAndGet()
-        main.post { stopPlayer() }
+        activeUtteranceId = null
+        runCatching { engine?.stop() }
     }
 
     fun release() {
         released = true
         generation.incrementAndGet()
-        main.post { stopPlayer() }
-        scope.cancel()
+        activeUtteranceId = null
+        ready = false
+        initialized = false
+        runCatching { engine?.stop() }
+        runCatching { engine?.shutdown() }
+        engine = null
     }
 
-    private suspend fun registerVoiceModel(): RAModelInfo {
-        registeredModel?.let { return it }
-        val model = RunAnywhere.registerModel(
-            id = MODEL_ID,
-            name = "Arabic Saudi Miro V2 High",
-            url = MODEL_URL,
-            framework = RAInferenceFramework.INFERENCE_FRAMEWORK_ONNX,
-            modality = ModelCategory.MODEL_CATEGORY_SPEECH_SYNTHESIS,
-            memoryRequirement = MODEL_MEMORY_REQUIREMENT
-        )
-        registeredModel = model
-        return model
-    }
+    private fun configureVoice(tts: TextToSpeech, allowNetwork: Boolean) {
+        if (released) return
+        postPreparing(35, if (allowNetwork) "اختيار أفضل صوت عربي متاح…" else "اختيار أفضل صوت عربي بدون إنترنت…")
 
-    private fun float32PcmToWav(floatPcm: ByteArray, sampleRate: Int): ByteArray {
-        val sampleCount = floatPcm.size / 4
-        val pcm16 = ByteArray(sampleCount * 2)
-        var source = 0
-        var target = 0
-        repeat(sampleCount) {
-            val bits =
-                (floatPcm[source].toInt() and 0xff) or
-                    ((floatPcm[source + 1].toInt() and 0xff) shl 8) or
-                    ((floatPcm[source + 2].toInt() and 0xff) shl 16) or
-                    ((floatPcm[source + 3].toInt() and 0xff) shl 24)
-            val sample = Float.fromBits(bits).coerceIn(-1f, 1f)
-            val value = (sample * 32767f).toInt().coerceIn(-32768, 32767)
-            pcm16[target] = (value and 0xff).toByte()
-            pcm16[target + 1] = ((value ushr 8) and 0xff).toByte()
-            source += 4
-            target += 2
+        val selected = chooseBestArabicVoice(tts, allowNetwork)
+        if (selected != null) {
+            val voiceResult = runCatching { tts.setVoice(selected) }.getOrDefault(TextToSpeech.ERROR)
+            if (voiceResult == TextToSpeech.SUCCESS) {
+                applyNaturalProsody(tts)
+                ready = true
+                configuredNetworkPolicy = allowNetwork
+                main.post {
+                    callbacks.onPreparing(100, "الصوت العربي جاهز")
+                    callbacks.onReady()
+                }
+                return
+            }
         }
 
-        val buffer = ByteArrayOutputStream(44 + pcm16.size)
-        DataOutputStream(buffer).use { out ->
-            fun ascii(value: String) = out.writeBytes(value)
-            fun intLE(value: Int) {
-                out.writeByte(value and 0xff)
-                out.writeByte((value ushr 8) and 0xff)
-                out.writeByte((value ushr 16) and 0xff)
-                out.writeByte((value ushr 24) and 0xff)
+        // A few engines do not publish Voice metadata but still support Arabic.
+        val fallbackLocale = Locale("ar", "SA")
+        val languageResult = runCatching { tts.setLanguage(fallbackLocale) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+        if (languageResult != TextToSpeech.LANG_MISSING_DATA && languageResult != TextToSpeech.LANG_NOT_SUPPORTED) {
+            applyNaturalProsody(tts)
+            ready = true
+            configuredNetworkPolicy = allowNetwork
+            main.post {
+                callbacks.onPreparing(100, "الصوت العربي جاهز")
+                callbacks.onReady()
             }
-            fun shortLE(value: Int) {
-                out.writeByte(value and 0xff)
-                out.writeByte((value ushr 8) and 0xff)
-            }
-
-            ascii("RIFF")
-            intLE(36 + pcm16.size)
-            ascii("WAVE")
-            ascii("fmt ")
-            intLE(16)
-            shortLE(1)
-            shortLE(1)
-            intLE(sampleRate)
-            intLE(sampleRate * 2)
-            shortLE(2)
-            shortLE(16)
-            ascii("data")
-            intLE(pcm16.size)
-            out.write(pcm16)
-        }
-        return buffer.toByteArray()
-    }
-
-    private fun play(ticket: Long, file: File) {
-        if (ticket != generation.get() || released) {
-            file.delete()
             return
         }
-        stopPlayer()
 
-        val active = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            setDataSource(file.absolutePath)
-            setOnPreparedListener { prepared ->
-                if (ticket != generation.get() || released) {
-                    runCatching { prepared.release() }
-                    file.delete()
-                    return@setOnPreparedListener
-                }
-                val duration = prepared.duration.coerceAtLeast(1)
-                callbacks.onSpeechStarted(duration.toLong())
-                prepared.start()
-                startCursor(ticket, prepared, duration)
-            }
-            setOnCompletionListener { completed ->
-                if (player === completed) player = null
-                cursorJob?.cancel()
-                cursorJob = null
-                runCatching { completed.release() }
-                file.delete()
-                if (ticket == generation.get() && !released) callbacks.onSpeechFinished()
-            }
-            setOnErrorListener { failed, _, _ ->
-                if (player === failed) player = null
-                cursorJob?.cancel()
-                cursorJob = null
-                runCatching { failed.release() }
-                file.delete()
-                if (ticket == generation.get() && !released) {
-                    callbacks.onError("تعذر تشغيل الصوت العربي المحلي.")
-                }
-                true
-            }
+        ready = false
+        val message = if (allowNetwork) {
+            "ما لقيت في جهازك صوت عربي مناسب. ثبّت أو فعّل خدمة تحويل النص إلى كلام العربية في إعدادات الجهاز."
+        } else {
+            "ما فيه صوت عربي محفوظ للعمل بدون إنترنت. اختر الإنترنت أو نزّل صوتاً عربياً من إعدادات تحويل النص إلى كلام."
         }
-        player = active
-        active.prepareAsync()
+        main.post { callbacks.onError(message) }
     }
 
-    private fun startCursor(ticket: Long, active: MediaPlayer, durationMs: Int) {
-        cursorJob?.cancel()
-        cursorJob = scope.launch(Dispatchers.Main) {
-            while (ticket == generation.get() && player === active && !released) {
-                val current = runCatching { active.currentPosition }.getOrDefault(0)
-                callbacks.onSpeechCursor((current.toFloat() / durationMs).coerceIn(0f, 1f))
-                kotlinx.coroutines.delay(CURSOR_INTERVAL_MS)
-            }
+    private fun chooseBestArabicVoice(tts: TextToSpeech, allowNetwork: Boolean): Voice? {
+        val voices = runCatching { tts.voices.orEmpty() }.getOrDefault(emptySet())
+        return voices
+            .asSequence()
+            .filter { it.locale?.language.equals("ar", ignoreCase = true) }
+            .filter { allowNetwork || !it.isNetworkConnectionRequired }
+            .maxByOrNull { scoreVoice(it, allowNetwork) }
+    }
+
+    private fun scoreVoice(voice: Voice, allowNetwork: Boolean): Int {
+        val country = voice.locale?.country.orEmpty().uppercase(Locale.ROOT)
+        val gulfBonus = when (country) {
+            "SA" -> 6_000
+            "AE", "KW", "QA", "BH", "OM" -> 3_500
+            else -> 0
         }
+        val qualityScore = voice.quality.coerceAtLeast(0) * 20
+        val latencyScore = (Voice.LATENCY_VERY_HIGH - voice.latency).coerceAtLeast(0)
+        val networkBonus = if (allowNetwork && voice.isNetworkConnectionRequired) 450 else 0
+        val name = voice.name.orEmpty().lowercase(Locale.ROOT)
+        val localeHint = when {
+            "ar-sa" in name || "ar_sa" in name || "saudi" in name -> 1_200
+            "arab" in name -> 200
+            else -> 0
+        }
+        return gulfBonus + qualityScore + latencyScore + networkBonus + localeHint
     }
 
-    private fun stopPlayer() {
-        cursorJob?.cancel()
-        cursorJob = null
-        val active = player ?: return
-        player = null
-        runCatching { active.stop() }
-        runCatching { active.reset() }
-        runCatching { active.release() }
+    private fun applyNaturalProsody(tts: TextToSpeech) {
+        // Slightly slower than many OEM defaults improves Arabic articulation without
+        // creating the exaggerated "robot reading" cadence of slow synthetic voices.
+        tts.setSpeechRate(0.96f)
+        tts.setPitch(0.98f)
     }
+
+    private fun installProgressListener(tts: TextToSpeech) {
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                if (!isActive(utteranceId)) return
+                val estimate = estimateDurationMs(activeText)
+                main.post {
+                    callbacks.onSpeechCursor(0f)
+                    callbacks.onSpeechStarted(estimate)
+                }
+            }
+
+            override fun onDone(utteranceId: String?) {
+                if (!isActive(utteranceId)) return
+                activeUtteranceId = null
+                main.post {
+                    callbacks.onSpeechCursor(1f)
+                    callbacks.onSpeechFinished()
+                }
+            }
+
+            override fun onError(utteranceId: String?) {
+                onTtsError(utteranceId)
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                onTtsError(utteranceId)
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                if (utteranceId == activeUtteranceId) activeUtteranceId = null
+            }
+
+            override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                if (!isActive(utteranceId)) return
+                val length = activeText.length.coerceAtLeast(1)
+                val fraction = start.toFloat().div(length).coerceIn(0f, 1f)
+                main.post { callbacks.onSpeechCursor(fraction) }
+            }
+        })
+    }
+
+    private fun onTtsError(utteranceId: String?) {
+        if (!isActive(utteranceId)) return
+        activeUtteranceId = null
+        main.post { callbacks.onError("فشل محرك الصوت في نطق الرد. جرّب تغيير وضع الإنترنت من القائمة.") }
+    }
+
+    private fun isActive(utteranceId: String?): Boolean =
+        !released && utteranceId != null && utteranceId == activeUtteranceId
+
+    private fun estimateDurationMs(text: String): Long =
+        (text.length * 62L).coerceIn(850L, 14_000L)
 
     private fun postPreparing(percent: Int, message: String) {
         main.post { callbacks.onPreparing(percent, message) }
     }
 
     private fun normalize(value: String): String = value
-        .replace(Regex("\\s+"), " ")
+        .replace('ـ', ' ')
         .replace("…", "،")
+        .replace(Regex("\\s+"), " ")
         .trim()
 
     private companion object {
-        const val MODEL_ID = "vits-piper-ar_JO-SA_miro_V2-high"
-        const val MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ar_JO-SA_miro_V2-high.tar.bz2"
-        const val MODEL_MEMORY_REQUIREMENT = 180_000_000L
-        const val MAX_TEXT_CHARS = 260
-        const val MIN_FLOAT_PCM_BYTES = 4_096
-        const val DEFAULT_SAMPLE_RATE = 22_050
-        const val CURSOR_INTERVAL_MS = 55L
+        const val MAX_TEXT_CHARS = 320
     }
 }
