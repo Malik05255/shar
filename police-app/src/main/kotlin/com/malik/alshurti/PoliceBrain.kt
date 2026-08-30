@@ -1,8 +1,14 @@
 package com.malik.alshurti
 
 interface PoliceBrain {
-    /** Starts model preparation early so the first real child turn does not pay all startup cost. */
-    fun prepare() = Unit
+    /**
+     * Warm the conversational model early.
+     *
+     * [allowDownload] is strict: Offline mode must never reach the network to fetch
+     * a missing model. Online mode may provision the model once, after which the same
+     * model can be reused locally.
+     */
+    fun prepare(allowDownload: Boolean) = Unit
 
     suspend fun reply(userText: String): PoliceReply
 
