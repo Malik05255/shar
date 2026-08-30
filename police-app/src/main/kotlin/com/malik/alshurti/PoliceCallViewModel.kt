@@ -17,7 +17,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         VoiceMode.valueOf(preferences.getString(KEY_MODE, VoiceMode.ONLINE.name) ?: VoiceMode.ONLINE.name)
     }.getOrDefault(VoiceMode.ONLINE)
 
-    private val brain: PoliceBrain = LocalPoliceBrain()
+    private val brain: PoliceBrain = QwenPoliceBrain(application.applicationContext)
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
 
     private val _uiState = MutableStateFlow(PoliceUiState(mode = initialMode))
@@ -28,6 +28,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var sessionStarted = false
 
     init {
+        brain.prepare()
         voiceEngine.setMode(initialMode)
     }
 
@@ -60,9 +61,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 mood = DogMood.CALM,
                 viseme = MouthViseme.REST,
                 statusText = if (mode == VoiceMode.ONLINE) {
-                    "جاري تجهيز الصوت العصبي العربي…"
+                    "جاري تجهيز المحادثة والصوت…"
                 } else {
-                    "جاري تشغيل الصوت المحلي…"
+                    "جاري تشغيل المحركات المحلية…"
                 },
                 errorMessage = null
             )
@@ -93,7 +94,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         sessionStarted = true
 
         if (!_uiState.value.firstGreetingDone) {
-            val greeting = "هلا يا بطل، معك الشرطي. وش عندك؟"
+            val greeting = "هلا، أنا معك. وش صار؟"
             _uiState.update {
                 it.copy(
                     phase = CallPhase.SPEAKING,
@@ -121,7 +122,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 phase = CallPhase.THINKING,
                 mood = DogMood.THINKING,
                 viseme = MouthViseme.REST,
-                statusText = "لحظة… أفكر في كلامك",
+                statusText = "ثانية…",
                 errorMessage = null
             )
         }
@@ -145,7 +146,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                             phase = CallPhase.ERROR,
                             mood = DogMood.SERIOUS,
                             viseme = MouthViseme.REST,
-                            statusText = "صار خطأ بسيط، حاول مرة ثانية.",
+                            statusText = "تعذر تجهيز المحادثة المحلية.",
                             errorMessage = error.message
                         )
                     }
@@ -228,7 +229,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 phase = CallPhase.STARTING,
                 mood = DogMood.CALM,
-                statusText = "الصوت الطبيعي جاهز"
+                statusText = "جاهز"
             )
         }
         tryStartSession()
@@ -270,6 +271,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onCleared() {
+        brain.release()
         voiceEngine.release()
         super.onCleared()
     }
