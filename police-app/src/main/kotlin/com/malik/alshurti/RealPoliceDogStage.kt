@@ -18,8 +18,10 @@ import io.github.sceneview.rememberModelLoader
  * The existing Canvas character is kept only as a build-safe placeholder until a
  * licensed `models/police_dog.glb` is present in app assets.
  *
- * Asset animation contract (preferred clip names):
- * Idle, Listen, Think, Talk, Smile, Laugh, Serious.
+ * Required body clips: Idle, Listen, Think, Smile, Serious.
+ * Required talking/viseme clips: TalkOpen, TalkWide, TalkRound, TalkClosed, TalkRest.
+ * Those short clips allow the neural speech cursor to change the actual 3D mouth pose
+ * while the Arabic audio is playing, instead of merely animating a generic jaw loop.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -63,8 +65,8 @@ fun RealPoliceDogStage(
             ModelNode(
                 modelInstance = instance,
                 autoAnimate = false,
-                animationName = animationFor(mood, phase),
-                animationLoop = phase != CallPhase.ERROR,
+                animationName = animationFor(mood, phase, viseme),
+                animationLoop = true,
                 animationSpeed = animationSpeedFor(phase),
                 scaleToUnits = 1.72f,
                 centerOrigin = Position(x = 0f, y = -1f, z = 0f),
@@ -74,19 +76,23 @@ fun RealPoliceDogStage(
     }
 }
 
-private fun animationFor(mood: DogMood, phase: CallPhase): String = when {
+private fun animationFor(mood: DogMood, phase: CallPhase, viseme: MouthViseme): String = when {
+    phase == CallPhase.SPEAKING -> when (viseme) {
+        MouthViseme.OPEN -> "TalkOpen"
+        MouthViseme.WIDE -> "TalkWide"
+        MouthViseme.ROUND -> "TalkRound"
+        MouthViseme.CLOSED -> "TalkClosed"
+        MouthViseme.REST -> "TalkRest"
+    }
     phase == CallPhase.LISTENING -> "Listen"
     phase == CallPhase.THINKING -> "Think"
-    phase == CallPhase.SPEAKING && mood == DogMood.SMILE -> "Smile"
-    phase == CallPhase.SPEAKING && mood == DogMood.SERIOUS -> "Serious"
-    phase == CallPhase.SPEAKING -> "Talk"
     mood == DogMood.SMILE -> "Smile"
-    mood == DogMood.SERIOUS -> "Serious"
+    mood == DogMood.SERIOUS || phase == CallPhase.ERROR -> "Serious"
     else -> "Idle"
 }
 
 private fun animationSpeedFor(phase: CallPhase): Float = when (phase) {
-    CallPhase.SPEAKING -> 1.0f
+    CallPhase.SPEAKING -> 1.05f
     CallPhase.LISTENING -> 0.92f
     CallPhase.THINKING -> 0.82f
     else -> 0.75f
