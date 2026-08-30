@@ -22,6 +22,22 @@ val releaseSigningReady = listOf(
     releaseKeyPassword
 ).all { !it.isNullOrBlank() }
 
+fun buildSetting(name: String, defaultValue: String = ""): String =
+    providers.gradleProperty(name).orNull
+        ?: System.getenv(name)
+        ?: defaultValue
+
+fun quotedBuildConfig(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+val elevenLabsApiKey = buildSetting("ELEVENLABS_API_KEY")
+val elevenLabsVoiceId = buildSetting(
+    "ALSHORTI_ELEVENLABS_VOICE_ID",
+    // Jeddawi: native Saudi male / Jeddah accent. This is intentionally not a
+    // generic multilingual English voice.
+    "yXEnnEln9armDCyhkXcA"
+)
+
 android {
     namespace = "com.malik.alshurti"
     compileSdk = 36
@@ -36,6 +52,11 @@ android {
         versionName = alShortiVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Never commit the API key. Local builds can use -PELEVENLABS_API_KEY=...
+        // or the ELEVENLABS_API_KEY environment variable.
+        buildConfigField("String", "ELEVENLABS_API_KEY", quotedBuildConfig(elevenLabsApiKey))
+        buildConfigField("String", "ELEVENLABS_VOICE_ID", quotedBuildConfig(elevenLabsVoiceId))
     }
 
     signingConfigs {
@@ -68,6 +89,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -91,7 +113,9 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // Supertonic 3 runs the Arabic neural voice locally after the first model download.
+    // Legacy local voice code remains buildable for development/reference only.
+    // It is no longer on the production speech path because the product contract
+    // requires a native Saudi human-sounding voice and forbids robotic fallback.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
 
     // Filament-based real GLB character renderer. The old Canvas dog is only a fallback.

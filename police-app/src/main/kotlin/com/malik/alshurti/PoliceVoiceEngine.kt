@@ -2,13 +2,11 @@ package com.malik.alshurti
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import androidx.annotation.ChecksSdkIntAtLeast
-import com.malik.alshurti.neural.NeuralArabicVoice
+import com.malik.alshurti.voice.SaudiHumanVoice
 
 class PoliceVoiceEngine(
     private val context: Context,
@@ -34,9 +32,15 @@ class PoliceVoiceEngine(
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
 
-    private val neuralVoice = NeuralArabicVoice(
+    /**
+     * Production speech source.
+     *
+     * There is deliberately no Android TTS or Supertonic fallback here. If the Saudi
+     * voice cannot run, the UI shows an error instead of playing a robotic substitute.
+     */
+    private val saudiVoice = SaudiHumanVoice(
         context = context.applicationContext,
-        callbacks = object : NeuralArabicVoice.Callbacks {
+        callbacks = object : SaudiHumanVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
                 listener.onTtsPreparing(percent, message)
             }
@@ -79,27 +83,28 @@ class PoliceVoiceEngine(
         runCatching { speechRecognizer?.destroy() }
         speechRecognizer = null
 
-        // Online is only needed for the one-time model download. Once installed,
-        // Supertonic is local in BOTH modes. Offline never falls back to the network.
-        neuralVoice.prepare(allowDownload = newMode == VoiceMode.ONLINE)
-    }
-
-    fun startListening() {
-        if (mode == VoiceMode.OFFLINE && !hasOnDeviceRecognizer()) {
-            listener.onSpeechError(
-                "وضع بدون إنترنت يحتاج حزمة تعرّف صوتي عربية محلية على الجهاز. الصوت الذي يرد عليك محلي، لكن الاستماع يحتاج حزمة العربية أو محرك Whisper لاحقاً.",
-                false
+        if (newMode == VoiceMode.OFFLINE) {
+            listener.onTtsError(
+                "الصوت السعودي البشري يحتاج اتصالاً بالإنترنت. تم إيقاف الصوت المحلي لأنه لا يحقق الجودة المطلوبة."
             )
             return
         }
+        saudiVoice.prepare()
+    }
 
-        if (mode == VoiceMode.ONLINE && !SpeechRecognizer.isRecognitionAvailable(context)) {
+    fun startListening() {
+        if (mode != VoiceMode.ONLINE) {
+            listener.onSpeechError("المحادثة بالصوت السعودي تعمل في وضع الإنترنت فقط.", false)
+            return
+        }
+
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             listener.onSpeechError("التعرّف على الصوت غير متوفر على هذا الجهاز.", false)
             return
         }
 
         stopListening()
-        val recognizer = speechRecognizer ?: createRecognizer().also {
+        val recognizer = speechRecognizer ?: SpeechRecognizer.createSpeechRecognizer(context).also {
             speechRecognizer = it
             it.setRecognitionListener(recognitionListener)
         }
@@ -110,10 +115,10 @@ class PoliceVoiceEngine(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ar-SA")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, mode == VoiceMode.OFFLINE)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 580L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 360L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 250L)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 650L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 420L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 280L)
         }
 
         try {
@@ -132,7 +137,7 @@ class PoliceVoiceEngine(
     }
 
     fun interruptSpeech() {
-        neuralVoice.interrupt()
+        saudiVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
     }
@@ -144,29 +149,17 @@ class PoliceVoiceEngine(
             listener.onTtsFinished()
             return
         }
-        neuralVoice.speak(spokenText)
+        saudiVoice.speak(spokenText)
     }
 
     fun release() {
         stopListening()
         runCatching { speechRecognizer?.destroy() }
         speechRecognizer = null
-        neuralVoice.release()
+        saudiVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
     }
-
-    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
-    private fun hasOnDeviceRecognizer(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-
-    private fun createRecognizer(): SpeechRecognizer =
-        if (mode == VoiceMode.OFFLINE && hasOnDeviceRecognizer()) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
         if (text.isBlank()) return MouthViseme.REST
