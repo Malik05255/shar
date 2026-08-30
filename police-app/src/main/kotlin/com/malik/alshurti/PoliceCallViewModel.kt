@@ -28,6 +28,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var staffVoiceReady = false
     private var sessionStarted = false
     private var completedPoliceTurns = 0
+    private var staffScenarioActive = false
     private var officeEventJob: Job? = null
 
     private val staffVoice = SaudiHumanVoice(
@@ -41,6 +42,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             }
 
             override fun onSpeechStarted(durationMs: Long) {
+                if (!staffScenarioActive) return
                 _uiState.update {
                     it.copy(
                         phase = CallPhase.THINKING,
@@ -59,13 +61,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             override fun onSpeechCursor(fraction: Float) = Unit
 
             override fun onSpeechFinished() {
-                closeDoorThenListen()
+                if (staffScenarioActive) closeDoorThenListen()
             }
 
             override fun onError(message: String) {
-                // A background actor must never break the primary child conversation.
                 staffVoiceReady = false
-                closeDoorThenListen()
+                if (staffScenarioActive) closeDoorThenListen()
             }
         }
     )
@@ -130,8 +131,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     fun retryListening() {
         if (!microphonePermissionGranted) return
-        cancelOfficeEvent(resetScene = false)
+        staffScenarioActive = false
         staffVoice.interrupt()
+        officeEventJob = null
         resetOfficeScene()
         setPhase(CallPhase.LISTENING)
         _uiState.update {
@@ -179,6 +181,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
+        staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
         setPhase(CallPhase.THINKING)
@@ -233,9 +236,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onSpeechStarted() {
+        staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
-        resetOfficeScene()
         setPhase(CallPhase.LISTENING)
         _uiState.update {
             it.copy(
@@ -305,9 +308,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onTtsStarted() {
+        staffScenarioActive = false
         staffVoice.interrupt()
         cancelOfficeEvent()
-        resetOfficeScene()
         setPhase(CallPhase.SPEAKING)
         _uiState.update {
             it.copy(
@@ -340,10 +343,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /**
-     * Deterministic pacing makes the office feel alive during a normal demo without
-     * firing an event after every answer. No Foley is played while the microphone is open.
-     */
     private fun runOfficeBeatThenListen() {
         cancelOfficeEvent(resetScene = false)
         officeEventJob = viewModelScope.launch {
@@ -374,7 +373,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
         officeSoundscape.playCue(OfficeCue.PAPER_RUSTLE)
         delay(620)
-        resetOfficeScene()
         retryListening()
     }
 
@@ -410,6 +408,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private suspend fun runDoorStaffBeat() {
+        staffScenarioActive = true
         setPhase(CallPhase.THINKING)
         _uiState.update {
             it.copy(
@@ -463,6 +462,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun closeDoorThenListen() {
+        if (!staffScenarioActive) return
+        staffScenarioActive = false
         officeEventJob?.cancel()
         officeEventJob = viewModelScope.launch {
             _uiState.update {
@@ -479,7 +480,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             }
             officeSoundscape.playCue(OfficeCue.DOOR_CLOSE)
             delay(520)
-            resetOfficeScene()
             retryListening()
         }
     }
@@ -501,6 +501,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun cancelOfficeEvent(resetScene: Boolean = true) {
+        staffScenarioActive = false
         officeEventJob?.cancel()
         officeEventJob = null
         if (resetScene) resetOfficeScene()
