@@ -117,8 +117,8 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
-                            "اختبار الصوت السعودي",
-                            "يشغّل الصوت فوراً بدون تنزيل Qwen أو نموذج الاستماع",
+                            "اختبار الصوت المحلي",
+                            "يختبر محرك النطق فقط؛ أول مرة قد ينزل الصوت في وضع الإنترنت",
                             false
                         )
                     },
@@ -131,7 +131,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "بدء المحادثة",
-                            "يبدأ الاستماع؛ أول تشغيل قد يحتاج تنزيل نموذج العربية",
+                            "يشغّل الشرطي؛ أول إعداد يثبت المحركات المحلية الناقصة",
                             false
                         )
                     },
@@ -143,8 +143,8 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 DropdownMenuItem(
                     text = {
                         ModeMenuText(
-                            "تنزيل المحادثة المحلية",
-                            "يثبّت Qwen على الجهاز باختيارك، وليس عند فتح التطبيق",
+                            "تنزيل عقل المحادثة",
+                            "يثبّت Qwen على الجهاز مسبقاً لتقليل انتظار أول رد",
                             false
                         )
                     },
@@ -157,7 +157,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "الإنترنت",
-                            "الصوت السعودي عبر الإنترنت؛ لا ننزّل النماذج الكبيرة تلقائياً",
+                            "يسمح فقط بتنزيل النماذج الناقصة؛ التحدث والمعالجة محليان",
                             state.mode == VoiceMode.ONLINE
                         )
                     },
@@ -170,7 +170,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                     text = {
                         ModeMenuText(
                             "بدون إنترنت",
-                            "يستخدم فقط النماذج التي ثبّتها مسبقاً على الجهاز",
+                            "لا يستخدم الشبكة إطلاقاً؛ يشغّل النماذج المثبتة مسبقاً",
                             state.mode == VoiceMode.OFFLINE
                         )
                     },
@@ -206,20 +206,23 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
             }
 
             AnimatedVisibility(
-                visible = state.mode == VoiceMode.ONLINE &&
-                    state.phase != CallPhase.SPEAKING &&
-                    state.phase != CallPhase.LISTENING,
+                visible = state.phase != CallPhase.SPEAKING && state.phase != CallPhase.LISTENING,
                 enter = fadeIn(),
                 exit = fadeOut()
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Button(onClick = viewModel::testSaudiVoice) {
-                        Text("اختبار الصوت الآن")
+                        Text("اختبار الصوت المحلي")
                     }
                     Text(
-                        "لا يحتاج Qwen ولا نموذج الاستماع",
+                        if (state.mode == VoiceMode.ONLINE) {
+                            "أول مرة فقط قد ينزل نموذج الصوت، وبعدها يعمل من الجهاز"
+                        } else {
+                            "يعمل فقط إذا كان نموذج الصوت مثبتاً مسبقاً"
+                        },
                         color = Color.White.copy(alpha = 0.56f),
                         fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 5.dp)
                     )
                 }
@@ -237,9 +240,14 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         Text("بدء المحادثة")
                     }
                     Text(
-                        "أول مرة فقط قد يحتاج تجهيز الاستماع العربي",
+                        if (state.mode == VoiceMode.ONLINE) {
+                            "الإعداد الأول فقط يحتاج تنزيل Whisper والصوت وQwen"
+                        } else {
+                            "بدون إنترنت لن يتم أي تنزيل"
+                        },
                         color = Color.White.copy(alpha = 0.56f),
                         fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 5.dp)
                     )
                 }
@@ -263,8 +271,8 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         modifier = Modifier.padding(horizontal = 8.dp)
                     )
                     if (state.phase == CallPhase.ERROR) {
-                        IconButton(onClick = viewModel::testSaudiVoice, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Default.Refresh, contentDescription = "إعادة اختبار الصوت", tint = Color.White)
+                        IconButton(onClick = viewModel::startConversation, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Default.Refresh, contentDescription = "إعادة المحاولة", tint = Color.White)
                         }
                     }
                 }
