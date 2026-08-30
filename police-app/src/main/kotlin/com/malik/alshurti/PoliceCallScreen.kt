@@ -50,6 +50,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 @Composable
 fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val officeScene by viewModel.officeSceneState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -85,6 +86,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 mood = state.mood,
                 phase = state.phase,
                 viseme = state.viseme,
+                officeScene = officeScene,
                 modifier = Modifier.fillMaxSize()
             )
         }
