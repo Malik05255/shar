@@ -1,4 +1,4 @@
-name: Transfer Stable Fast 3D PBR to Animated Hero - Free Blender
+name: Transfer SF3D PBR to Motion V2 Hero - Free Blender
 
 on:
   workflow_dispatch:
@@ -7,34 +7,31 @@ on:
       - fix/silent-listening-living-office
     paths:
       - '.github/workflows/runtime3d-sf3d-transfer.yml'
-      - 'runtime3d/blender_transfer_sf3d_candidate.py'
       - 'runtime3d/blender_transfer_pbr_candidate.py'
-      - 'runtime3d/extract_glb_pbr_images.py'
+      - 'runtime3d/blender_transfer_pbr_embedded.py'
+      - 'runtime3d/validate_facial_motion_cubic.py'
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  transfer-pbr:
+  transfer-pbr-motion-v2:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      MOTION_RUN_ID: '33393807309'
-      MOTION_ARTIFACT: Runtime3D-police-dog-motion-candidate
-      MOTION_GLB: police_dog.motion_candidate.glb
+      MOTION_RUN_ID: '33427570106'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-v2-candidate
+      MOTION_GLB: police_dog.motion_v2_candidate.glb
       DONOR_RUN_ID: '33410396487'
       DONOR_ARTIFACT: Runtime3D-sf3d-textured-reference-candidate
       DONOR_GLB: police_dog.sf3d.textured_reference.glb
-      BLENDER_VERSION: '4.0.2'
-      BLENDER_ARCHIVE: 'blender-4.0.2-linux-x64.tar.xz'
-      BLENDER_ROOT: 'runtime3d/.toolcache/blender-4.0.2'
 
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
 
-      - name: Enforce topology-preserving free-only gate
+      - name: Enforce free topology-preserving candidate policy
         shell: bash
         run: |
           set -euo pipefail
@@ -44,15 +41,17 @@ jobs:
           echo 'REMESH=false'
           echo 'PRESERVE_SKIN=true'
           echo 'PRESERVE_26_CLIPS=true'
+          echo 'PRESERVE_SPARSE_FACE_LAYERS=true'
           echo 'PRODUCTION_ACTIVATION=false'
           python3 - <<'PY'
           import json
           from pathlib import Path
-          assert json.loads(Path('runtime3d/manifest.json').read_text()).get('enabled') is False
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
           print('manifest.enabled=false')
           PY
 
-      - name: Download exact animated hero
+      - name: Download validated Motion V2 hero
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.MOTION_ARTIFACT }}
@@ -61,7 +60,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.MOTION_RUN_ID }}
 
-      - name: Download exact Stable Fast 3D donor
+      - name: Download exact SF3D textured donor
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.DONOR_ARTIFACT }}
@@ -70,7 +69,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.DONOR_RUN_ID }}
 
-      - name: Verify immutable inputs
+      - name: Verify immutable Motion V2 and PBR donor inputs
         shell: bash
         run: |
           set -euo pipefail
@@ -86,108 +85,57 @@ jobs:
           names={a.get('name') for a in (md.get('animations') or []) if a.get('name')}
           missing=sorted(set(DOG_CLIPS)-names)
           skins=md.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
-          print(json.dumps({'motionBytes':motion.stat().st_size,'motionAnimations':len(names),'missing':missing,
-                            'motionSkins':len(skins),'maxJoints':joints,'donorBytes':donor.stat().st_size,
-                            'donorMaterials':len(dd.get('materials') or []),'donorTextures':len(dd.get('textures') or []),
-                            'donorImages':len(dd.get('images') or [])},indent=2))
-          if missing or len(skins)!=1 or joints < 32: raise SystemExit('Motion source quality contract failed')
-          if not (dd.get('materials') and len(dd.get('textures') or []) >= 2 and len(dd.get('images') or []) >= 2):
+          acc=md.get('accessors') or []; vertices=0
+          for mesh in md.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
+          mats=dd.get('materials') or []; tex=dd.get('textures') or []; imgs=dd.get('images') or []
+          base_ok=False; normal_ok=False
+          for mat in mats:
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              base_ok = base_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
+              normal_ok = normal_ok or isinstance((mat.get('normalTexture') or {}).get('index'),int)
+          print(json.dumps({'motionBytes':motion.stat().st_size,'vertices':vertices,'motionAnimations':len(names),
+                            'missing':missing,'motionSkins':len(skins),'maxJoints':joints,
+                            'donorBytes':donor.stat().st_size,'donorMaterials':len(mats),
+                            'donorTextures':len(tex),'donorImages':len(imgs),
+                            'donorBaseColor':base_ok,'donorNormal':normal_ok},indent=2))
+          if missing or len(names) != 26 or len(skins)!=1 or joints < 32 or vertices < 1_000_000:
+              raise SystemExit('Motion V2 structural quality contract failed')
+          if len(tex) < 2 or len(imgs) < 2 or not base_ok or not normal_ok:
               raise SystemExit('Donor BaseColor+Normal payload missing')
           PY
 
-      - name: Extract durable PBR images directly from donor GLB
+      - name: Install Blender and headless GL runtime
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/sf3d-source-images"
-          python3 runtime3d/extract_glb_pbr_images.py \
-            --input "$RUNNER_TEMP/donor/$DONOR_GLB" \
-            --output-dir "$RUNNER_TEMP/sf3d-source-images" \
-            --metadata "$RUNNER_TEMP/sf3d-source-images/extraction.json"
-          test -s "$RUNNER_TEMP/sf3d-source-images/extraction.json"
-          BASE=$(find "$RUNNER_TEMP/sf3d-source-images" -maxdepth 1 -type f -name 'basecolor.*' | head -n1)
-          NORMAL=$(find "$RUNNER_TEMP/sf3d-source-images" -maxdepth 1 -type f -name 'normal.*' | head -n1)
-          test -n "$BASE" && test -s "$BASE"
-          test -n "$NORMAL" && test -s "$NORMAL"
-          echo "SF3D_BASECOLOR_PATH=$BASE" >> "$GITHUB_ENV"
-          echo "SF3D_NORMAL_PATH=$NORMAL" >> "$GITHUB_ENV"
-          echo "BASECOLOR_BYTES=$(stat -c%s "$BASE")"
-          echo "NORMAL_BYTES=$(stat -c%s "$NORMAL")"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
+          blender --version | head -n 2
 
-      - name: Restore verified Blender portable cache
-        uses: actions/cache@v4
-        with:
-          path: runtime3d/.toolcache/blender-4.0.2
-          key: blender-linux-x64-4.0.2-official-v1
-          save-always: true
-
-      - name: Prepare official portable Blender runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT="$GITHUB_WORKSPACE/$BLENDER_ROOT"
-          URL_BASE="https://download.blender.org/release/Blender4.0"
-          if [[ ! -x "$ROOT/blender" ]]; then
-            rm -rf "$ROOT"
-            mkdir -p "$(dirname "$ROOT")"
-            curl --fail --location --retry 3 --retry-delay 2 \
-              "$URL_BASE/$BLENDER_ARCHIVE" \
-              -o "$RUNNER_TEMP/$BLENDER_ARCHIVE"
-            curl --fail --location --retry 3 --retry-delay 2 \
-              "$URL_BASE/blender-4.0.2.sha256" \
-              -o "$RUNNER_TEMP/blender-4.0.2.sha256"
-            grep -E "[ *]${BLENDER_ARCHIVE}$" "$RUNNER_TEMP/blender-4.0.2.sha256" \
-              > "$RUNNER_TEMP/blender-selected.sha256"
-            test -s "$RUNNER_TEMP/blender-selected.sha256"
-            (
-              cd "$RUNNER_TEMP"
-              sha256sum -c blender-selected.sha256
-            )
-            tar -xJf "$RUNNER_TEMP/$BLENDER_ARCHIVE" -C "$RUNNER_TEMP"
-            test -x "$RUNNER_TEMP/blender-4.0.2-linux-x64/blender"
-            mv "$RUNNER_TEMP/blender-4.0.2-linux-x64" "$ROOT"
-          fi
-          test -x "$ROOT/blender"
-          echo "$ROOT" >> "$GITHUB_PATH"
-          "$ROOT/blender" --version | head -n 2
-          "$ROOT/blender" --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
-
-      - name: Ensure minimal headless EGL runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! ldconfig -p | grep -q 'libEGL.so.1'; then
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              libegl1 libgl1-mesa-dri
-          fi
-          ldconfig -p | grep 'libEGL.so.1'
-          test -r "$(ldconfig -p | awk '/libEGL\.so\.1/{print $NF; exit}')"
-          echo 'HEADLESS_EGL_RUNTIME=READY'
-
-      - name: Transfer SF3D appearance without topology changes
+      - name: Hydrate embedded PBR and transfer onto Motion V2 without topology changes
         shell: bash
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
           EGL_PLATFORM: 'surfaceless'
         run: |
           set -euo pipefail
-          test -s "$SF3D_BASECOLOR_PATH"
-          test -s "$SF3D_NORMAL_PATH"
-          mkdir -p "$RUNNER_TEMP/sf3d-motion/previews"
+          mkdir -p "$RUNNER_TEMP/pbr-motion-v2/previews"
           blender --background \
-            --python runtime3d/blender_transfer_sf3d_candidate.py -- \
+            --python runtime3d/blender_transfer_pbr_embedded.py -- \
             --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
             --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
-            --output "$RUNNER_TEMP/sf3d-motion/police_dog.sf3d_pbr_motion_candidate.glb" \
-            --qc "$RUNNER_TEMP/sf3d-motion/police_dog.sf3d_pbr_motion_candidate.qc.json" \
-            --preview-dir "$RUNNER_TEMP/sf3d-motion/previews"
-          test -s "$RUNNER_TEMP/sf3d-motion/police_dog.sf3d_pbr_motion_candidate.glb"
-          test -s "$RUNNER_TEMP/sf3d-motion/police_dog.sf3d_pbr_motion_candidate.qc.json"
-          COUNT=$(find "$RUNNER_TEMP/sf3d-motion/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
-          [[ "$COUNT" -eq 4 ]] || { echo "::error::Expected 4 QC renders, got $COUNT"; exit 1; }
+            --output "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
+            --qc "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.qc.json" \
+            --preview-dir "$RUNNER_TEMP/pbr-motion-v2/previews"
+          test -s "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb"
+          test -s "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.qc.json"
+          COUNT=$(find "$RUNNER_TEMP/pbr-motion-v2/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
+          [[ "$COUNT" -eq 3 ]] || { echo "::error::Expected 3 QC renders, got $COUNT"; exit 1; }
 
-      - name: Validate exact skin animation and embedded PBR contract
+      - name: Validate embedded PBR skin topology and all 26 clips
         shell: bash
         run: |
           set -euo pipefail
@@ -196,54 +144,59 @@ jobs:
           from pathlib import Path
           sys.path.insert(0,'runtime3d')
           from inspect_glb import read_glb_json, DOG_CLIPS
-          root=Path(os.environ['RUNNER_TEMP'])/'sf3d-motion'
-          out=root/'police_dog.sf3d_pbr_motion_candidate.glb'
-          qc=json.loads((root/'police_dog.sf3d_pbr_motion_candidate.qc.json').read_text())
+          root=Path(os.environ['RUNNER_TEMP'])/'pbr-motion-v2'
+          out=root/'police_dog.motion_v2_pbr_candidate.glb'
+          qc=json.loads((root/'police_dog.motion_v2_pbr_candidate.qc.json').read_text())
           d=read_glb_json(out)
           names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
           missing=sorted(set(DOG_CLIPS)-names)
           skins=d.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
           mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []
-          acc=d.get('accessors') or []; vertices=0
-          for mesh in d.get('meshes') or []:
-              for prim in mesh.get('primitives') or []:
-                  pos=(prim.get('attributes') or {}).get('POSITION')
-                  if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
           pbr_ok=False; normal_ok=False
           for mat in mats:
-              pbr=(mat.get('pbrMetallicRoughness') or {})
-              pbr_ok = pbr_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'), int)
-              normal_ok = normal_ok or isinstance((mat.get('normalTexture') or {}).get('index'), int)
-          print(json.dumps({'bytes':out.stat().st_size,'vertices':vertices,'animations':len(names),'missing':missing,
-                            'skins':len(skins),'maxJoints':joints,'materials':len(mats),'textures':len(tex),'images':len(imgs),
-                            'baseColorTexture':pbr_ok,'normalTexture':normal_ok,
-                            'verticesBeforeAfter':qc.get('targetVerticesBeforeAfter'),
-                            'polygonsBeforeAfter':qc.get('targetPolygonsBeforeAfter'),
-                            'uvTransfer':qc.get('uvTransfer'),'previews':qc.get('previewFiles')},indent=2))
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              pbr_ok = pbr_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
+              normal_ok = normal_ok or isinstance((mat.get('normalTexture') or {}).get('index'),int)
           vb=qc.get('targetVerticesBeforeAfter') or []; pb=qc.get('targetPolygonsBeforeAfter') or []
+          print(json.dumps({'bytes':out.stat().st_size,'animations':len(names),'missing':missing,
+                            'skins':len(skins),'maxJoints':joints,'materials':len(mats),
+                            'textures':len(tex),'images':len(imgs),'baseColorTexture':pbr_ok,
+                            'normalTexture':normal_ok,'verticesBeforeAfter':vb,
+                            'polygonsBeforeAfter':pb,'previews':qc.get('previewFiles')},indent=2))
           if len(vb)!=2 or vb[0]!=vb[1]: raise SystemExit('Target vertex topology changed')
           if len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Target polygon topology changed')
-          if missing or len(skins)!=1 or joints < 32: raise SystemExit('Skin/animation preservation failed')
-          if not mats or len(tex) < 2 or len(imgs) < 2 or not pbr_ok or not normal_ok:
+          if missing or len(names)!=26 or len(skins)!=1 or joints < 32: raise SystemExit('Skin/animation preservation failed')
+          if not mats or len(tex)<2 or len(imgs)<2 or not pbr_ok or not normal_ok:
               raise SystemExit('Embedded BaseColor+Normal material payload missing')
-          if len(qc.get('actionsBefore') or []) != len(qc.get('actionsAfter') or []): raise SystemExit('Blender action count changed')
-          previews=qc.get('previewFiles') or []
-          if len(previews) != 4: raise SystemExit(f'Expected 4 visual QC renders, got {len(previews)}')
-          print('SF3D_PBR_MOTION_STRUCTURAL_GATE=PASS')
-          print('PRODUCTION_GATE=CLOSED')
+          if len(qc.get('actionsBefore') or []) != len(qc.get('actionsAfter') or []):
+              raise SystemExit('Blender action count changed')
+          print('MOTION_V2_PBR_STRUCTURAL_GATE=PASS')
           PY
 
-      - name: Upload animated PBR candidate and four-angle QC
+      - name: Revalidate sparse facial deformation after PBR export
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 runtime3d/validate_facial_motion_cubic.py \
+            "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
+            --report "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.facial.json"
+          test -s "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.facial.json"
+          echo 'MOTION_V2_PBR_FACIAL_GATE=PASS'
+          echo 'PRODUCTION_GATE=CLOSED'
+
+      - name: Upload Motion V2 PBR candidate and QC renders
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-police-dog-sf3d-pbr-motion-candidate
-          path: ${{ runner.temp }}/sf3d-motion/*
-          if-no-files-found: error
+          name: Runtime3D-police-dog-motion-v2-pbr-candidate
+          path: ${{ runner.temp }}/pbr-motion-v2/*
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Keep production manifest closed
+        if: success()
         run: |
           echo 'MANUAL_VISUAL_QC_REQUIRED=true'
-          echo 'FACIAL_DEFORMATION_GATE_REQUIRED=true'
+          echo 'ARABIC_LIPSYNC_TIMING_REQUIRED=true'
           echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
           echo 'PRODUCTION_GATE=CLOSED'
