@@ -19,7 +19,7 @@ permissions:
 jobs:
   generate-hero-free:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png' }}
 
@@ -32,62 +32,83 @@ jobs:
         run: |
           set -euo pipefail
           echo 'Provider: official Tencent Hunyuan3D-2.1 Hugging Face Space (ZeroGPU).'
-          echo 'No API key, billing secret, credit card, paid API, or paid overage is used by this workflow.'
+          echo 'This workflow requests shape generation only because the combined texture call exceeds the free ZeroGPU per-call duration.'
+          echo 'No API key, billing secret, credit card, paid API, or paid overage is used.'
 
       - name: Install public Gradio client
         run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
 
-      - name: Generate high-fidelity textured GLB candidate for free
+      - name: Generate high-detail Hunyuan 2.1 geometry candidate for free
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/runtime3d-candidate"
           python3 - <<'PY'
+          import json
           import os
           import shutil
           from pathlib import Path
           from gradio_client import Client, handle_file
 
-          target = Path(os.environ['RUNNER_TEMP']) / 'runtime3d-candidate' / 'police_dog.hunyuan.textured.glb'
+          out_dir = Path(os.environ['RUNNER_TEMP']) / 'runtime3d-candidate'
+          target = out_dir / 'police_dog.hunyuan21.geometry.glb'
+          meta_target = out_dir / 'police_dog.hunyuan21.geometry.json'
+
           client = Client('tencent/Hunyuan3D-2.1', verbose=False)
           info = client.view_api(print_info=False, return_format='dict')
           named = info.get('named_endpoints') or {}
-          endpoint = next((name for name in named if 'generation_all' in name), None)
+          endpoint = next((name for name in named if 'shape_generation' in name), None)
           if not endpoint:
-              raise SystemExit(f'Official Hunyuan Space does not expose generation_all. endpoints={list(named)}')
+              raise SystemExit(f'Official Hunyuan Space does not expose shape_generation. endpoints={list(named)}')
           print(f'Using free endpoint {endpoint}')
 
           result = client.predict(
               None,
               handle_file(os.environ['REFERENCE_URL']),
               None, None, None, None,
-              30,       # full standard UI inference-step setting, not turbo shortcut
+              30,
               7.5,
               1234,
-              256,
+              384,
               True,
               200000,
               False,
               api_name=endpoint,
           )
-          if not isinstance(result, (tuple, list)) or len(result) < 2:
+          if not isinstance(result, (tuple, list)) or len(result) < 4:
               raise SystemExit(f'Unexpected Hunyuan result: {type(result)} {result!r}')
 
-          textured = result[1]
-          if isinstance(textured, dict):
-              textured = textured.get('path') or textured.get('name')
-          textured = Path(str(textured))
-          if not textured.exists():
-              raise SystemExit(f'Textured Hunyuan GLB was not materialized: {textured}')
-          shutil.copy2(textured, target)
+          geometry = result[0]
+          if isinstance(geometry, dict):
+              geometry = geometry.get('path') or geometry.get('name')
+          geometry = Path(str(geometry))
+          if not geometry.exists():
+              raise SystemExit(f'Hunyuan GLB was not materialized: {geometry}')
+          shutil.copy2(geometry, target)
+
+          stats = result[2] if isinstance(result[2], dict) else {'rawStats': str(result[2])}
+          metadata = {
+              'provider': 'Tencent Hunyuan3D-2.1 official Hugging Face Space',
+              'costMode': 'zero-cost',
+              'sourceImage': os.environ['REFERENCE_URL'],
+              'seed': result[3],
+              'inferenceSteps': 30,
+              'guidanceScale': 7.5,
+              'octreeResolution': 384,
+              'simplified': False,
+              'productionReady': False,
+              'nextStage': 'Blender authored PBR + quadruped/facial rig + animation',
+              'stats': stats,
+          }
+          meta_target.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
           print(f'Candidate saved: {target} bytes={target.stat().st_size}')
           PY
 
-      - name: Verify candidate GLB structure without accepting visual downgrade
+      - name: Verify geometry candidate structure
         shell: bash
         run: |
           set -euo pipefail
-          export CANDIDATE="$RUNNER_TEMP/runtime3d-candidate/police_dog.hunyuan.textured.glb"
+          export CANDIDATE="$RUNNER_TEMP/runtime3d-candidate/police_dog.hunyuan21.geometry.glb"
           python3 - <<'PY'
           import os
           from pathlib import Path
@@ -98,27 +119,30 @@ jobs:
               raise SystemExit(f'candidate is suspiciously small: {path.stat().st_size} bytes')
           doc = read_glb_json(path)
           meshes = doc.get('meshes') or []
-          materials = doc.get('materials') or []
-          images = doc.get('images') or []
+          accessors = doc.get('accessors') or []
           if not meshes:
               raise SystemExit('candidate contains no meshes')
-          if not materials:
-              raise SystemExit('candidate contains no materials')
-          print(f'candidate structural gate passed: meshes={len(meshes)} materials={len(materials)} images={len(images)}')
-          print('NOTE: structural success does NOT mean production acceptance; exact identity, fur, uniform, PBR, rig and animation still require authored review.')
+          vertex_counts = []
+          for mesh in meshes:
+              for primitive in mesh.get('primitives') or []:
+                  pos = (primitive.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertex_counts.append(int(accessors[pos].get('count') or 0))
+          total_vertices = sum(vertex_counts)
+          if total_vertices < 10000:
+              raise SystemExit(f'candidate geometry is below hero-detail floor: vertices={total_vertices}')
+          print(f'geometry structural gate passed: meshes={len(meshes)} vertices~={total_vertices}')
+          print('Production gate remains closed: identity, fur, uniform, PBR, rig and animations require authored acceptance.')
           PY
 
       - name: Keep production gate closed
-        shell: bash
         run: |
-          set -euo pipefail
-          echo 'This free Hunyuan output is intentionally NOT copied to police_dog.glb.'
-          echo 'Production remains disabled until the candidate matches the approved cinematic reference and receives the required quadruped/facial rig and named animation clips.'
+          echo 'Candidate is NOT copied to police_dog.glb and manifest remains disabled.'
 
-      - name: Upload free candidate for Blender finishing
+      - name: Upload free geometry candidate for Blender finishing
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-police-dog-free-hunyuan-candidate
+          name: Runtime3D-police-dog-free-hunyuan21-geometry
           path: ${{ runner.temp }}/runtime3d-candidate/*
           if-no-files-found: error
           retention-days: 14
