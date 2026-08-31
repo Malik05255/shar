@@ -143,8 +143,45 @@ val guardCinematicVideoBloat by tasks.registering {
     }
 }
 
+val guardNoAndroidSystemTts by tasks.registering {
+    group = "verification"
+    description = "Permanently rejects Android platform TextToSpeech from Al-Shorti."
+    doLast {
+        val forbidden = listOf(
+            "SystemArabicVoice",
+            "android.speech.tts",
+            "TextToSpeech",
+            "android.intent.action.TTS_SERVICE"
+        )
+        val roots = listOf(file("src/main/kotlin"), file("src/main/AndroidManifest.xml"))
+        val violations = mutableListOf<String>()
+
+        roots.forEach { root ->
+            val files = when {
+                root.isDirectory -> root.walkTopDown().filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
+                root.isFile -> sequenceOf(root)
+                else -> emptySequence()
+            }
+            files.forEach { candidate ->
+                val text = candidate.readText()
+                forbidden.forEach { token ->
+                    if (token in text) violations += "${candidate.relativeTo(projectDir)} contains $token"
+                }
+            }
+        }
+
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "Android System TTS is permanently forbidden in Al-Shorti:\n" +
+                    violations.distinct().sorted().joinToString("\n")
+            )
+        }
+    }
+}
+
 tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(guardCinematicVideoBloat)
+    dependsOn(guardNoAndroidSystemTts)
 }
 
 dependencies {
