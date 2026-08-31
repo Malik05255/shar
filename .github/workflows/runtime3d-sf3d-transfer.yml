@@ -26,6 +26,9 @@ jobs:
       DONOR_RUN_ID: '33410396487'
       DONOR_ARTIFACT: Runtime3D-sf3d-textured-reference-candidate
       DONOR_GLB: police_dog.sf3d.textured_reference.glb
+      BLENDER_VERSION: '4.0.2'
+      BLENDER_ARCHIVE: 'blender-4.0.2-linux-x64.tar.xz'
+      BLENDER_ROOT: 'runtime3d/.toolcache/blender-4.0.2'
 
     steps:
       - name: Checkout branch
@@ -111,14 +114,42 @@ jobs:
           echo "BASECOLOR_BYTES=$(stat -c%s "$BASE")"
           echo "NORMAL_BYTES=$(stat -c%s "$NORMAL")"
 
-      - name: Install free Blender transfer runtime
+      - name: Restore verified Blender portable cache
+        uses: actions/cache@v4
+        with:
+          path: runtime3d/.toolcache/blender-4.0.2
+          key: blender-linux-x64-4.0.2-official-v1
+
+      - name: Prepare official portable Blender runtime
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy libegl1 libgl1 libgl1-mesa-dri
-          blender --version | head -n 2
-          blender --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
+          ROOT="$GITHUB_WORKSPACE/$BLENDER_ROOT"
+          URL_BASE="https://download.blender.org/release/Blender4.0"
+          if [[ ! -x "$ROOT/blender" ]]; then
+            rm -rf "$ROOT"
+            mkdir -p "$(dirname "$ROOT")"
+            curl --fail --location --retry 3 --retry-delay 2 \
+              "$URL_BASE/$BLENDER_ARCHIVE" \
+              -o "$RUNNER_TEMP/$BLENDER_ARCHIVE"
+            curl --fail --location --retry 3 --retry-delay 2 \
+              "$URL_BASE/blender-4.0.2.sha256" \
+              -o "$RUNNER_TEMP/blender-4.0.2.sha256"
+            grep -E "[ *]${BLENDER_ARCHIVE}$" "$RUNNER_TEMP/blender-4.0.2.sha256" \
+              > "$RUNNER_TEMP/blender-selected.sha256"
+            test -s "$RUNNER_TEMP/blender-selected.sha256"
+            (
+              cd "$RUNNER_TEMP"
+              sha256sum -c blender-selected.sha256
+            )
+            tar -xJf "$RUNNER_TEMP/$BLENDER_ARCHIVE" -C "$RUNNER_TEMP"
+            test -x "$RUNNER_TEMP/blender-4.0.2-linux-x64/blender"
+            mv "$RUNNER_TEMP/blender-4.0.2-linux-x64" "$ROOT"
+          fi
+          test -x "$ROOT/blender"
+          echo "$ROOT" >> "$GITHUB_PATH"
+          "$ROOT/blender" --version | head -n 2
+          "$ROOT/blender" --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
 
       - name: Transfer SF3D appearance without topology changes
         shell: bash
