@@ -20,13 +20,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * High-naturalness Saudi speech path backed by Gemini 3.1 Flash TTS.
- *
- * The timbre comes from Gemini's prebuilt voice while the prompt directs a native Saudi/Riyadh
- * conversational performance. REST responses are parsed from the Interactions API `steps` schema;
- * SDK-only convenience fields such as output_audio are not required.
- */
+/** High-naturalness Saudi speech path backed by Gemini 3.1 Flash TTS. */
 class SaudiHumanVoice(
     context: Context,
     private val callbacks: Callbacks,
@@ -43,16 +37,12 @@ class SaudiHumanVoice(
         fun onError(message: String)
     }
 
-    private data class AudioPayload(
-        val data: String,
-        val mimeType: String,
-        val sampleRate: Int
-    )
+    private data class AudioPayload(val data: String, val mimeType: String, val sampleRate: Int)
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v2").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v3").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -62,7 +52,6 @@ class SaudiHumanVoice(
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusHeld = false
     private var pausedForFocus = false
-
     @Volatile private var mediaPlayer: MediaPlayer? = null
     @Volatile private var released = false
 
@@ -70,16 +59,10 @@ class SaudiHumanVoice(
         mainHandler.post {
             val player = mediaPlayer ?: return@post
             when (change) {
-                AudioManager.AUDIOFOCUS_GAIN -> {
-                    if (pausedForFocus && !released) {
-                        pausedForFocus = false
-                        runCatching {
-                            restoreTargetVolume(player)
-                            player.start()
-                        }
-                    }
+                AudioManager.AUDIOFOCUS_GAIN -> if (pausedForFocus && !released) {
+                    pausedForFocus = false
+                    runCatching { restoreTargetVolume(player); player.start() }
                 }
-
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                     if (runCatching { player.isPlaying }.getOrDefault(false)) {
@@ -87,7 +70,6 @@ class SaudiHumanVoice(
                         runCatching { player.pause() }
                     }
                 }
-
                 AudioManager.AUDIOFOCUS_LOSS -> {
                     pausedForFocus = false
                     stopPlayback()
@@ -103,44 +85,28 @@ class SaudiHumanVoice(
         .build()
 
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(
-            runnable,
-            if (role == VoiceRole.POLICE) "alshorti-gemini-police" else "alshorti-gemini-staff"
-        ).apply {
+        Thread(runnable, if (role == VoiceRole.POLICE) "alshorti-gemini-police" else "alshorti-gemini-staff").apply {
             priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
-            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable ->
-                reportError(throwable.message)
-            }
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable -> reportError(throwable.message) }
         }
     }
 
     fun prepare() {
         if (released) return
         pruneVoiceCache()
-
-        validateConfiguration()?.let {
-            reportError(it)
-            return
-        }
-
+        validateConfiguration()?.let { reportError(it); return }
         val ticket = generation.incrementAndGet()
         dispatch { callbacks.onPreparing(10, "") }
         try {
             networkExecutor.execute {
                 runCatching {
                     val warmed = cachedOrSynthesize(ticket, prewarmText()) ?: return@runCatching
-                    if (warmed.length() < MIN_AUDIO_BYTES) {
-                        throw IllegalStateException("وصل ملف الصوت الطبيعي ناقصاً.")
+                    if (warmed.length() < MIN_AUDIO_BYTES) throw IllegalStateException("وصل ملف الصوت الطبيعي ناقصاً.")
+                    if (ticket == generation.get() && !released) dispatch {
+                        callbacks.onPreparing(100, "")
+                        callbacks.onReady()
                     }
-                    if (ticket == generation.get() && !released) {
-                        dispatch {
-                            callbacks.onPreparing(100, "")
-                            callbacks.onReady()
-                        }
-                    }
-                }.onFailure { throwable ->
-                    if (ticket == generation.get() && !released) reportError(throwable.message)
-                }
+                }.onFailure { if (ticket == generation.get() && !released) reportError(it.message) }
             }
         } catch (_: RejectedExecutionException) {
             reportError(null)
@@ -150,34 +116,19 @@ class SaudiHumanVoice(
     fun speak(text: String) {
         if (released) return
         val normalized = normalizeSaudiText(text)
-        if (normalized.isBlank()) {
-            dispatch(callbacks::onSpeechFinished)
-            return
-        }
-
-        validateConfiguration()?.let {
-            reportError(it)
-            return
-        }
-
+        if (normalized.isBlank()) { dispatch(callbacks::onSpeechFinished); return }
+        validateConfiguration()?.let { reportError(it); return }
         val ticket = generation.incrementAndGet()
         mainHandler.post { stopPlayback() }
         dispatch { callbacks.onPreparing(0, "") }
-
         try {
             networkExecutor.execute {
                 runCatching {
                     val audioFile = cachedOrSynthesize(ticket, normalized) ?: return@runCatching
                     if (ticket != generation.get() || released) return@runCatching
                     dispatch { callbacks.onPreparing(100, "") }
-                    mainHandler.post {
-                        if (ticket == generation.get() && !released) {
-                            startPlaybackSafely(ticket, audioFile)
-                        }
-                    }
-                }.onFailure { throwable ->
-                    if (ticket == generation.get() && !released) reportError(throwable.message)
-                }
+                    mainHandler.post { if (ticket == generation.get() && !released) startPlaybackSafely(ticket, audioFile) }
+                }.onFailure { if (ticket == generation.get() && !released) reportError(it.message) }
             }
         } catch (_: RejectedExecutionException) {
             reportError(null)
@@ -235,27 +186,15 @@ class SaudiHumanVoice(
             setRequestProperty("User-Agent", "AlShorti-Android/${BuildConfig.VERSION_NAME}")
         }
 
-        val responseFormat = JSONObject()
-            .put("type", "audio")
-            .put("mime_type", "audio/wav")
-            .put("sample_rate", PCM_SAMPLE_RATE)
-
         val requestBody = JSONObject().apply {
             put("model", GEMINI_TTS_MODEL)
             put("input", prompt)
-            put("response_format", responseFormat)
-            put(
-                "generation_config",
-                JSONObject().put(
-                    "speech_config",
-                    JSONArray().put(JSONObject().put("voice", voice))
-                )
-            )
+            put("response_format", JSONObject().put("type", "audio"))
+            put("generation_config", JSONObject().put("speech_config", JSONArray().put(JSONObject().put("voice", voice))))
         }.toString()
 
         val partial = File(destination.parentFile, "${destination.name}.part")
         runCatching { partial.delete() }
-
         try {
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(requestBody) }
             val status = connection.responseCode
@@ -264,7 +203,6 @@ class SaudiHumanVoice(
             } else {
                 connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             }
-
             if (status !in 200..299) {
                 val reason = when (status) {
                     400 -> "Gemini رفض إعداد توليد الصوت."
@@ -275,37 +213,24 @@ class SaudiHumanVoice(
                     in 500..599 -> "خدمة Gemini الصوتية غير متاحة مؤقتاً."
                     else -> "خدمة الصوت أعادت خطأ $status."
                 }
-                throw IllegalStateException(
-                    if (responseText.isBlank()) reason else "$reason ${compactProviderError(responseText)}"
-                )
+                throw IllegalStateException(if (responseText.isBlank()) reason else "$reason ${compactProviderError(responseText)}")
             }
-
             if (ticket != generation.get() || released) return null
 
             val payload = extractAudioPayload(responseText)
                 ?: throw IllegalStateException("Gemini لم يُرجع مساراً صوتياً صالحاً.")
             val bytes = runCatching { Base64.decode(payload.data, Base64.DEFAULT) }
                 .getOrElse { throw IllegalStateException("تعذر فك بيانات الصوت من Gemini.") }
-            if (bytes.size < MIN_PROVIDER_BYTES) {
-                throw IllegalStateException("وصل الصوت من Gemini ناقصاً.")
-            }
+            if (bytes.size < MIN_PROVIDER_BYTES) throw IllegalStateException("وصل الصوت من Gemini ناقصاً.")
 
+            val mime = payload.mimeType.lowercase()
             when {
-                payload.mimeType.equals("audio/wav", ignoreCase = true) || looksLikeWav(bytes) -> {
-                    FileOutputStream(partial).buffered(128 * 1024).use { out ->
-                        out.write(bytes)
-                        out.flush()
-                    }
+                mime.startsWith("audio/wav") || looksLikeWav(bytes) -> {
+                    FileOutputStream(partial).buffered(128 * 1024).use { out -> out.write(bytes); out.flush() }
                 }
-
-                payload.mimeType.equals("audio/l16", ignoreCase = true) || payload.mimeType.isBlank() -> {
-                    writePcm16MonoWav(
-                        file = partial,
-                        pcm = bytes,
-                        sampleRate = payload.sampleRate.takeIf { it > 0 } ?: PCM_SAMPLE_RATE
-                    )
+                mime.startsWith("audio/l16") || mime.startsWith("audio/pcm") || mime.isBlank() -> {
+                    writePcm16MonoWav(partial, bytes, payload.sampleRate.takeIf { it > 0 } ?: PCM_SAMPLE_RATE)
                 }
-
                 else -> throw IllegalStateException("Gemini أعاد تنسيق صوت غير متوقع: ${payload.mimeType}")
             }
 
@@ -313,7 +238,6 @@ class SaudiHumanVoice(
                 partial.delete()
                 throw IllegalStateException("تعذر تجهيز ملف الصوت الطبيعي.")
             }
-
             if (!partial.renameTo(destination)) {
                 partial.copyTo(destination, overwrite = true)
                 partial.delete()
@@ -333,20 +257,12 @@ class SaudiHumanVoice(
         } else {
             "Native Saudi woman from Riyadh. Natural conversational Saudi accent. Professional office colleague, warm and realistic, relaxed pace, no broadcaster style, no exaggerated emotion."
         }
-        return buildString {
-            append("Generate speech audio only. Do not speak or paraphrase these directions.\n")
-            append("Voice direction: ").append(direction).append('\n')
-            append("Speak exactly the transcript after [TRANSCRIPT].\n")
-            append("[TRANSCRIPT]\n").append(text)
-        }
+        return "Generate speech audio only. Do not speak or paraphrase these directions.\nVoice direction: $direction\nSpeak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\n$text"
     }
 
-    /** Raw REST places model output in steps[].content[]; output_audio is SDK-only convenience. */
     private fun extractAudioPayload(responseText: String): AudioPayload? {
         val root = JSONObject(responseText)
-
-        val steps = root.optJSONArray("steps")
-        if (steps != null) {
+        root.optJSONArray("steps")?.let { steps ->
             for (stepIndex in 0 until steps.length()) {
                 val step = steps.optJSONObject(stepIndex) ?: continue
                 if (step.optString("type") != "model_output") continue
@@ -356,10 +272,8 @@ class SaudiHumanVoice(
                 }
             }
         }
-
         audioPayloadFrom(root.optJSONObject("output_audio"))?.let { return it }
         audioPayloadFrom(root.optJSONObject("outputAudio"))?.let { return it }
-
         return findAudioPayload(root)
     }
 
@@ -369,173 +283,104 @@ class SaudiHumanVoice(
         if (data.isBlank()) return null
         val type = node.optString("type")
         val mimeType = node.optString("mime_type", node.optString("mimeType"))
-        if (type != "audio" && !mimeType.startsWith("audio/")) return null
-        return AudioPayload(
-            data = data,
-            mimeType = mimeType,
-            sampleRate = node.optInt("sample_rate", node.optInt("sampleRate", PCM_SAMPLE_RATE))
-        )
+        if (type != "audio" && !mimeType.startsWith("audio/", ignoreCase = true)) return null
+        return AudioPayload(data, mimeType, node.optInt("sample_rate", node.optInt("sampleRate", PCM_SAMPLE_RATE)))
     }
 
     private fun findAudioPayload(node: Any?): AudioPayload? = when (node) {
-        is JSONObject -> {
-            audioPayloadFrom(node) ?: node.keys().asSequence()
-                .mapNotNull { key -> findAudioPayload(node.opt(key)) }
-                .firstOrNull()
-        }
-
-        is JSONArray -> (0 until node.length()).asSequence()
-            .mapNotNull { index -> findAudioPayload(node.opt(index)) }
-            .firstOrNull()
-
+        is JSONObject -> audioPayloadFrom(node) ?: node.keys().asSequence().mapNotNull { findAudioPayload(node.opt(it)) }.firstOrNull()
+        is JSONArray -> (0 until node.length()).asSequence().mapNotNull { findAudioPayload(node.opt(it)) }.firstOrNull()
         else -> null
     }
 
-    private fun looksLikeWav(bytes: ByteArray): Boolean =
-        bytes.size >= 12 &&
-            bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
-            bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
-            bytes[8] == 'W'.code.toByte() && bytes[9] == 'A'.code.toByte() &&
-            bytes[10] == 'V'.code.toByte() && bytes[11] == 'E'.code.toByte()
+    private fun looksLikeWav(bytes: ByteArray): Boolean = bytes.size >= 12 &&
+        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
+        bytes[8] == 'W'.code.toByte() && bytes[9] == 'A'.code.toByte() && bytes[10] == 'V'.code.toByte() && bytes[11] == 'E'.code.toByte()
 
     private fun writePcm16MonoWav(file: File, pcm: ByteArray, sampleRate: Int) {
         FileOutputStream(file).buffered(64 * 1024).use { out ->
             val dataSize = pcm.size
-            val byteRate = sampleRate * 2
-            val totalSize = dataSize + 36
-
-            fun writeAscii(value: String) = out.write(value.toByteArray(Charsets.US_ASCII))
-            fun writeLe16(value: Int) {
-                out.write(value and 0xff)
-                out.write((value ushr 8) and 0xff)
-            }
-            fun writeLe32(value: Int) {
-                out.write(value and 0xff)
-                out.write((value ushr 8) and 0xff)
-                out.write((value ushr 16) and 0xff)
-                out.write((value ushr 24) and 0xff)
-            }
-
-            writeAscii("RIFF")
-            writeLe32(totalSize)
-            writeAscii("WAVE")
-            writeAscii("fmt ")
-            writeLe32(16)
-            writeLe16(1)
-            writeLe16(1)
-            writeLe32(sampleRate)
-            writeLe32(byteRate)
-            writeLe16(2)
-            writeLe16(16)
-            writeAscii("data")
-            writeLe32(dataSize)
-            out.write(pcm)
-            out.flush()
+            fun ascii(value: String) = out.write(value.toByteArray(Charsets.US_ASCII))
+            fun le16(value: Int) { out.write(value and 0xff); out.write((value ushr 8) and 0xff) }
+            fun le32(value: Int) { out.write(value and 0xff); out.write((value ushr 8) and 0xff); out.write((value ushr 16) and 0xff); out.write((value ushr 24) and 0xff) }
+            ascii("RIFF"); le32(dataSize + 36); ascii("WAVE"); ascii("fmt "); le32(16); le16(1); le16(1)
+            le32(sampleRate); le32(sampleRate * 2); le16(2); le16(16); ascii("data"); le32(dataSize); out.write(pcm); out.flush()
         }
     }
 
     private fun compactProviderError(body: String): String = runCatching {
-        val root = JSONObject(body)
-        root.optJSONObject("error")?.optString("message")?.take(180).orEmpty()
+        JSONObject(body).optJSONObject("error")?.optString("message")?.take(180).orEmpty()
     }.getOrDefault("")
 
     private fun startPlaybackSafely(ticket: Long, audioFile: File) {
-        runCatching { startPlayback(ticket, audioFile) }
-            .onFailure { throwable ->
-                if (ticket == generation.get() && !released) reportError(throwable.message)
-            }
+        runCatching { startPlayback(ticket, audioFile) }.onFailure {
+            if (ticket == generation.get() && !released) reportError(it.message)
+        }
     }
 
     private fun startPlayback(ticket: Long, audioFile: File) {
         stopPlayback()
         if (released) return
-
         val player = MediaPlayer()
         try {
             player.setAudioAttributes(speechAttributes)
             player.setDataSource(audioFile.absolutePath)
             player.setVolume(0f, 0f)
-
             player.setOnPreparedListener { prepared ->
                 runCatching {
-                    if (ticket != generation.get() || released) {
-                        releasePlayer(prepared)
-                        return@runCatching
-                    }
+                    if (ticket != generation.get() || released) { releasePlayer(prepared); return@runCatching }
                     if (!requestAudioFocus()) throw IllegalStateException("تعذر الحصول على أولوية الصوت.")
-
                     val duration = prepared.duration.coerceAtLeast(1)
                     dispatch { callbacks.onSpeechStarted(duration.toLong()) }
                     prepared.start()
                     rampToTargetVolume(ticket, prepared)
                     scheduleCursor(ticket, prepared, duration)
-                }.onFailure { throwable ->
+                }.onFailure {
                     if (mediaPlayer === prepared) mediaPlayer = null
-                    releasePlayer(prepared)
-                    abandonAudioFocus()
-                    if (ticket == generation.get() && !released) reportError(throwable.message)
+                    releasePlayer(prepared); abandonAudioFocus()
+                    if (ticket == generation.get() && !released) reportError(it.message)
                 }
             }
-
             player.setOnCompletionListener { completed ->
-                if (ticket == generation.get() && !released) {
-                    dispatch {
-                        callbacks.onSpeechCursor(1f)
-                        callbacks.onSpeechFinished()
-                    }
-                }
+                if (ticket == generation.get() && !released) dispatch { callbacks.onSpeechCursor(1f); callbacks.onSpeechFinished() }
                 if (mediaPlayer === completed) mediaPlayer = null
-                releasePlayer(completed)
-                abandonAudioFocus()
+                releasePlayer(completed); abandonAudioFocus()
             }
-
             player.setOnErrorListener { failed, _, _ ->
                 if (mediaPlayer === failed) mediaPlayer = null
-                releasePlayer(failed)
-                abandonAudioFocus()
+                releasePlayer(failed); abandonAudioFocus()
                 if (ticket == generation.get() && !released) reportError("تعذر تشغيل ملف الصوت الطبيعي.")
                 true
             }
-
             mediaPlayer = player
             player.prepareAsync()
         } catch (t: Throwable) {
             if (mediaPlayer === player) mediaPlayer = null
-            releasePlayer(player)
-            abandonAudioFocus()
-            throw t
+            releasePlayer(player); abandonAudioFocus(); throw t
         }
     }
 
     private fun rampToTargetVolume(ticket: Long, player: MediaPlayer) {
         val target = targetVolume()
-        repeat(VOLUME_RAMP_STEPS) { index ->
-            mainHandler.postDelayed({
-                if (ticket != generation.get() || mediaPlayer !== player || released) return@postDelayed
-                val gain = target * ((index + 1f) / VOLUME_RAMP_STEPS.toFloat())
-                runCatching { player.setVolume(gain, gain) }
-            }, index * VOLUME_RAMP_STEP_MS)
-        }
+        repeat(VOLUME_RAMP_STEPS) { index -> mainHandler.postDelayed({
+            if (ticket != generation.get() || mediaPlayer !== player || released) return@postDelayed
+            val gain = target * ((index + 1f) / VOLUME_RAMP_STEPS.toFloat())
+            runCatching { player.setVolume(gain, gain) }
+        }, index * VOLUME_RAMP_STEP_MS) }
     }
 
-    private fun restoreTargetVolume(player: MediaPlayer) {
-        val gain = targetVolume()
-        runCatching { player.setVolume(gain, gain) }
-    }
-
+    private fun restoreTargetVolume(player: MediaPlayer) { val gain = targetVolume(); runCatching { player.setVolume(gain, gain) } }
     private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.80f
 
     private fun requestAudioFocus(): Boolean {
-        val result = runCatching { audioManager.requestAudioFocus(focusRequest) }
-            .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+        val result = runCatching { audioManager.requestAudioFocus(focusRequest) }.getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
         focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         return focusHeld
     }
 
     private fun abandonAudioFocus() {
         if (!focusHeld) return
-        focusHeld = false
-        pausedForFocus = false
+        focusHeld = false; pausedForFocus = false
         runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
     }
 
@@ -547,11 +392,10 @@ class SaudiHumanVoice(
                     val fraction = (player.currentPosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
                     dispatch { callbacks.onSpeechCursor(fraction) }
                     if (player.isPlaying || pausedForFocus) mainHandler.postDelayed(this, 36L)
-                }.onFailure { throwable ->
+                }.onFailure {
                     if (mediaPlayer === player) mediaPlayer = null
-                    releasePlayer(player)
-                    abandonAudioFocus()
-                    if (ticket == generation.get() && !released) reportError(throwable.message)
+                    releasePlayer(player); abandonAudioFocus()
+                    if (ticket == generation.get() && !released) reportError(it.message)
                 }
             }
         }
@@ -573,49 +417,38 @@ class SaudiHumanVoice(
 
     private fun cacheFile(voice: String, prompt: String): File {
         val payload = "$CACHE_SCHEMA|${role.name}|$GEMINI_TTS_MODEL|$voice|$prompt"
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(payload.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
         return File(voiceCacheDir, "$digest.wav")
     }
 
     private fun pruneVoiceCache() {
         runCatching {
-            val files = voiceCacheDir.listFiles { file -> file.isFile && file.extension == "wav" }
-                ?.sortedByDescending { it.lastModified() }
-                .orEmpty()
+            val files = voiceCacheDir.listFiles { file -> file.isFile && file.extension == "wav" }?.sortedByDescending { it.lastModified() }.orEmpty()
             var totalBytes = 0L
             files.forEachIndexed { index, file ->
                 totalBytes += file.length()
                 if (index >= MAX_CACHE_FILES || totalBytes > MAX_CACHE_BYTES) runCatching { file.delete() }
             }
-            voiceCacheDir.listFiles { file -> file.name.endsWith(".part") }
-                ?.forEach { runCatching { it.delete() } }
+            voiceCacheDir.listFiles { file -> file.name.endsWith(".part") }?.forEach { runCatching { it.delete() } }
         }
     }
 
     private fun reportError(message: String?) {
         if (released) return
-        dispatch {
-            callbacks.onError(message?.takeIf { it.isNotBlank() } ?: "تعذر تشغيل الصوت السعودي الطبيعي.")
-        }
+        dispatch { callbacks.onError(message?.takeIf { it.isNotBlank() } ?: "تعذر تشغيل الصوت السعودي الطبيعي.") }
     }
 
     private fun dispatch(block: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) runCatching(block)
-        else mainHandler.post { runCatching(block) }
+        if (Looper.myLooper() == Looper.getMainLooper()) runCatching(block) else mainHandler.post { runCatching(block) }
     }
 
-    private fun normalizeSaudiText(value: String): String = value
-        .replace(Regex("\\s+"), " ")
-        .replace("…", "،")
-        .trim()
+    private fun normalizeSaudiText(value: String): String = value.replace(Regex("\\s+"), " ").replace("…", "،").trim()
 
     private companion object {
         const val GEMINI_TTS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
         const val GEMINI_API_REVISION = "2026-05-20"
         const val GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-        const val CACHE_SCHEMA = "gemini-saudi-v2"
+        const val CACHE_SCHEMA = "gemini-saudi-v3"
         const val PCM_SAMPLE_RATE = 24_000
         const val MIN_PROVIDER_BYTES = 3_000
         const val MIN_AUDIO_BYTES = 3_044L
