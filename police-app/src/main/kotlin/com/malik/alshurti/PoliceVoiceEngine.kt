@@ -3,15 +3,20 @@ package com.malik.alshurti
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.malik.alshurti.neural.NeuralArabicVoice
 import com.malik.alshurti.voice.GeminiSilentListener
+import com.malik.alshurti.voice.OfflineArabicListener
 import com.malik.alshurti.voice.SaudiHumanVoice
 
 /**
- * Half-duplex voice coordinator.
+ * Local-first half-duplex voice coordinator.
  *
- * Input uses AudioRecord through GeminiSilentListener instead of Android SpeechRecognizer, so OEM
- * start/stop recording tones are not part of the conversation path. Transient Gemini TTS failures
- * are retried automatically because the production screen intentionally has no diagnostic text.
+ * Preferred steady-state path:
+ *   microphone -> quiet AudioRecord/VAD -> local Whisper -> LocalPoliceBrain -> local Supertonic.
+ *
+ * Gemini remains an optional online accelerator/fallback when a development key is configured.
+ * After the local Whisper and Supertonic files have been downloaded once, conversation no longer
+ * requires an API key, a per-minute quota, or a network connection.
  */
 class PoliceVoiceEngine(
     private val context: Context,
@@ -31,13 +36,24 @@ class PoliceVoiceEngine(
         fun onViseme(viseme: MouthViseme)
     }
 
+    private enum class SpeechBackend { NONE, LOCAL, CLOUD }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mode: VoiceMode = VoiceMode.ONLINE
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
     private var observerHasSpoken = false
     private var ttsRetryCount = 0
+    private var fallbackAttempted = false
     private var released = false
+    private var readyReported = false
+    private var localTtsReady = false
+    private var cloudTtsReady = false
+    private var localAsrReady = false
+    private var activeSpeechBackend = SpeechBackend.NONE
+
+    private val cloudAvailable: Boolean
+        get() = BuildConfig.GEMINI_API_KEY.trim().isNotBlank()
 
     private val silentListener = GeminiSilentListener(
         context = context.applicationContext,
@@ -62,43 +78,117 @@ class PoliceVoiceEngine(
         }
     )
 
+    private val offlineListener = OfflineArabicListener(
+        context = context.applicationContext,
+        callbacks = object : OfflineArabicListener.Callbacks {
+            override fun onPreparing(percent: Int, message: String) {
+                if (!readyReported) listener.onTtsPreparing(percent, message)
+            }
+
+            override fun onPrepared() {
+                localAsrReady = true
+                maybeReportReady()
+            }
+
+            override fun onReady() {
+                listener.onReadyToListen()
+            }
+
+            override fun onSpeechStarted() {
+                observerHasSpoken = true
+                listener.onSpeechStarted()
+            }
+
+            override fun onFinalText(text: String) {
+                if (text.isNotBlank()) observerHasSpoken = true
+                listener.onFinalText(text)
+            }
+
+            override fun onError(message: String, recoverable: Boolean) {
+                if (!localAsrReady && mode == VoiceMode.ONLINE && cloudAvailable) {
+                    maybeReportReady()
+                } else {
+                    listener.onSpeechError(message, recoverable)
+                }
+            }
+        }
+    )
+
+    private val localVoice = NeuralArabicVoice(
+        context = context.applicationContext,
+        callbacks = object : NeuralArabicVoice.Callbacks {
+            override fun onPreparing(percent: Int, message: String) {
+                if (mode == VoiceMode.OFFLINE || !cloudTtsReady) {
+                    listener.onTtsPreparing(percent, message)
+                }
+            }
+
+            override fun onReady() {
+                localTtsReady = true
+                maybeReportReady()
+            }
+
+            override fun onSpeechStarted(durationMs: Long) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechStarted()
+            }
+
+            override fun onSpeechCursor(fraction: Float) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechCursor(fraction)
+            }
+
+            override fun onSpeechFinished() {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechFinished()
+            }
+
+            override fun onError(message: String) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL &&
+                    mode == VoiceMode.ONLINE && cloudTtsReady && !fallbackAttempted && spokenText.isNotBlank()
+                ) {
+                    fallbackAttempted = true
+                    activeSpeechBackend = SpeechBackend.CLOUD
+                    saudiVoice.speak(spokenText)
+                } else if (!localTtsReady && mode == VoiceMode.ONLINE && cloudTtsReady) {
+                    maybeReportReady()
+                } else {
+                    resetMouth()
+                    listener.onTtsError(message)
+                }
+            }
+        }
+    )
+
     private val saudiVoice = SaudiHumanVoice(
         context = context.applicationContext,
         callbacks = object : SaudiHumanVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
-                if (!observerHasSpoken) listener.onTtsPreparing(percent, message)
+                if (!observerHasSpoken && !localTtsReady) listener.onTtsPreparing(percent, message)
             }
 
             override fun onReady() {
-                listener.onTtsReady()
+                cloudTtsReady = true
+                maybeReportReady()
             }
 
             override fun onSpeechStarted(durationMs: Long) {
-                ttsRetryCount = 0
-                lastViseme = MouthViseme.OPEN
-                dispatchViseme(lastViseme)
-                listener.onTtsStarted()
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechStarted()
             }
 
             override fun onSpeechCursor(fraction: Float) {
-                val viseme = visemeAtFraction(spokenText, fraction)
-                if (viseme != lastViseme) {
-                    lastViseme = viseme
-                    dispatchViseme(viseme)
-                }
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechCursor(fraction)
             }
 
             override fun onSpeechFinished() {
-                ttsRetryCount = 0
-                lastViseme = MouthViseme.REST
-                dispatchViseme(MouthViseme.REST)
-                listener.onTtsFinished()
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechFinished()
             }
 
             override fun onError(message: String) {
-                lastViseme = MouthViseme.REST
-                dispatchViseme(MouthViseme.REST)
-                handleVoiceError(message)
+                if (activeSpeechBackend == SpeechBackend.CLOUD && localTtsReady && !fallbackAttempted && spokenText.isNotBlank()) {
+                    fallbackAttempted = true
+                    activeSpeechBackend = SpeechBackend.LOCAL
+                    localVoice.speak(spokenText)
+                } else {
+                    handleCloudVoiceError(message)
+                }
             }
         }
     )
@@ -106,38 +196,59 @@ class PoliceVoiceEngine(
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
+        interruptSpeech()
         observerHasSpoken = false
         ttsRetryCount = 0
-        if (newMode == VoiceMode.OFFLINE) {
-            listener.onTtsError("الصوت السعودي البشري يحتاج اتصالاً بالإنترنت.")
-            return
+        fallbackAttempted = false
+        readyReported = false
+
+        when (newMode) {
+            VoiceMode.OFFLINE -> {
+                // Never start a network request in explicit offline mode.
+                offlineListener.prepare(allowDownload = false)
+                localVoice.prepare(allowDownload = false)
+            }
+            VoiceMode.ONLINE -> {
+                // Download local engines once. A configured Gemini key can make the first session
+                // usable immediately while those free local weights are being prepared.
+                offlineListener.prepare(allowDownload = true)
+                localVoice.prepare(allowDownload = true)
+                if (cloudAvailable) saudiVoice.prepare() else cloudTtsReady = false
+            }
         }
-        saudiVoice.prepare()
+        maybeReportReady()
     }
 
     fun startListening() {
-        if (mode != VoiceMode.ONLINE) {
-            listener.onSpeechError("المحادثة الصوتية تعمل في وضع الإنترنت فقط.", false)
-            return
+        when {
+            localAsrReady -> offlineListener.start()
+            mode == VoiceMode.ONLINE && cloudAvailable -> silentListener.start()
+            else -> listener.onSpeechError(
+                if (mode == VoiceMode.OFFLINE) "الاستماع المحلي غير مجهز بعد." else "جاري تجهيز الاستماع المحلي.",
+                true
+            )
         }
-        silentListener.start()
     }
 
     fun stopListening() {
+        offlineListener.stop()
         silentListener.stop()
     }
 
     fun interruptSpeech() {
         ttsRetryCount = 0
+        fallbackAttempted = false
         mainHandler.removeCallbacksAndMessages(null)
+        localVoice.interrupt()
         saudiVoice.interrupt()
-        lastViseme = MouthViseme.REST
-        dispatchViseme(MouthViseme.REST)
+        activeSpeechBackend = SpeechBackend.NONE
+        resetMouth()
     }
 
     fun speak(text: String) {
         spokenText = text.trim()
         ttsRetryCount = 0
+        fallbackAttempted = false
 
         if (!observerHasSpoken && isPassiveOpeningGreeting(spokenText)) {
             spokenText = ""
@@ -150,42 +261,102 @@ class PoliceVoiceEngine(
             listener.onTtsFinished()
             return
         }
-        saudiVoice.speak(spokenText)
+
+        when {
+            localTtsReady -> {
+                activeSpeechBackend = SpeechBackend.LOCAL
+                localVoice.speak(spokenText)
+            }
+            mode == VoiceMode.ONLINE && cloudTtsReady -> {
+                activeSpeechBackend = SpeechBackend.CLOUD
+                saudiVoice.speak(spokenText)
+            }
+            else -> {
+                activeSpeechBackend = SpeechBackend.NONE
+                listener.onTtsError("الصوت المحلي ما زال قيد التجهيز.")
+            }
+        }
     }
 
     fun release() {
         released = true
         ttsRetryCount = 0
+        fallbackAttempted = false
         mainHandler.removeCallbacksAndMessages(null)
         stopListening()
+        offlineListener.release()
         silentListener.release()
+        localVoice.release()
         saudiVoice.release()
-        lastViseme = MouthViseme.REST
-        dispatchViseme(MouthViseme.REST)
+        activeSpeechBackend = SpeechBackend.NONE
+        resetMouth()
+    }
+
+    private fun maybeReportReady() {
+        if (released || readyReported) return
+        val inputReady = localAsrReady || (mode == VoiceMode.ONLINE && cloudAvailable)
+        val outputReady = localTtsReady || (mode == VoiceMode.ONLINE && cloudTtsReady)
+        if (inputReady && outputReady) {
+            readyReported = true
+            listener.onTtsReady()
+        }
+    }
+
+    private fun handleSpeechStarted() {
+        ttsRetryCount = 0
+        lastViseme = MouthViseme.OPEN
+        dispatchViseme(lastViseme)
+        listener.onTtsStarted()
+    }
+
+    private fun handleSpeechCursor(fraction: Float) {
+        val viseme = visemeAtFraction(spokenText, fraction)
+        if (viseme != lastViseme) {
+            lastViseme = viseme
+            dispatchViseme(viseme)
+        }
+    }
+
+    private fun handleSpeechFinished() {
+        ttsRetryCount = 0
+        activeSpeechBackend = SpeechBackend.NONE
+        resetMouth()
+        listener.onTtsFinished()
     }
 
     /**
      * Keep the legacy UI/fallback pose and the persistent Runtime3D facial channel on exactly the
-     * same TTS cursor event. Runtime3DOfficeStage samples this StateFlow every rendered frame, so
-     * viseme changes never recreate the scene or republish the whole office choreography.
+     * same speech cursor event. Runtime3DOfficeStage samples this state every rendered frame.
      */
     private fun dispatchViseme(viseme: MouthViseme) {
         RuntimeOfficePlanBus.publishViseme(viseme)
         listener.onViseme(viseme)
     }
 
-    private fun handleVoiceError(message: String) {
-        if (shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()) {
+    private fun resetMouth() {
+        lastViseme = MouthViseme.REST
+        dispatchViseme(MouthViseme.REST)
+    }
+
+    private fun handleCloudVoiceError(message: String) {
+        if (activeSpeechBackend == SpeechBackend.CLOUD &&
+            shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()
+        ) {
             val retryNumber = ++ttsRetryCount
             val retryText = spokenText
-            mainHandler.postDelayed({ retryCurrentSpeech(retryText) }, RETRY_BASE_DELAY_MS * retryNumber)
+            mainHandler.postDelayed({ retryCloudSpeech(retryText) }, RETRY_BASE_DELAY_MS * retryNumber)
+        } else if (!cloudTtsReady && localTtsReady) {
+            maybeReportReady()
         } else {
+            activeSpeechBackend = SpeechBackend.NONE
+            resetMouth()
             listener.onTtsError(message)
         }
     }
 
-    private fun retryCurrentSpeech(expectedText: String) {
+    private fun retryCloudSpeech(expectedText: String) {
         if (released || mode != VoiceMode.ONLINE || expectedText != spokenText || expectedText.isBlank()) return
+        activeSpeechBackend = SpeechBackend.CLOUD
         saudiVoice.speak(expectedText)
     }
 
