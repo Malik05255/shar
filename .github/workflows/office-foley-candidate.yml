@@ -1,0 +1,160 @@
+name: Build Recorded Office Foley - Free
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/office-foley-candidate.yml'
+      - 'runtime3d/foley_sources.json'
+
+permissions:
+  contents: read
+
+jobs:
+  build-foley:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enforce recorded free-source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('runtime3d/foley_sources.json').read_text())
+          assert d['policy']['recordedPhysicalSourcesOnly'] is True
+          assert d['policy']['proceduralOscillatorsAllowed'] is False
+          assert d['policy']['syntheticAmbienceAllowed'] is False
+          assert all(s['license'] in {'CC0-1.0','Public-Domain'} for s in d['sources'])
+          print('RECORDED_PHYSICAL_ONLY=true')
+          print('FREE_LICENSES_ONLY=true')
+          print('SYNTHETIC_FOLEY=false')
+          PY
+
+      - name: Install audio tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -n1
+
+      - name: Download immutable source recordings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/foley/source" "$RUNNER_TEMP/foley/final"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          d=json.loads(Path('runtime3d/foley_sources.json').read_text())
+          out=Path(os.environ['RUNNER_TEMP'])/'foley'/'source'
+          for s in d['sources']:
+              target=out/s['sourceFile']
+              subprocess.run([
+                  'curl','--fail','--location','--retry','3','--retry-delay','2',
+                  '--user-agent','AlShorti-Free-Foley-QC/1.0',s['downloadUrl'],'-o',str(target)
+              ],check=True)
+              if not target.is_file() or target.stat().st_size < 5000:
+                  raise SystemExit(f"source too small: {target}")
+              print(s['id'],target.stat().st_size,target)
+          PY
+          sha256sum "$RUNNER_TEMP/foley/source"/* | tee "$RUNNER_TEMP/foley/source-sha256.txt"
+
+      - name: Author compact physical cues
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/foley/source"
+          OUT="$RUNNER_TEMP/foley/final"
+          # Keep recordings physical. Processing is limited to trim, channel layout, fades and
+          # loudness normalization; no generated tones/noise or artificial ambience is introduced.
+          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Ringingsound.wav" \
+            -af "highpass=f=90,lowpass=f=9000,loudnorm=I=-19:TP=-2:LRA=8,afade=t=in:st=0:d=0.015,afade=t=out:st=1.55:d=0.12" \
+            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/phone_ring.ogg"
+          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Turning_a_page.ogg" \
+            -af "highpass=f=75,loudnorm=I=-24:TP=-4:LRA=10,afade=t=in:st=0:d=0.01,afade=t=out:st=3.15:d=0.18" \
+            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/page_turn.ogg"
+          # The public-domain source is one physical opening+closing cycle. Split the two halves
+          # without synthesizing anything so OpenDoor and CloseDoor can be synchronized separately.
+          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Squeaky_door.ogg" -ss 0 -t 4.25 \
+            -af "highpass=f=55,loudnorm=I=-25:TP=-4:LRA=12,afade=t=in:st=0:d=0.015,afade=t=out:st=4.05:d=0.18" \
+            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/door_open.ogg"
+          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Squeaky_door.ogg" -ss 4.25 -t 4.25 \
+            -af "highpass=f=55,loudnorm=I=-25:TP=-4:LRA=12,afade=t=in:st=0:d=0.015,afade=t=out:st=4.05:d=0.18" \
+            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/door_close.ogg"
+          sha256sum "$OUT"/* | tee "$RUNNER_TEMP/foley/final-sha256.txt"
+
+      - name: Validate duration loudness and non-silence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, re
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'foley'/'final'
+          expected={
+              'phone_ring.ogg':(1.2,2.2),
+              'page_turn.ogg':(2.5,4.2),
+              'door_open.ogg':(3.5,4.5),
+              'door_close.ogg':(3.5,4.5),
+          }
+          report={}
+          for name,(lo,hi) in expected.items():
+              p=root/name
+              if not p.is_file() or p.stat().st_size < 5000:
+                  raise SystemExit(f'missing/small cue: {name}')
+              probe=subprocess.check_output([
+                  'ffprobe','-v','error','-select_streams','a:0','-show_entries',
+                  'stream=sample_rate,channels:format=duration,size','-of','json',str(p)
+              ],text=True)
+              info=json.loads(probe)
+              duration=float(info['format']['duration'])
+              stream=info['streams'][0]
+              if not lo <= duration <= hi:
+                  raise SystemExit(f'duration gate failed {name}: {duration}')
+              if int(stream['sample_rate']) != 44100 or int(stream['channels']) != 1:
+                  raise SystemExit(f'format gate failed {name}: {stream}')
+              vol=subprocess.run([
+                  'ffmpeg','-hide_banner','-i',str(p),'-af','volumedetect','-f','null','-'
+              ],text=True,capture_output=True)
+              text=vol.stderr
+              m=re.search(r'mean_volume:\s*(-?[0-9.]+) dB',text)
+              if not m:
+                  raise SystemExit(f'no loudness measurement: {name}')
+              mean_db=float(m.group(1))
+              if mean_db < -45.0 or mean_db > -10.0:
+                  raise SystemExit(f'loudness gate failed {name}: {mean_db} dB')
+              report[name]={'bytes':p.stat().st_size,'duration':duration,'meanDb':mean_db,
+                            'sampleRate':int(stream['sample_rate']),'channels':int(stream['channels'])}
+          out=root.parent/'foley-qc.json'
+          out.write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          print('RECORDED_FOLEY_TECHNICAL_GATE=PASS')
+          print('MANUAL_LISTENING_QC_REQUIRED=true')
+          PY
+
+      - name: Upload recorded foley candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlShorti-recorded-office-foley-candidate
+          path: |
+            ${{ runner.temp }}/foley/final/*
+            ${{ runner.temp }}/foley/foley-qc.json
+            ${{ runner.temp }}/foley/source-sha256.txt
+            ${{ runner.temp }}/foley/final-sha256.txt
+            runtime3d/foley_sources.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production closed
+        run: |
+          echo 'MANUAL_LISTENING_QC_REQUIRED=true'
+          echo 'ANDROID_SYNCHRONIZATION_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
