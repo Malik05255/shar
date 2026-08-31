@@ -40,13 +40,16 @@ class InfiniteOfficeScenarioGeneratorTest {
     }
 
     @Test
-    fun semanticBeatDoesNotImmediatelyRepeat() {
+    fun dogAndStaffSemanticBeatsDoNotImmediatelyRepeat() {
         val generator = InfiniteOfficeScenarioGenerator(seed = 8080L)
-        val reasons = (0 until 40).map { generator.next(false).reason }
-        reasons.zipWithNext().forEach { (previous, next) ->
-            val previousSemantic = previous.substringAfter('-', "").substringAfter('-')
-            val nextSemantic = next.substringAfter('-', "").substringAfter('-')
-            assertNotEquals(previousSemantic, nextSemantic)
+        val semantics = (0 until 40).map {
+            val parts = generator.next(false).reason.split('-')
+            require(parts.size >= 6)
+            parts[3] to parts[4]
+        }
+        semantics.zipWithNext().forEach { (previous, next) ->
+            assertNotEquals(previous.first, next.first)
+            assertNotEquals(previous.second, next.second)
         }
     }
 
