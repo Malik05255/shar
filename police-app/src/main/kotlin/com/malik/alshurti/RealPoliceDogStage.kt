@@ -1,6 +1,9 @@
 package com.malik.alshurti
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -14,9 +17,8 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * Preferred path: rigged PBR GLB. Until that asset exists, the app uses deterministic AI motion
- * clips that preserve the selected master dog/office. Missing clips fall back to the exact master
- * frame without faking standing/walking by zooming the bitmap.
+ * Preferred path is now a persistent multi-actor runtime office delivered as a verified 3D content
+ * pack. MP4 is explicitly migration-only and is never considered the infinite-life implementation.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -27,15 +29,27 @@ fun RealPoliceDogStage(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val hasRealModel = remember {
+    val packState by Runtime3DContentPackManager.state.collectAsState()
+
+    LaunchedEffect(Unit) {
+        Runtime3DContentPackManager.ensureReady(context)
+    }
+
+    val runtimePack = (packState as? Runtime3DContentPackManager.State.Ready)?.pack
+    if (runtimePack?.hasRequiredWorld() == true) {
+        Runtime3DOfficeStage(pack = runtimePack, modifier = modifier)
+        return
+    }
+
+    // Backward compatibility for a single bundled dog GLB while the full office pack is absent.
+    val hasBundledDog = remember {
         runCatching {
             context.assets.list(MODEL_DIRECTORY)
                 ?.any { it.equals(MODEL_FILE, ignoreCase = true) } == true
         }.getOrDefault(false)
     }
-
-    if (!hasRealModel) {
-        AiCinematicDogStage(
+    if (hasBundledDog) {
+        BundledPoliceDogStage(
             mood = mood,
             phase = phase,
             viseme = viseme,
@@ -45,6 +59,25 @@ fun RealPoliceDogStage(
         return
     }
 
+    // Development-only bridge. This path remains until the cinematic GLB pack is populated; it is
+    // intentionally NOT presented as the root solution for persistent office life.
+    AiCinematicDogStage(
+        mood = mood,
+        phase = phase,
+        viseme = viseme,
+        officeScene = officeScene,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun BundledPoliceDogStage(
+    mood: DogMood,
+    phase: CallPhase,
+    viseme: MouthViseme,
+    officeScene: OfficeSceneState,
+    modifier: Modifier
+) {
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val modelInstance = rememberModelInstance(
