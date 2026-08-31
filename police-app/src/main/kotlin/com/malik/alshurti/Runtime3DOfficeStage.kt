@@ -25,6 +25,10 @@ import kotlin.math.min
  * video frame. Facial visemes and small autonomous life (blink / eye saccade) run as separate
  * high-frequency layers so a scenario beat is never visually identical frame-for-frame.
  *
+ * Every reusable GLB is authored around its own local origin. Runtime placement below composes
+ * those independent assets into one shared office coordinate system; assets must never bake a
+ * one-off world position into their geometry just to fit one scene.
+ *
  * Content contract: animation clips used on different channels should be authored to touch only the
  * bones they own whenever they are meant to layer (for example muzzle viseme vs eyelid blink).
  */
@@ -89,7 +93,7 @@ fun Runtime3DOfficeStage(
                         autoAnimate = false,
                         animationName = null,
                         animationLoop = false,
-                        position = Position(0f, 0f, 0f),
+                        position = officePosition(asset.id),
                         isVisible = visible,
                         isEditable = false
                     )
@@ -163,6 +167,34 @@ private fun applyRuntimeFrame(
 
         if (applied) binding.animator.updateBoneMatrices()
     }
+}
+
+/**
+ * Stable world-space anchors for independently authored actors.
+ *
+ * Coordinate convention: X = left/right, Y = vertical, Z = front/back. Character and furniture
+ * GLBs should place their floor contact at local Y=0. Props that sit on a surface receive their
+ * surface height here. Values are deliberately centralized so a future office layout can change
+ * without rebuilding or re-exporting any actor asset.
+ */
+private fun officePosition(actor: SceneActorId): Position = when (actor) {
+    SceneActorId.OFFICE_SHELL -> Position(0.0f, 0.0f, 0.0f)
+
+    SceneActorId.POLICE_DOG -> Position(0.0f, 0.0f, 0.75f)
+    SceneActorId.DESK -> Position(0.0f, 0.0f, -0.20f)
+    SceneActorId.CHAIR -> Position(0.0f, 0.0f, 0.80f)
+    SceneActorId.MONITOR -> Position(0.0f, 0.86f, 0.18f)
+    SceneActorId.KEYBOARD -> Position(0.0f, 0.82f, -0.42f)
+    SceneActorId.PHONE -> Position(0.72f, 0.82f, -0.08f)
+    SceneActorId.FILE -> Position(-0.48f, 0.83f, -0.34f)
+    SceneActorId.COFFEE_CUP -> Position(0.55f, 0.83f, 0.30f)
+
+    SceneActorId.STAFF_MALE_01 -> Position(-2.65f, 0.0f, 0.95f)
+    SceneActorId.STAFF_FEMALE_01 -> Position(2.65f, 0.0f, 0.95f)
+    SceneActorId.STAFF_MALE_02 -> Position(0.0f, 0.0f, 3.10f)
+    SceneActorId.PRINTER -> Position(3.45f, 0.72f, 2.55f)
+    SceneActorId.DOOR -> Position(-3.65f, 0.0f, 3.45f)
+    SceneActorId.VISITOR_01 -> Position(-3.10f, 0.0f, 2.95f)
 }
 
 /**
