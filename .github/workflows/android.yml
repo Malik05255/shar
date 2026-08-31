@@ -34,16 +34,20 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-      - name: Check production Saudi voice
+      - name: Check Azure Saudi voice configuration
         id: voice
         shell: bash
         env:
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
         run: |
           set -euo pipefail
-          if [[ -z "$ELEVENLABS_API_KEY" ]]; then
+          missing=()
+          [[ -z "$AZURE_SPEECH_KEY" ]] && missing+=("AZURE_SPEECH_KEY")
+          [[ -z "$AZURE_SPEECH_REGION" ]] && missing+=("AZURE_SPEECH_REGION")
+          if (( ${#missing[@]} > 0 )); then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ELEVENLABS_API_KEY is missing. Build/tests will continue, but the APK will not be uploaded for user testing."
+            echo "::warning::Azure Saudi voice is not configured. Missing repository secrets: ${missing[*]}"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
@@ -121,43 +125,46 @@ jobs:
 
           echo "Cinematic assets bundled (all playback is one-shot):"
           du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
-      - name: Verify ElevenLabs Saudi voice end-to-end
-        if: steps.voice.outputs.ready == 'true' && (github.event_name != 'pull_request' || github.head_ref == 'fix/audio-no-tone-no-video-loop')
+      - name: Verify Azure Saudi voice end-to-end
+        if: steps.voice.outputs.ready == 'true'
         shell: bash
         env:
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
+          ALSHORTI_AZURE_POLICE_VOICE: ${{ secrets.ALSHORTI_AZURE_POLICE_VOICE }}
         run: |
           set -euo pipefail
-          VOICE_ID="${ALSHORTI_ELEVENLABS_VOICE_ID:-yXEnnEln9armDCyhkXcA}"
-          OUT="$RUNNER_TEMP/alshorti-voice-smoke.mp3"
-          PAYLOAD='{"text":"هلا يا بطل","model_id":"eleven_multilingual_v2","voice_settings":{"stability":0.50,"similarity_boost":0.88,"style":0.05,"speed":0.98,"use_speaker_boost":true}}'
+          VOICE="${ALSHORTI_AZURE_POLICE_VOICE:-ar-SA-HamedNeural}"
+          OUT="$RUNNER_TEMP/alshorti-azure-smoke.mp3"
+          SSML="<speak version='1.0' xml:lang='ar-SA'><voice xml:lang='ar-SA' name='${VOICE}'><prosody rate='-3%' pitch='-1%'>هلا يا بطل، معك الشرطي.</prosody></voice></speak>"
           HTTP_CODE=$(curl --silent --show-error --location \
             --output "$OUT" --write-out '%{http_code}' \
             --connect-timeout 15 --max-time 45 \
-            -X POST "https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}?output_format=mp3_44100_128" \
-            -H "xi-api-key: ${ELEVENLABS_API_KEY}" \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: audio/mpeg' \
-            --data "$PAYLOAD")
+            -X POST "https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1" \
+            -H "Ocp-Apim-Subscription-Key: ${AZURE_SPEECH_KEY}" \
+            -H 'Content-Type: application/ssml+xml' \
+            -H 'X-Microsoft-OutputFormat: audio-24khz-96kbitrate-mono-mp3' \
+            -H 'User-Agent: AlShorti-CI' \
+            --data-binary "$SSML")
           if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
             rm -f "$OUT"
-            echo "::error::ElevenLabs TTS smoke test failed with HTTP ${HTTP_CODE} for the configured voice ID."
+            echo "::error::Azure Saudi TTS smoke test failed with HTTP ${HTTP_CODE}. Check AZURE_SPEECH_KEY, AZURE_SPEECH_REGION and the Speech resource quota."
             exit 1
           fi
           test -s "$OUT"
           [[ $(stat -c%s "$OUT") -gt 2048 ]]
           ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate -of default=nw=1 "$OUT"
-          echo "ElevenLabs TTS returned a decodable audio stream."
+          echo "Azure Saudi TTS returned a decodable audio stream using ${VOICE}."
           rm -f "$OUT"
       - name: Build Al-Shorti
         env:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
-          ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
+          ALSHORTI_AZURE_POLICE_VOICE: ${{ secrets.ALSHORTI_AZURE_POLICE_VOICE }}
+          ALSHORTI_AZURE_STAFF_VOICE: ${{ secrets.ALSHORTI_AZURE_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
       - name: Upload APK
         if: steps.voice.outputs.ready == 'true'
