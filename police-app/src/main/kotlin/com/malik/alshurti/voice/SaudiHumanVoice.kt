@@ -8,7 +8,6 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import com.malik.alshurti.BuildConfig
-import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -19,12 +18,12 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Production Saudi speech engine.
+ * Saudi production speech path backed by Microsoft Azure Speech.
  *
- * The police voice is prewarmed through the real ElevenLabs endpoint before the session is marked
- * ready. This prevents a build with a present-but-unusable key/voice from entering a silent call.
- * Playback owns transient audio focus, uses a click-free gain ramp and keeps recurring lines in a
- * bounded local cache. There is intentionally no robotic Android-TTS fallback.
+ * Police uses the native Saudi male voice ar-SA-HamedNeural by default. Staff uses
+ * ar-SA-ZariyahNeural by default so background characters sound distinct. There is no Android TTS
+ * fallback: if Azure cannot synthesize a valid audio file the conversation does not pretend that
+ * speech succeeded.
  */
 class SaudiHumanVoice(
     context: Context,
@@ -45,7 +44,7 @@ class SaudiHumanVoice(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "saudi-human-voice-v4").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "azure-saudi-voice-v1").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -55,6 +54,9 @@ class SaudiHumanVoice(
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusHeld = false
     private var pausedForFocus = false
+
+    @Volatile private var mediaPlayer: MediaPlayer? = null
+    @Volatile private var released = false
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
         mainHandler.post {
@@ -95,87 +97,43 @@ class SaudiHumanVoice(
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
             runnable,
-            if (role == VoiceRole.POLICE) "alshorti-saudi-voice" else "alshorti-staff-voice"
+            if (role == VoiceRole.POLICE) "alshorti-azure-police" else "alshorti-azure-staff"
         ).apply {
             priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
             uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable ->
-                mainHandler.post { reportError(throwable.message) }
+                reportError(throwable.message)
             }
         }
     }
-
-    @Volatile
-    private var mediaPlayer: MediaPlayer? = null
-
-    @Volatile
-    private var activeAudioFile: File? = null
-
-    @Volatile
-    private var released = false
 
     fun prepare() {
         if (released) return
         pruneVoiceCache()
 
-        val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
-        if (apiKey.isBlank()) {
-            reportError(
-                if (role == VoiceRole.POLICE) {
-                    "الصوت السعودي غير مهيأ. أضف ELEVENLABS_API_KEY إلى بيئة البناء."
-                } else {
-                    "صوت موظف المكتب غير مهيأ."
-                }
-            )
-            return
-        }
-
-        val voiceId = configuredVoiceId()
-        if (voiceId.isBlank()) {
-            reportError(
-                if (role == VoiceRole.POLICE) "لم يتم تحديد صوت سعودي للتطبيق."
-                else "لم يتم تحديد صوت موظف المكتب."
-            )
-            return
-        }
-
-        if (role == VoiceRole.STAFF) {
-            safeCallback {
-                callbacks.onPreparing(100, "")
-                callbacks.onReady()
-            }
+        val configurationError = validateConfiguration()
+        if (configurationError != null) {
+            reportError(configurationError)
             return
         }
 
         val ticket = generation.incrementAndGet()
-        safeCallback { callbacks.onPreparing(0, "") }
+        dispatch { callbacks.onPreparing(10, "") }
         try {
             networkExecutor.execute {
                 runCatching {
-                    val warmed = cachedOrSynthesize(
-                        ticket = ticket,
-                        apiKey = apiKey,
-                        voiceId = voiceId,
-                        text = PREWARM_GREETING
-                    ) ?: return@runCatching
-                    if (ticket != generation.get() || released || warmed.length() < MIN_AUDIO_BYTES) return@runCatching
-                    mainHandler.post {
-                        if (ticket == generation.get() && !released) {
-                            safeCallback {
-                                callbacks.onPreparing(100, "")
-                                callbacks.onReady()
-                            }
+                    cachedOrSynthesize(ticket, prewarmText()) ?: return@runCatching
+                    if (ticket == generation.get() && !released) {
+                        dispatch {
+                            callbacks.onPreparing(100, "")
+                            callbacks.onReady()
                         }
                     }
                 }.onFailure { throwable ->
-                    if (ticket == generation.get() && !released) {
-                        mainHandler.post { reportError(throwable.message) }
-                    }
+                    if (ticket == generation.get() && !released) reportError(throwable.message)
                 }
             }
         } catch (_: RejectedExecutionException) {
-            if (!released) reportError(null)
-        } catch (t: Throwable) {
-            if (!released) reportError(t.message)
+            reportError(null)
         }
     }
 
@@ -183,51 +141,39 @@ class SaudiHumanVoice(
         if (released) return
         val normalized = normalizeSaudiText(text)
         if (normalized.isBlank()) {
-            safeCallback(callbacks::onSpeechFinished)
+            dispatch(callbacks::onSpeechFinished)
             return
         }
 
-        val apiKey = BuildConfig.ELEVENLABS_API_KEY.trim()
-        val voiceId = configuredVoiceId()
-        if (apiKey.isBlank() || voiceId.isBlank()) {
-            reportError(
-                if (role == VoiceRole.POLICE) "الصوت السعودي غير مهيأ في نسخة التطبيق الحالية."
-                else "صوت موظف المكتب غير مهيأ في نسخة التطبيق الحالية."
-            )
+        val configurationError = validateConfiguration()
+        if (configurationError != null) {
+            reportError(configurationError)
             return
         }
 
         val ticket = generation.incrementAndGet()
         mainHandler.post { stopPlayback() }
-        safeCallback { callbacks.onPreparing(0, "") }
+        dispatch { callbacks.onPreparing(0, "") }
 
         try {
             networkExecutor.execute {
                 runCatching {
-                    val audioFile = cachedOrSynthesize(
-                        ticket = ticket,
-                        apiKey = apiKey,
-                        voiceId = voiceId,
-                        text = normalized
-                    ) ?: return@runCatching
-
+                    val audioFile = cachedOrSynthesize(ticket, normalized) ?: return@runCatching
                     if (ticket != generation.get() || released) return@runCatching
-
+                    dispatch { callbacks.onPreparing(100, "") }
                     mainHandler.post {
                         if (ticket == generation.get() && !released) {
                             startPlaybackSafely(ticket, audioFile)
                         }
                     }
                 }.onFailure { throwable ->
-                    if (ticket == generation.get() && !released) {
-                        mainHandler.post { reportError(throwable.message) }
-                    }
+                    if (ticket == generation.get() && !released) reportError(throwable.message)
                 }
             }
         } catch (_: RejectedExecutionException) {
-            if (!released) reportError(null)
+            reportError(null)
         } catch (t: Throwable) {
-            if (!released) reportError(t.message)
+            reportError(t.message)
         }
     }
 
@@ -243,84 +189,74 @@ class SaudiHumanVoice(
         runCatching { networkExecutor.shutdownNow() }
     }
 
-    private fun configuredVoiceId(): String = when (role) {
-        VoiceRole.POLICE -> BuildConfig.ELEVENLABS_VOICE_ID.trim()
-        VoiceRole.STAFF -> BuildConfig.ELEVENLABS_STAFF_VOICE_ID.trim().ifBlank {
-            BuildConfig.ELEVENLABS_VOICE_ID.trim()
+    private fun validateConfiguration(): String? {
+        if (BuildConfig.AZURE_SPEECH_KEY.trim().isBlank()) {
+            return "الصوت السعودي غير مهيأ في هذه النسخة."
         }
+        if (BuildConfig.AZURE_SPEECH_REGION.trim().isBlank()) {
+            return "منطقة خدمة الصوت السعودي غير مهيأة."
+        }
+        if (configuredVoice().isBlank()) {
+            return "لم يتم تحديد الصوت السعودي."
+        }
+        return null
     }
 
-    private fun cachedOrSynthesize(
-        ticket: Long,
-        apiKey: String,
-        voiceId: String,
-        text: String
-    ): File? {
-        val destination = cacheFile(voiceId, text)
+    private fun configuredVoice(): String = when (role) {
+        VoiceRole.POLICE -> BuildConfig.AZURE_POLICE_VOICE.trim()
+        VoiceRole.STAFF -> BuildConfig.AZURE_STAFF_VOICE.trim()
+    }
+
+    private fun prewarmText(): String = when (role) {
+        VoiceRole.POLICE -> "هلا يا بطل، معك الشرطي. وش عندك؟"
+        VoiceRole.STAFF -> "سيدي، الملف جاهز."
+    }
+
+    private fun cachedOrSynthesize(ticket: Long, text: String): File? {
+        val voice = configuredVoice()
+        val region = BuildConfig.AZURE_SPEECH_REGION.trim()
+        val destination = cacheFile(region, voice, text)
         if (destination.exists() && destination.length() >= MIN_AUDIO_BYTES) {
             destination.setLastModified(System.currentTimeMillis())
-            safeCallback { callbacks.onPreparing(100, "") }
             return destination
         }
 
-        val endpoint = URL(
-            "https://api.elevenlabs.io/v1/text-to-speech/$voiceId?output_format=mp3_44100_128"
-        )
+        val endpoint = URL("https://$region.tts.speech.microsoft.com/cognitiveservices/v1")
         val connection = (endpoint.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout = 45_000
+            connectTimeout = 10_000
+            readTimeout = 35_000
             doOutput = true
-            setRequestProperty("xi-api-key", apiKey)
-            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Ocp-Apim-Subscription-Key", BuildConfig.AZURE_SPEECH_KEY.trim())
+            setRequestProperty("Content-Type", "application/ssml+xml")
+            setRequestProperty("X-Microsoft-OutputFormat", AZURE_OUTPUT_FORMAT)
             setRequestProperty("Accept", "audio/mpeg")
             setRequestProperty("User-Agent", "AlShorti-Android/${BuildConfig.VERSION_NAME}")
         }
-
-        val payload = JSONObject().apply {
-            put("text", text)
-            put("model_id", ELEVENLABS_MODEL)
-            put(
-                "voice_settings",
-                JSONObject().apply {
-                    if (role == VoiceRole.POLICE) {
-                        put("stability", 0.50)
-                        put("similarity_boost", 0.88)
-                        put("style", 0.05)
-                        put("speed", 0.98)
-                    } else {
-                        put("stability", 0.55)
-                        put("similarity_boost", 0.84)
-                        put("style", 0.04)
-                        put("speed", 1.00)
-                    }
-                    put("use_speaker_boost", true)
-                }
-            )
-        }.toString()
 
         val partial = File(destination.parentFile, "${destination.name}.part")
         runCatching { partial.delete() }
 
         try {
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                writer.write(payload)
+                writer.write(buildSsml(text, voice))
             }
 
             val status = connection.responseCode
             if (status !in 200..299) {
-                val details = runCatching {
-                    connection.errorStream?.bufferedReader()?.use { it.readText() }
-                }.getOrNull().orEmpty()
+                val requestId = connection.getHeaderField("X-RequestId").orEmpty()
                 val reason = when (status) {
-                    401 -> "مفتاح خدمة الصوت غير صالح."
-                    402 -> "رصيد خدمة الصوت السعودي غير كافٍ."
-                    422 -> "الصوت السعودي المختار غير متاح لهذا الطلب."
-                    429 -> "خدمة الصوت مشغولة حالياً؛ حاول بعد قليل."
+                    400 -> "خدمة الصوت رفضت النص أو إعداد الصوت السعودي."
+                    401 -> "مفتاح Azure Speech غير صالح."
+                    403 -> "حساب Azure Speech لا يملك صلاحية لهذا الطلب."
+                    404 -> "منطقة Azure Speech أو نقطة الخدمة غير صحيحة."
+                    408 -> "خدمة الصوت تأخرت في الاستجابة."
+                    429 -> "تم بلوغ حد استخدام خدمة الصوت مؤقتاً."
+                    in 500..599 -> "خدمة الصوت السعودي غير متاحة مؤقتاً."
                     else -> "خدمة الصوت أعادت خطأ $status."
                 }
                 throw IllegalStateException(
-                    if (details.isBlank()) reason else "$reason (${details.take(180)})"
+                    if (requestId.isBlank()) reason else "$reason [$requestId]"
                 )
             }
 
@@ -335,7 +271,7 @@ class SaudiHumanVoice(
 
             if (partial.length() < MIN_AUDIO_BYTES) {
                 partial.delete()
-                throw IllegalStateException("وصل ملف الصوت ناقصاً من الخدمة.")
+                throw IllegalStateException("وصل ملف الصوت السعودي ناقصاً.")
             }
 
             if (!partial.renameTo(destination)) {
@@ -351,18 +287,40 @@ class SaudiHumanVoice(
         }
     }
 
-    private fun startPlaybackSafely(ticket: Long, audioFile: File) {
-        runCatching {
-            startPlayback(ticket, audioFile)
-        }.onFailure { throwable ->
-            if (ticket == generation.get() && !released) reportError(throwable.message)
+    private fun buildSsml(text: String, voice: String): String {
+        val safeText = escapeXml(text)
+        val safeVoice = escapeXml(voice)
+        val prosody = if (role == VoiceRole.POLICE) {
+            "rate='-3%' pitch='-1%'"
+        } else {
+            "rate='0%' pitch='0%'"
         }
+        return """
+            <speak version='1.0' xml:lang='ar-SA'>
+              <voice xml:lang='ar-SA' name='$safeVoice'>
+                <prosody $prosody>$safeText</prosody>
+              </voice>
+            </speak>
+        """.trimIndent()
+    }
+
+    private fun escapeXml(value: String): String = value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
+
+    private fun startPlaybackSafely(ticket: Long, audioFile: File) {
+        runCatching { startPlayback(ticket, audioFile) }
+            .onFailure { throwable ->
+                if (ticket == generation.get() && !released) reportError(throwable.message)
+            }
     }
 
     private fun startPlayback(ticket: Long, audioFile: File) {
         stopPlayback()
         if (released) return
-        activeAudioFile = audioFile
 
         val player = MediaPlayer()
         try {
@@ -381,44 +339,36 @@ class SaudiHumanVoice(
                     }
 
                     val duration = prepared.duration.coerceAtLeast(1)
-                    safeCallback { callbacks.onSpeechStarted(duration.toLong()) }
+                    dispatch { callbacks.onSpeechStarted(duration.toLong()) }
                     prepared.start()
                     rampToTargetVolume(ticket, prepared)
                     scheduleCursor(ticket, prepared, duration)
                 }.onFailure { throwable ->
                     if (mediaPlayer === prepared) mediaPlayer = null
                     releasePlayer(prepared)
-                    activeAudioFile = null
                     abandonAudioFocus()
                     if (ticket == generation.get() && !released) reportError(throwable.message)
                 }
             }
 
             player.setOnCompletionListener { completed ->
-                runCatching {
-                    if (ticket == generation.get() && !released) {
-                        safeCallback {
-                            callbacks.onSpeechCursor(1f)
-                            callbacks.onSpeechFinished()
-                        }
+                if (ticket == generation.get() && !released) {
+                    dispatch {
+                        callbacks.onSpeechCursor(1f)
+                        callbacks.onSpeechFinished()
                     }
                 }
                 if (mediaPlayer === completed) mediaPlayer = null
-                activeAudioFile = null
                 releasePlayer(completed)
                 abandonAudioFocus()
             }
 
             player.setOnErrorListener { failed, _, _ ->
                 if (mediaPlayer === failed) mediaPlayer = null
-                activeAudioFile = null
                 releasePlayer(failed)
                 abandonAudioFocus()
                 if (ticket == generation.get() && !released) {
-                    reportError(
-                        if (role == VoiceRole.POLICE) "تعذر تشغيل ملف الصوت السعودي."
-                        else "تعذر تشغيل ملف صوت موظف المكتب."
-                    )
+                    reportError("تعذر تشغيل ملف الصوت السعودي.")
                 }
                 true
             }
@@ -427,7 +377,6 @@ class SaudiHumanVoice(
             player.prepareAsync()
         } catch (t: Throwable) {
             if (mediaPlayer === player) mediaPlayer = null
-            activeAudioFile = null
             releasePlayer(player)
             abandonAudioFocus()
             throw t
@@ -450,7 +399,7 @@ class SaudiHumanVoice(
         runCatching { player.setVolume(gain, gain) }
     }
 
-    private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.72f
+    private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.78f
 
     private fun requestAudioFocus(): Boolean {
         val result = runCatching { audioManager.requestAudioFocus(focusRequest) }
@@ -471,13 +420,11 @@ class SaudiHumanVoice(
             override fun run() {
                 if (ticket != generation.get() || mediaPlayer !== player || released) return
                 runCatching {
-                    val position = player.currentPosition
-                    val fraction = (position.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-                    safeCallback { callbacks.onSpeechCursor(fraction) }
+                    val fraction = (player.currentPosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                    dispatch { callbacks.onSpeechCursor(fraction) }
                     if (player.isPlaying || pausedForFocus) mainHandler.postDelayed(this, 36L)
                 }.onFailure { throwable ->
                     if (mediaPlayer === player) mediaPlayer = null
-                    activeAudioFile = null
                     releasePlayer(player)
                     abandonAudioFocus()
                     if (ticket == generation.get() && !released) reportError(throwable.message)
@@ -490,7 +437,6 @@ class SaudiHumanVoice(
     private fun stopPlayback() {
         val player = mediaPlayer
         mediaPlayer = null
-        activeAudioFile = null
         if (player != null) releasePlayer(player)
         abandonAudioFocus()
     }
@@ -501,8 +447,8 @@ class SaudiHumanVoice(
         runCatching { player.release() }
     }
 
-    private fun cacheFile(voiceId: String, text: String): File {
-        val payload = "$CACHE_SCHEMA|${role.name}|$voiceId|$ELEVENLABS_MODEL|$text"
+    private fun cacheFile(region: String, voice: String, text: String): File {
+        val payload = "$CACHE_SCHEMA|${role.name}|$region|$voice|$AZURE_OUTPUT_FORMAT|$text"
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(payload.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
@@ -528,7 +474,7 @@ class SaudiHumanVoice(
 
     private fun reportError(message: String?) {
         if (released) return
-        safeCallback {
+        dispatch {
             callbacks.onError(
                 message ?: if (role == VoiceRole.POLICE) {
                     "تعذر تشغيل الصوت السعودي الطبيعي."
@@ -539,8 +485,12 @@ class SaudiHumanVoice(
         }
     }
 
-    private inline fun safeCallback(block: () -> Unit) {
-        runCatching(block)
+    private fun dispatch(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            runCatching(block)
+        } else {
+            mainHandler.post { runCatching(block) }
+        }
     }
 
     private fun normalizeSaudiText(value: String): String = value
@@ -550,13 +500,12 @@ class SaudiHumanVoice(
         .trim()
 
     private companion object {
-        const val ELEVENLABS_MODEL = "eleven_multilingual_v2"
-        const val CACHE_SCHEMA = "v4"
-        const val PREWARM_GREETING = "هلا يا بطل، معك الشرطي. وش عندك؟"
+        const val AZURE_OUTPUT_FORMAT = "audio-24khz-96kbitrate-mono-mp3"
+        const val CACHE_SCHEMA = "azure-v1"
         const val MIN_AUDIO_BYTES = 2_048L
-        const val MAX_CACHE_FILES = 32
-        const val MAX_CACHE_BYTES = 96L * 1024L * 1024L
-        const val VOLUME_RAMP_STEPS = 6
-        const val VOLUME_RAMP_STEP_MS = 14L
+        const val MAX_CACHE_FILES = 48
+        const val MAX_CACHE_BYTES = 128L * 1024L * 1024L
+        const val VOLUME_RAMP_STEPS = 7
+        const val VOLUME_RAMP_STEP_MS = 12L
     }
 }
