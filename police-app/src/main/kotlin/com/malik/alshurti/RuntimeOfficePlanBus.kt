@@ -8,9 +8,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Process-local clock for the persistent 3D office.
  *
- * Plans are declarative choreography only. Publishing a new plan never recreates the SceneView,
- * reloads models or seeks a video: persistent actor nodes keep existing and only animation targets
- * change. This keeps the world alive independently from the conversation UI.
+ * Plans carry scene choreography. Facial speech performance is a separate high-frequency channel so
+ * visemes never recreate the SceneView or republish the whole office plan for every mouth shape.
  */
 object RuntimeOfficePlanBus {
     data class Frame(
@@ -23,6 +22,9 @@ object RuntimeOfficePlanBus {
     private val _frames = MutableStateFlow<Frame?>(null)
     val frames: StateFlow<Frame?> = _frames.asStateFlow()
 
+    private val _viseme = MutableStateFlow(MouthViseme.REST)
+    val viseme: StateFlow<MouthViseme> = _viseme.asStateFlow()
+
     fun publish(plan: RuntimeScenarioPlan): RuntimeScenarioPlan {
         _frames.value = Frame(
             revision = revision.incrementAndGet(),
@@ -32,7 +34,12 @@ object RuntimeOfficePlanBus {
         return plan
     }
 
+    fun publishViseme(value: MouthViseme) {
+        _viseme.value = value
+    }
+
     fun clear() {
         _frames.value = null
+        _viseme.value = MouthViseme.REST
     }
 }
