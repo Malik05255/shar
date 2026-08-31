@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Apply deterministic reference-derived PBR maps to the exact animated hero.
 
-This zero-cost visual-candidate path preserves every imported target mesh, armature, skin weight and
-animation. One global front projection is shared across all mesh objects so split GLB primitives do
-not receive independently stretched copies of the reference. Production remains blocked on visual,
-facial, fur and physical-device acceptance.
+The visual pass preserves imported topology, armature, skin weights and all animation actions.
+Low-vertex helper/gizmo meshes are excluded from UV bounds and QC rendering so they cannot distort
+the hero projection, but they are not deleted or remeshed.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from mathutils import Vector
 
 
 def parse_args() -> argparse.Namespace:
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", type=Path, required=True)
     ap.add_argument("--basecolor", type=Path, required=True)
@@ -37,9 +36,21 @@ def import_glb(path: Path) -> list[bpy.types.Object]:
     return [obj for obj in bpy.data.objects if obj not in before]
 
 
-def world_bounds(meshes: list[bpy.types.Object]) -> tuple[Vector, Vector]:
+def choose_surface_meshes(meshes: list[bpy.types.Object]) -> tuple[list[bpy.types.Object], list[bpy.types.Object]]:
+    """Exclude tiny helper/gizmo meshes from visual projection without altering them."""
     if not meshes:
         raise RuntimeError("Target contains no mesh objects")
+    max_vertices = max(len(obj.data.vertices) for obj in meshes)
+    threshold = max(128, int(max_vertices * 0.0001))
+    surface = [obj for obj in meshes if len(obj.data.vertices) >= threshold]
+    helpers = [obj for obj in meshes if obj not in surface]
+    if not surface:
+        surface = [max(meshes, key=lambda obj: len(obj.data.vertices))]
+        helpers = [obj for obj in meshes if obj not in surface]
+    return surface, helpers
+
+
+def world_bounds(meshes: list[bpy.types.Object]) -> tuple[Vector, Vector]:
     mn = Vector((math.inf, math.inf, math.inf))
     mx = Vector((-math.inf, -math.inf, -math.inf))
     count = 0
@@ -47,24 +58,18 @@ def world_bounds(meshes: list[bpy.types.Object]) -> tuple[Vector, Vector]:
         matrix = obj.matrix_world
         for vert in obj.data.vertices:
             p = matrix @ vert.co
-            mn.x = min(mn.x, p.x)
-            mn.y = min(mn.y, p.y)
-            mn.z = min(mn.z, p.z)
-            mx.x = max(mx.x, p.x)
-            mx.y = max(mx.y, p.y)
-            mx.z = max(mx.z, p.z)
+            mn.x, mn.y, mn.z = min(mn.x, p.x), min(mn.y, p.y), min(mn.z, p.z)
+            mx.x, mx.y, mx.z = max(mx.x, p.x), max(mx.y, p.y), max(mx.z, p.z)
             count += 1
     if count == 0:
-        raise RuntimeError("Target meshes contain no vertices")
+        raise RuntimeError("Surface meshes contain no vertices")
     return mn, mx
 
 
 def apply_global_front_planar_uv(
-    meshes: list[bpy.types.Object],
-    mn: Vector,
-    mx: Vector,
+    meshes: list[bpy.types.Object], mn: Vector, mx: Vector
 ) -> dict[str, object]:
-    """Project world +X horizontally and +Z vertically; viewing front is along -Y."""
+    """Project world +X horizontally and +Z vertically; front view looks along -Y."""
     dx = max(mx.x - mn.x, 1e-8)
     dz = max(mx.z - mn.z, 1e-8)
     layers: dict[str, str] = {}
@@ -72,18 +77,20 @@ def apply_global_front_planar_uv(
         mesh = obj.data
         uv_layer = mesh.uv_layers.get("ReferenceFrontUV") or mesh.uv_layers.new(name="ReferenceFrontUV")
         mesh.uv_layers.active = uv_layer
+        try:
+            uv_layer.active_render = True
+        except Exception:
+            pass
         matrix = obj.matrix_world
         per_vertex: list[tuple[float, float]] = []
         for vert in mesh.vertices:
             p = matrix @ vert.co
-            u = (p.x - mn.x) / dx
-            v = (p.z - mn.z) / dz
-            per_vertex.append((float(u), float(v)))
+            per_vertex.append((float((p.x - mn.x) / dx), float((p.z - mn.z) / dz)))
         for loop in mesh.loops:
             uv_layer.data[loop.index].uv = per_vertex[loop.vertex_index]
         layers[obj.name] = uv_layer.name
     return {
-        "projection": "global-front-planar",
+        "projection": "dominant-surface-global-front-planar",
         "frontAxis": "-Y",
         "horizontalAxis": "+X",
         "verticalAxis": "+Z",
@@ -107,65 +114,47 @@ def load_image(path: Path, colorspace: str) -> bpy.types.Image:
 
 
 def make_material(
-    base_path: Path,
-    rough_path: Path,
-    normal_path: Path,
+    base_path: Path, rough_path: Path, normal_path: Path
 ) -> tuple[bpy.types.Material, dict[str, object]]:
     mat = bpy.data.materials.new("PoliceDogReferencePBR")
     mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
     nodes.clear()
 
     out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (680, 0)
+    out.location = (720, 0)
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.location = (360, 0)
+    bsdf.location = (390, 0)
     links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     if "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
 
-    texcoord = nodes.new("ShaderNodeTexCoord")
-    texcoord.location = (-900, 0)
-    mapping = nodes.new("ShaderNodeMapping")
-    mapping.location = (-700, 0)
-    links.new(texcoord.outputs["UV"], mapping.inputs["Vector"])
+    uv = nodes.new("ShaderNodeUVMap")
+    uv.uv_map = "ReferenceFrontUV"
+    uv.location = (-900, 0)
 
     base_img = load_image(base_path, "sRGB")
     rough_img = load_image(rough_path, "Non-Color")
     normal_img = load_image(normal_path, "Non-Color")
 
     base = nodes.new("ShaderNodeTexImage")
-    base.name = "ReferenceBaseColor"
-    base.label = "Reference Base Color"
-    base.image = base_img
-    base.interpolation = "Linear"
-    base.extension = "EXTEND"
-    base.location = (-430, 230)
-    links.new(mapping.outputs["Vector"], base.inputs["Vector"])
+    base.name, base.label, base.image = "ReferenceBaseColor", "Reference Base Color", base_img
+    base.interpolation, base.extension, base.location = "Linear", "EXTEND", (-500, 250)
+    links.new(uv.outputs["UV"], base.inputs["Vector"])
     links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
 
     rough = nodes.new("ShaderNodeTexImage")
-    rough.name = "ReferenceRoughness"
-    rough.label = "Reference-derived Roughness"
-    rough.image = rough_img
-    rough.interpolation = "Linear"
-    rough.extension = "EXTEND"
-    rough.location = (-430, -40)
-    links.new(mapping.outputs["Vector"], rough.inputs["Vector"])
+    rough.name, rough.label, rough.image = "ReferenceRoughness", "Reference Roughness", rough_img
+    rough.interpolation, rough.extension, rough.location = "Linear", "EXTEND", (-500, -20)
+    links.new(uv.outputs["UV"], rough.inputs["Vector"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
 
     normal_tex = nodes.new("ShaderNodeTexImage")
-    normal_tex.name = "ReferenceNormal"
-    normal_tex.label = "Reference-derived Micro Normal"
-    normal_tex.image = normal_img
-    normal_tex.interpolation = "Linear"
-    normal_tex.extension = "EXTEND"
-    normal_tex.location = (-430, -310)
-    links.new(mapping.outputs["Vector"], normal_tex.inputs["Vector"])
-
+    normal_tex.name, normal_tex.label, normal_tex.image = "ReferenceNormal", "Reference Micro Normal", normal_img
+    normal_tex.interpolation, normal_tex.extension, normal_tex.location = "Linear", "EXTEND", (-500, -300)
+    links.new(uv.outputs["UV"], normal_tex.inputs["Vector"])
     normal_map = nodes.new("ShaderNodeNormalMap")
-    normal_map.location = (80, -260)
+    normal_map.location = (70, -260)
     normal_map.inputs["Strength"].default_value = 0.32
     links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
     links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
@@ -178,6 +167,7 @@ def make_material(
         "normalStrength": 0.32,
         "metallic": 0.0,
         "textureNodes": 3,
+        "uvMap": "ReferenceFrontUV",
     }
 
 
@@ -204,7 +194,8 @@ def point_at(obj: bpy.types.Object, target: Vector) -> None:
 
 
 def render_previews(
-    meshes: list[bpy.types.Object],
+    surface_meshes: list[bpy.types.Object],
+    helper_meshes: list[bpy.types.Object],
     mn: Vector,
     mx: Vector,
     preview_dir: Path,
@@ -223,10 +214,11 @@ def render_previews(
     scene.world.color = (0.025, 0.025, 0.03)
     scene.frame_set(0)
 
-    target_names = {obj.name for obj in meshes}
+    surface_names = {obj.name for obj in surface_meshes}
+    helper_names = {obj.name for obj in helper_meshes}
     for obj in bpy.data.objects:
         if obj.type == "MESH":
-            obj.hide_render = obj.name not in target_names
+            obj.hide_render = obj.name not in surface_names or obj.name in helper_names
 
     center = (mn + mx) * 0.5
     ext = mx - mn
@@ -238,30 +230,22 @@ def render_previews(
     cam.data.lens = 62
     scene.camera = cam
 
-    key_data = bpy.data.lights.new("REFERENCE_QC_KEY", type="AREA")
-    key_data.energy = 1050
-    key_data.shape = "DISK"
-    key_data.size = radius * 0.85
-    key = bpy.data.objects.new("REFERENCE_QC_KEY", key_data)
-    bpy.context.collection.objects.link(key)
-    key.location = center + Vector((radius * 1.35, -radius * 1.25, radius * 1.45))
-    point_at(key, center)
-
-    fill_data = bpy.data.lights.new("REFERENCE_QC_FILL", type="AREA")
-    fill_data.energy = 520
-    fill_data.size = radius * 0.8
-    fill = bpy.data.objects.new("REFERENCE_QC_FILL", fill_data)
-    bpy.context.collection.objects.link(fill)
-    fill.location = center + Vector((-radius * 1.15, -radius * 0.8, radius * 0.65))
-    point_at(fill, center)
-
-    rim_data = bpy.data.lights.new("REFERENCE_QC_RIM", type="AREA")
-    rim_data.energy = 620
-    rim_data.size = radius * 0.6
-    rim = bpy.data.objects.new("REFERENCE_QC_RIM", rim_data)
-    bpy.context.collection.objects.link(rim)
-    rim.location = center + Vector((radius * 0.2, radius * 1.5, radius * 1.1))
-    point_at(rim, center)
+    lights = [
+        ("REFERENCE_QC_KEY", 1050, radius * 0.85, Vector((1.35, -1.25, 1.45))),
+        ("REFERENCE_QC_FILL", 520, radius * 0.80, Vector((-1.15, -0.80, 0.65))),
+        ("REFERENCE_QC_RIM", 620, radius * 0.60, Vector((0.20, 1.50, 1.10))),
+    ]
+    for name, energy, size, direction in lights:
+        data = bpy.data.lights.new(name, type="AREA")
+        data.energy, data.size = energy, size
+        if name == "REFERENCE_QC_KEY":
+            data.shape = "DISK"
+        obj = bpy.data.objects.new(name, data)
+        bpy.context.collection.objects.link(obj)
+        obj.location = center + Vector(
+            (direction.x * radius, direction.y * radius, direction.z * radius)
+        )
+        point_at(obj, center)
 
     views = [
         ("front", Vector((0.0, -radius * 2.5, radius * 0.12))),
@@ -292,10 +276,7 @@ def animation_names() -> list[str]:
 
 def topology_snapshot(meshes: list[bpy.types.Object]) -> dict[str, dict[str, int]]:
     return {
-        obj.name: {
-            "vertices": len(obj.data.vertices),
-            "polygons": len(obj.data.polygons),
-        }
+        obj.name: {"vertices": len(obj.data.vertices), "polygons": len(obj.data.polygons)}
         for obj in meshes
     }
 
@@ -317,31 +298,34 @@ def main() -> int:
     imported = import_glb(args.target)
     meshes = [obj for obj in imported if obj.type == "MESH"]
     armatures = [obj for obj in imported if obj.type == "ARMATURE"]
-    if not meshes:
-        raise RuntimeError("Target contains no mesh objects")
-    if not armatures:
-        raise RuntimeError("Target contains no armature")
+    if not meshes or not armatures:
+        raise RuntimeError("Target must contain mesh objects and an armature")
 
+    surface_meshes, helper_meshes = choose_surface_meshes(meshes)
     before = topology_snapshot(meshes)
     before_vertices, before_polygons = topology_totals(before)
     actions_before = animation_names()
-    mn, mx = world_bounds(meshes)
-    uv_meta = apply_global_front_planar_uv(meshes, mn, mx)
-    mat, material_meta = make_material(args.basecolor, args.roughness, args.normal)
-    assign_material(meshes, mat)
 
-    after_material = topology_snapshot(meshes)
-    if after_material != before:
+    # Critical fix: helper/gizmo meshes never participate in hero bounds or UV projection.
+    mn, mx = world_bounds(surface_meshes)
+    uv_meta = apply_global_front_planar_uv(surface_meshes, mn, mx)
+    mat, material_meta = make_material(args.basecolor, args.roughness, args.normal)
+    assign_material(surface_meshes, mat)
+
+    if topology_snapshot(meshes) != before:
         raise RuntimeError("Topology changed while applying local PBR candidate")
 
-    preview_files, render_engine = render_previews(meshes, mn, mx, args.preview_dir)
+    preview_files, render_engine = render_previews(
+        surface_meshes, helper_meshes, mn, mx, args.preview_dir
+    )
 
     bpy.ops.object.select_all(action="DESELECT")
     for obj in imported:
         if bpy.data.objects.get(obj.name) is not None:
             obj.select_set(True)
-    largest_mesh = max(meshes, key=lambda obj: len(obj.data.vertices))
-    bpy.context.view_layer.objects.active = largest_mesh
+    bpy.context.view_layer.objects.active = max(
+        surface_meshes, key=lambda obj: len(obj.data.vertices)
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.export_scene.gltf(
@@ -367,18 +351,10 @@ def main() -> int:
     if after != before:
         raise RuntimeError("Target topology changed before QC report")
 
-    actions_after = animation_names()
-    topology_before_after = {
-        name: {
-            "vertices": [before[name]["vertices"], after[name]["vertices"]],
-            "polygons": [before[name]["polygons"], after[name]["polygons"]],
-        }
-        for name in before
-    }
     qc = {
         "sourceMotionHero": args.target.name,
         "productionReady": False,
-        "purpose": "zero-cost reference-projected PBR motion candidate",
+        "purpose": "zero-cost corrected reference-projected PBR motion candidate",
         "freeOnly": True,
         "cloudProviderUsed": False,
         "paidFallbackAllowed": False,
@@ -387,19 +363,28 @@ def main() -> int:
         "remeshApplied": False,
         "meshCount": len(meshes),
         "meshNames": [obj.name for obj in meshes],
-        "topologyBeforeAfter": topology_before_after,
+        "surfaceMeshNames": [obj.name for obj in surface_meshes],
+        "excludedHelperMeshNames": [obj.name for obj in helper_meshes],
+        "helperExcludedFromUvBounds": True,
+        "topologyBeforeAfter": {
+            name: {
+                "vertices": [before[name]["vertices"], after[name]["vertices"]],
+                "polygons": [before[name]["polygons"], after[name]["polygons"]],
+            }
+            for name in before
+        },
         "targetVerticesBeforeAfter": [before_vertices, after_vertices],
         "targetPolygonsBeforeAfter": [before_polygons, after_polygons],
         "armatureCount": len(armatures),
         "actionsBefore": actions_before,
-        "actionsAfter": actions_after,
+        "actionsAfter": animation_names(),
         "uv": uv_meta,
         "material": material_meta,
         "previewFiles": preview_files,
         "renderEngine": render_engine,
         "knownGaps": [
-            "single-view front projection is not authoritative for occluded side/back surfaces",
-            "reference-derived normal map is a micro-detail approximation, not a geometry-aware generated normal",
+            "single-view reference cannot author authoritative hidden side/back markings",
+            "reference-derived normal map is micro-detail approximation",
             "strand/groom fur is not authored yet",
             "true eyelid, independent eyeball, muzzle/cheek and tongue deformation remain open",
             "physical Android frame pacing and deformation acceptance remain open",
@@ -420,5 +405,8 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as exc:
-        print(f"REFERENCE_PBR_APPLICATION_GATE=FAIL: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"REFERENCE_PBR_APPLICATION_GATE=FAIL: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
