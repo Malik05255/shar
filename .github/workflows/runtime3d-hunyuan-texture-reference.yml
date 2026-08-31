@@ -1,0 +1,149 @@
+name: Generate Hunyuan 3D Textured Reference - Free ZeroGPU
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-hunyuan-texture-reference.yml'
+      - 'runtime3d/hf_hunyuan21_textured_reference.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  textured-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      HERO_REFERENCE_RUN_ID: '33391759260'
+      HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
+      HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Enforce free candidate-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'PROVIDER=official-hunyuan3d-2.1-zero'
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'TRIPO_API_USED=false'
+          echo 'PRODUCTION_ACTIVATION=false'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False
+          print('manifest.enabled=false')
+          PY
+
+      - name: Download exact approved hero reference
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.HERO_REFERENCE_ARTIFACT }}
+          path: ${{ runner.temp }}/hero-reference
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
+
+      - name: Verify reference input
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE"
+          test -s "$REF"
+          BYTES=$(stat -c%s "$REF")
+          if (( BYTES < 10000 )); then
+            echo "::error::Hero reference unexpectedly small: $BYTES"
+            exit 1
+          fi
+          echo "heroReferenceBytes=$BYTES"
+          file "$REF"
+
+      - name: Install Gradio client
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
+
+      - name: Generate official Hunyuan textured reference on free ZeroGPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hunyuan-texture-reference"
+          python3 runtime3d/hf_hunyuan21_textured_reference.py \
+            --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/hunyuan-texture-reference/police_dog.hunyuan21.textured_reference.glb" \
+            --report "$RUNNER_TEMP/hunyuan-texture-reference/police_dog.hunyuan21.textured_reference.json"
+          test -s "$RUNNER_TEMP/hunyuan-texture-reference/police_dog.hunyuan21.textured_reference.glb"
+          test -s "$RUNNER_TEMP/hunyuan-texture-reference/police_dog.hunyuan21.textured_reference.json"
+
+      - name: Validate generated PBR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          root = Path(os.environ['RUNNER_TEMP']) / 'hunyuan-texture-reference'
+          p = root / 'police_dog.hunyuan21.textured_reference.glb'
+          report = json.loads((root / 'police_dog.hunyuan21.textured_reference.json').read_text())
+          d = read_glb_json(p)
+          meshes = d.get('meshes') or []
+          materials = d.get('materials') or []
+          textures = d.get('textures') or []
+          images = d.get('images') or []
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in meshes:
+              for prim in mesh.get('primitives') or []:
+                  pos = (prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({
+              'bytes': p.stat().st_size,
+              'meshes': len(meshes),
+              'vertices': vertices,
+              'materials': len(materials),
+              'textures': len(textures),
+              'images': len(images),
+              'pbrChannels': report.get('pbrChannels'),
+              'productionReady': report.get('productionReady'),
+          }, indent=2))
+          if not meshes or vertices < 10000:
+              raise SystemExit('Generated textured reference geometry floor failed')
+          if not materials or not textures or not images:
+              raise SystemExit('Generated textured reference lacks embedded material payload')
+          if report.get('freeOnly') is not True or report.get('paidFallbackAllowed') is not False:
+              raise SystemExit('Free-only policy report failed')
+          if report.get('productionReady') is not False:
+              raise SystemExit('Candidate must not self-declare production ready')
+          print('HUNYUAN_TEXTURED_REFERENCE_STRUCTURAL_GATE=PASS')
+          print('VISUAL_IDENTITY_AND_TRANSFER_ACCEPTANCE=STILL_REQUIRED')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Upload textured PBR reference candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-hunyuan21-textured-reference-candidate
+          path: ${{ runner.temp }}/hunyuan-texture-reference/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production manifest closed
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False
+          print('manifest.enabled=false')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
