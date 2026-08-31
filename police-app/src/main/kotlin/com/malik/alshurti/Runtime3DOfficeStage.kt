@@ -11,6 +11,7 @@ import com.google.android.filament.gltfio.Animator
 import io.github.sceneview.SceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.node.ModelNode
+import io.github.sceneview.rememberCameraNode
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
@@ -41,6 +42,12 @@ fun Runtime3DOfficeStage(
     val viseme by RuntimeOfficePlanBus.viseme.collectAsState()
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
+    val cameraNode = rememberCameraNode(engine) {
+        // Observer sits just in front of the police desk. This frames the hero at conversational
+        // scale while retaining the staff workstations and rear office as environmental context.
+        position = Position(0.0f, 1.55f, -5.40f)
+        lookAt(Position(0.0f, 1.15f, 0.45f))
+    }
     val bindings = remember(pack.version) { mutableMapOf<SceneActorId, RuntimeAnimatorBinding>() }
 
     val commandsByActor = remember(frame?.revision) {
@@ -59,10 +66,12 @@ fun Runtime3DOfficeStage(
         modifier = modifier,
         engine = engine,
         modelLoader = modelLoader,
+        cameraNode = cameraNode,
         cameraManipulator = null,
-        autoCenterContent = true,
-        autoFitContent = true,
-        framingPadding = 0.035f,
+        // World-space anchors are intentional. Auto-centering would translate the complete office
+        // whenever an optional actor appears and would produce visible camera/framing jumps.
+        autoCenterContent = false,
+        autoFitContent = false,
         onFrame = { frameTimeNanos ->
             applyRuntimeFrame(
                 frameTimeNanos = frameTimeNanos,
