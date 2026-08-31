@@ -11,7 +11,14 @@ import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.random.Random
 
-/** Lightweight local office Foley engine that always stays behind the conversation voice. */
+/**
+ * Event-only office Foley.
+ *
+ * There is deliberately no continuous HVAC/room-tone oscillator. The previous implementation
+ * generated permanent 55 Hz + 110 Hz sine components and looped them, which was audible as a
+ * constant tone on phones and also competed with speech. Silence is now the baseline; only real
+ * scene events produce short one-shot sounds.
+ */
 class OfficeSoundscape(context: Context) {
     @Suppress("UNUSED_PARAMETER")
     private val appContext = context.applicationContext
@@ -23,52 +30,14 @@ class OfficeSoundscape(context: Context) {
         }
     }
 
-    @Volatile private var roomTrack: AudioTrack? = null
-    @Volatile private var roomStartRequested = false
     @Volatile private var released = false
 
-    fun start() {
-        if (released || roomTrack != null || roomStartRequested) return
-        roomStartRequested = true
-        try {
-            effectsExecutor.execute {
-                var candidate: AudioTrack? = null
-                runCatching {
-                    if (released) return@runCatching
-                    val samples = roomTone(ROOM_SECONDS)
-                    val track = buildStaticTrack(samples)
-                    candidate = track
-                    val written = track.write(samples, 0, samples.size)
-                    if (written <= 0 || released) return@runCatching
-                    track.setLoopPoints(0, samples.size, -1)
-                    track.setVolume(ROOM_IDLE_VOLUME)
-                    track.play()
-                    roomTrack = track
-                    candidate = null
-                }
-                candidate?.let(::safeRelease)
-                roomStartRequested = false
-            }
-        } catch (_: RejectedExecutionException) {
-            roomStartRequested = false
-        } catch (_: Throwable) {
-            roomStartRequested = false
-        }
-    }
+    /** Silence is intentional until a real office event occurs. */
+    fun start() = Unit
 
-    fun setConversationPhase(phase: CallPhase) {
-        if (released) return
-        val volume = when (phase) {
-            // Listening must be nearly silent so the microphone does not hear our own ambience.
-            CallPhase.LISTENING -> 0.0035f
-            // Police/staff voice is the hero. Room tone is only perceptual depth here.
-            CallPhase.SPEAKING -> 0.0020f
-            CallPhase.THINKING -> 0.018f
-            CallPhase.STARTING -> 0.010f
-            CallPhase.ERROR -> 0.004f
-        }
-        runCatching { roomTrack?.setVolume(volume) }
-    }
+    /** No persistent ambience exists anymore, so conversation phase has nothing to duck. */
+    @Suppress("UNUSED_PARAMETER")
+    fun setConversationPhase(phase: CallPhase) = Unit
 
     fun playCue(cue: OfficeCue) {
         if (released) return
@@ -87,10 +56,6 @@ class OfficeSoundscape(context: Context) {
 
     fun release() {
         released = true
-        roomStartRequested = false
-        val track = roomTrack
-        roomTrack = null
-        if (track != null) safeRelease(track)
         runCatching { effectsExecutor.shutdownNow() }
     }
 
@@ -154,20 +119,6 @@ class OfficeSoundscape(context: Context) {
             .setTransferMode(AudioTrack.MODE_STATIC)
             .setBufferSizeInBytes(bufferBytes)
             .build()
-    }
-
-    private fun roomTone(seconds: Int): ShortArray {
-        val count = SAMPLE_RATE * seconds
-        val out = ShortArray(count)
-        var filtered = 0.0
-        repeat(count) { index ->
-            val t = index.toDouble() / SAMPLE_RATE.toDouble()
-            val noise = Random.nextDouble(-1.0, 1.0)
-            filtered = filtered * 0.985 + noise * 0.015
-            val hvac = sin(2.0 * PI * 55.0 * t) * 0.055 + sin(2.0 * PI * 110.0 * t) * 0.018
-            out[index] = toPcm((filtered * 0.20 + hvac) * 0.28)
-        }
-        return out
     }
 
     private fun phoneRing(): ShortArray {
@@ -260,8 +211,6 @@ class OfficeSoundscape(context: Context) {
 
     private companion object {
         const val SAMPLE_RATE = 16_000
-        const val ROOM_SECONDS = 3
-        const val ROOM_IDLE_VOLUME = 0.018f
-        const val EFFECT_VOLUME = 0.48f
+        const val EFFECT_VOLUME = 0.34f
     }
 }

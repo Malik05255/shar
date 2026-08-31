@@ -14,16 +14,15 @@ import kotlin.math.max
 /**
  * Texture-backed, muted cinematic clip player.
  *
- * Continuous clips are pre-built as forward+reverse cycles, so MediaPlayer can loop them without
- * exposing the generated clip's hard end -> beginning cut. Physical actions remain one-shot and
- * hold their final rendered frame until the next action arrives.
+ * Clips are always one-shot. On completion MediaPlayer is left attached to the TextureView so the
+ * final rendered frame stays visible until the next action. No clip seeks back to frame zero and no
+ * MediaPlayer loop is allowed.
  */
 class CinematicClipView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private data class ClipConfig(
         @param:RawRes val resId: Int,
         val randomizeStart: Boolean,
-        val seed: Long,
-        val continuous: Boolean
+        val seed: Long
     )
 
     private var config: ClipConfig? = null
@@ -42,10 +41,9 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
     fun bind(
         @RawRes resId: Int,
         randomizeStart: Boolean,
-        seed: Long,
-        continuous: Boolean
+        seed: Long
     ) {
-        val next = ClipConfig(resId, randomizeStart, seed, continuous)
+        val next = ClipConfig(resId, randomizeStart, seed)
         if (config == next && mediaPlayer != null) return
         config = next
         if (isAvailable) startConfiguredClip()
@@ -68,7 +66,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 context,
                 Uri.parse("android.resource://${context.packageName}/${active.resId}")
             )
-            player.isLooping = active.continuous
+            player.isLooping = false
             player.setVolume(0f, 0f)
 
             player.setOnVideoSizeChangedListener { _, width, height ->
@@ -109,6 +107,8 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
             }
 
             player.setOnCompletionListener { completed ->
+                // Intentionally do nothing. Keeping the prepared player and surface alive preserves
+                // its last frame and guarantees there is no hidden seek/restart after completion.
                 runCatching { completed.setOnSeekCompleteListener(null) }
             }
 

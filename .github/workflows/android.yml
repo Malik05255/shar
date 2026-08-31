@@ -34,16 +34,16 @@ jobs:
         run: chmod +x gradlew
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-      - name: Check production Saudi voice
+      - name: Check Gemini natural voice configuration
         id: voice
         shell: bash
         env:
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "$ELEVENLABS_API_KEY" ]]; then
+          if [[ -z "$GEMINI_API_KEY" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ELEVENLABS_API_KEY is missing. Build/tests will continue, but the APK will not be uploaded for user testing."
+            echo "::warning::Gemini natural voice is not configured. Missing repository secret: GEMINI_API_KEY"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
@@ -82,26 +82,15 @@ jobs:
           RAW_DIR="police-app/src/main/res/raw"
           DRAW_DIR="police-app/src/main/res/drawable-nodpi"
           mkdir -p "$RAW_DIR" "$DRAW_DIR"
-
           fetch_asset() {
             local url="$1"
             local out="$2"
             echo "Downloading $(basename "$out")"
-            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 \
-              --max-time 180 "$url" --output "$out"
+            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 --max-time 180 "$url" --output "$out"
             test -s "$out"
           }
-
-          make_living_cycle() {
-            local input="$1"
-            local output="$2"
-            ffmpeg -hide_banner -loglevel error -y -i "$input" \
-              -filter_complex "[0:v]split=2[f][r];[r]reverse[r];[f][r]concat=n=2:v=1:a=0[v]" \
-              -map "[v]" -an -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-              -movflags +faststart "$output"
-          }
-
           rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
+          rm -f "$RAW_DIR/dog_idle_living.mp4" "$RAW_DIR/dog_talk_seated_living.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
           fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
           fetch_asset "$DOG_IDLE_URL" "$RAW_DIR/dog_idle_loop.mp4"
           fetch_asset "$DOG_TALK_SEATED_URL" "$RAW_DIR/dog_talk_seated.mp4"
@@ -111,36 +100,94 @@ jobs:
           fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
           fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
           fetch_asset "$DOG_REVIEW_FILE_URL" "$RAW_DIR/dog_review_file.mp4"
-
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq ffmpeg
           fi
-
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
-
-          make_living_cycle "$RAW_DIR/dog_idle_loop.mp4" "$RAW_DIR/dog_idle_living.mp4"
-          make_living_cycle "$RAW_DIR/dog_talk_seated.mp4" "$RAW_DIR/dog_talk_seated_living.mp4"
-          make_living_cycle "$RAW_DIR/dog_talk_standing.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
-
-          echo "Cinematic assets bundled:"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
+          echo "Cinematic assets bundled (all playback is one-shot):"
           du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
+      - name: Verify Gemini Saudi-directed voice end-to-end
+        if: steps.voice.outputs.ready == 'true'
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+        run: |
+          set -euo pipefail
+          VOICE="${ALSHORTI_GEMINI_POLICE_VOICE:-Gacrux}"
+          RESPONSE="$RUNNER_TEMP/gemini-tts-response.json"
+          WAV="$RUNNER_TEMP/alshorti-gemini-smoke.wav"
+          PAYLOAD=$(python3 - <<PY
+          import json
+          voice = "${VOICE}"
+          prompt = """Generate speech audio only. Do not speak these directions. Voice direction: Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent, mature calm presence, warm with children, not a broadcaster. Speak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\nهلا يا بطل، معك الشرطي. وش عندك؟"""
+          print(json.dumps({
+            "model": "gemini-3.1-flash-tts-preview",
+            "input": prompt,
+            "response_format": {"type": "audio"},
+            "generation_config": {"speech_config": [{"voice": voice}]}
+          }, ensure_ascii=False))
+          PY
+          )
+          HTTP_CODE=$(curl --silent --show-error --location --output "$RESPONSE" --write-out '%{http_code}' --connect-timeout 15 --max-time 60 -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" -H "x-goog-api-key: ${GEMINI_API_KEY}" -H 'Content-Type: application/json' -H 'Api-Revision: 2026-05-20' --data "$PAYLOAD")
+          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
+            echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
+            python3 - <<PY
+          import json
+          try:
+              data=json.load(open("$RESPONSE"))
+              print(data.get("error",{}).get("message","Gemini request failed")[:500])
+          except Exception:
+              pass
+          PY
+            exit 1
+          fi
+          python3 - <<PY
+          import base64, json, wave
+          data = json.load(open("$RESPONSE"))
+          audio = None
+          for step in data.get("steps", []):
+              if step.get("type") == "model_output":
+                  for block in step.get("content", []):
+                      if block.get("type") == "audio" and block.get("data"):
+                          audio = block
+                          break
+              if audio: break
+          if not audio:
+              for key in ("output_audio", "outputAudio"):
+                  candidate = data.get(key)
+                  if isinstance(candidate, dict) and candidate.get("data"):
+                      audio = candidate; break
+          if not audio:
+              raise SystemExit("Gemini REST response contained no audio content block")
+          raw = base64.b64decode(audio["data"])
+          if len(raw) < 3000: raise SystemExit("Gemini returned an unexpectedly short audio payload")
+          mime = (audio.get("mime_type") or audio.get("mimeType") or "").lower()
+          if mime.startswith("audio/wav") or raw[:4] == b"RIFF":
+              open("$WAV", "wb").write(raw)
+          elif mime.startswith("audio/l16") or mime.startswith("audio/pcm") or not mime:
+              rate = int(audio.get("sample_rate") or audio.get("sampleRate") or 24000)
+              with wave.open("$WAV", "wb") as w:
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(raw)
+          else:
+              raise SystemExit("Unexpected Gemini audio MIME: " + mime)
+          print("Gemini Saudi-directed TTS payload bytes:", len(raw), "mime:", mime or "unspecified")
+          PY
+          test -s "$WAV"
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$WAV"
+          echo "Gemini 3.1 TTS returned a decodable Saudi-directed audio stream using ${VOICE}."
+          rm -f "$RESPONSE" "$WAV"
       - name: Build Al-Shorti
         env:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          ALSHORTI_ELEVENLABS_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_VOICE_ID }}
-          ALSHORTI_ELEVENLABS_STAFF_VOICE_ID: ${{ secrets.ALSHORTI_ELEVENLABS_STAFF_VOICE_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+          ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
       - name: Upload APK
         if: steps.voice.outputs.ready == 'true'
