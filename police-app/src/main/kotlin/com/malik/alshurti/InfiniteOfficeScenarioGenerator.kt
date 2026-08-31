@@ -38,9 +38,11 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
         sequence += 1
         val variant = forceVariant ?: sequence
         val duration = random.nextLong(7_500L, 15_500L)
-        val dogTask = dogTasks.random(random)
-        val staffEvent = staffEvents.random(random)
-        val microEvent = if (random.nextFloat() < 0.68f) microEvents.random(random) else MicroEvent.NONE
+        val dogTask = DogTask.entries.random(random)
+        val staffEvent = StaffEvent.entries.random(random)
+        val microEvent = if (random.nextFloat() < 0.68f) {
+            MicroEvent.entries.filterNot { it == MicroEvent.NONE }.random(random)
+        } else MicroEvent.NONE
 
         val commands = mutableListOf<SceneAnimationCommand>()
         val sounds = mutableListOf<SpatialSoundCommand>()
