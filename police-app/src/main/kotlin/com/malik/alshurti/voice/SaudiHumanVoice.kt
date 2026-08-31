@@ -238,7 +238,6 @@ class SaudiHumanVoice(
         val responseFormat = JSONObject()
             .put("type", "audio")
             .put("mime_type", "audio/wav")
-            .put("delivery", "inline")
             .put("sample_rate", PCM_SAMPLE_RATE)
 
         val requestBody = JSONObject().apply {
@@ -358,7 +357,6 @@ class SaudiHumanVoice(
             }
         }
 
-        // Compatibility with SDK-shaped/proxy responses.
         audioPayloadFrom(root.optJSONObject("output_audio"))?.let { return it }
         audioPayloadFrom(root.optJSONObject("outputAudio"))?.let { return it }
 
