@@ -27,87 +27,90 @@ sealed interface AppUpdateState {
     data object Idle : AppUpdateState
     data object Checking : AppUpdateState
 
+    data class DeltaPackage(
+        val patchUrl: String,
+        val manifestUrl: String,
+        val patchSizeBytes: Long
+    )
+
     data class Available(
         val versionName: String,
         val apkUrl: String,
         val sha256Url: String,
-        val releaseNotes: String
+        val releaseNotes: String,
+        val delta: DeltaPackage? = null
     ) : AppUpdateState
 
     data class Downloading(
         val versionName: String,
-        val progressPercent: Int
+        val progressPercent: Int,
+        val delta: Boolean
     ) : AppUpdateState
 
-    data class PermissionRequired(
-        val versionName: String
-    ) : AppUpdateState
-
-    data class Installing(
-        val versionName: String
-    ) : AppUpdateState
-
-    data class Error(
-        val message: String,
-        val retryable: Boolean
-    ) : AppUpdateState
+    data class PermissionRequired(val versionName: String) : AppUpdateState
+    data class Installing(val versionName: String) : AppUpdateState
+    data class Error(val message: String, val retryable: Boolean) : AppUpdateState
 }
 
 /**
- * Secure self-updater for sideloaded Al-Shorti builds.
+ * Mandatory secure updater for sideloaded Al-Shorti builds.
  *
- * The updater trusts only the public Malik05255/shar GitHub Releases endpoint. A release must
- * contain one APK plus a matching `.sha256` asset. Both integrity and Android signing identity are
- * verified before the package installer opens. Android still owns the final install confirmation;
- * silent installation is intentionally not attempted.
+ * A window is exposed only when GitHub reports a strictly newer stable release. For the normal
+ * previous-version -> current-version path the network downloads a BSDIFF40 delta only. The app
+ * reconstructs the exact signed target APK locally from ApplicationInfo.sourceDir, verifies SHA-256
+ * and signing identity, then hands it to Android's package installer. Full APK download is retained
+ * solely as a compatibility fallback when a delta cannot apply (skipped versions, split APK, or a
+ * non-identical source build).
  */
 class AppUpdateManager(private val activity: ComponentActivity) {
-    private data class PendingInstall(
-        val versionName: String,
-        val apkFile: File
+    private data class PendingInstall(val versionName: String, val apkFile: File)
+
+    private data class DeltaManifest(
+        val fromVersion: String,
+        val toVersion: String,
+        val sourceSha256: String,
+        val targetSha256: String,
+        val patchSha256: String,
+        val targetSizeBytes: Long
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow<AppUpdateState>(AppUpdateState.Idle)
     val state: StateFlow<AppUpdateState> = _state.asStateFlow()
 
-    @Volatile
-    private var availableRelease: AppUpdateState.Available? = null
-
-    @Volatile
-    private var pendingInstall: PendingInstall? = null
+    @Volatile private var availableRelease: AppUpdateState.Available? = null
+    @Volatile private var pendingInstall: PendingInstall? = null
 
     fun checkForUpdates() {
         if (_state.value is AppUpdateState.Downloading || _state.value is AppUpdateState.Installing) return
-
         scope.launch {
             _state.value = AppUpdateState.Checking
-            val result = runCatching { fetchLatestRelease() }
-            result.onSuccess { release ->
-                availableRelease = release
-                _state.value = release ?: AppUpdateState.Idle
-            }.onFailure {
-                // Update checks must never block the actual call experience. A transient GitHub or
-                // network failure is silent; the next app launch checks again automatically.
-                _state.value = AppUpdateState.Idle
-            }
+            runCatching { fetchLatestRelease() }
+                .onSuccess { release ->
+                    availableRelease = release
+                    _state.value = release ?: AppUpdateState.Idle
+                }
+                .onFailure {
+                    // No update UI is ever shown for a failed background check.
+                    _state.value = AppUpdateState.Idle
+                }
         }
     }
 
     fun startUpdate() {
         val release = availableRelease ?: (_state.value as? AppUpdateState.Available) ?: return
         scope.launch {
-            runCatching {
-                downloadAndVerify(release)
-            }.onSuccess { file ->
-                pendingInstall = PendingInstall(release.versionName, file)
-                requestInstall(file, release.versionName)
-            }.onFailure { error ->
-                _state.value = AppUpdateState.Error(
-                    message = error.message ?: "تعذر تحميل التحديث.",
-                    retryable = !isSigningMismatch(error)
-                )
-            }
+            runCatching { downloadAndVerify(release) }
+                .onSuccess { file ->
+                    pendingInstall = PendingInstall(release.versionName, file)
+                    requestInstall(file, release.versionName)
+                }
+                .onFailure { error ->
+                    _state.value = AppUpdateState.Error(
+                        message = error.message ?: "تعذر تحميل التحديث.",
+                        retryable = !isSigningMismatch(error)
+                    )
+                }
         }
     }
 
@@ -117,30 +120,20 @@ class AppUpdateManager(private val activity: ComponentActivity) {
                 if (availableRelease != null) startUpdate() else checkForUpdates()
             }
             is AppUpdateState.PermissionRequired -> openUnknownSourcesSettings()
-            else -> checkForUpdates()
+            else -> Unit
         }
     }
 
-    fun dismissForThisSession() {
-        if (_state.value !is AppUpdateState.Downloading && _state.value !is AppUpdateState.Installing) {
-            _state.value = AppUpdateState.Idle
-        }
-    }
+    /** Mandatory updates cannot be dismissed after a newer version has been confirmed. */
+    fun dismissForThisSession() = Unit
 
-    /** Call from Activity.onResume after Android settings/package-installer returns to the app. */
     fun onActivityResumed() {
         val pending = pendingInstall
         if (pending != null && canInstallPackages()) {
             launchPackageInstaller(pending.apkFile, pending.versionName)
             return
         }
-
-        // If the installer was opened and the user came back without completing it, do not leave a
-        // permanent "Installing" dialog over the call screen. Re-check; a successful install will
-        // normally restart/replace this process and the new version will report itself current.
-        if (pending == null && _state.value is AppUpdateState.Installing) {
-            checkForUpdates()
-        }
+        if (pending == null && _state.value is AppUpdateState.Installing) checkForUpdates()
     }
 
     fun release() {
@@ -162,7 +155,6 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         val body = connection.inputStream.bufferedReader().use { it.readText() }
         connection.disconnect()
         val json = JSONObject(body)
-
         if (json.optBoolean("draft", false) || json.optBoolean("prerelease", false)) return null
 
         val tag = json.optString("tag_name").removePrefix("v").trim()
@@ -171,7 +163,11 @@ class AppUpdateManager(private val activity: ComponentActivity) {
         val assets = json.optJSONArray("assets") ?: return null
         var apkUrl: String? = null
         var shaUrl: String? = null
+        var deltaUrl: String? = null
+        var deltaManifestUrl: String? = null
+        var deltaSize = 0L
 
+        val deltaBase = "AlShorti-${BuildConfig.VERSION_NAME}-to-${tag}"
         for (index in 0 until assets.length()) {
             val asset = assets.optJSONObject(index) ?: continue
             val name = asset.optString("name")
@@ -179,42 +175,157 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             if (url.isBlank()) continue
 
             when {
-                name.endsWith(".apk", ignoreCase = true) && name.startsWith("AlShorti-") -> apkUrl = url
-                name.endsWith(".apk.sha256", ignoreCase = true) && name.startsWith("AlShorti-") -> shaUrl = url
+                name.equals("AlShorti-${tag}.apk", ignoreCase = true) -> apkUrl = url
+                name.equals("AlShorti-${tag}.apk.sha256", ignoreCase = true) -> shaUrl = url
+                name.equals("${deltaBase}.bsdiff", ignoreCase = true) -> {
+                    deltaUrl = url
+                    deltaSize = asset.optLong("size", 0L)
+                }
+                name.equals("${deltaBase}.delta.json", ignoreCase = true) -> deltaManifestUrl = url
             }
         }
-
         if (apkUrl == null || shaUrl == null) return null
+
+        val delta = if (deltaUrl != null && deltaManifestUrl != null) {
+            AppUpdateState.DeltaPackage(
+                patchUrl = deltaUrl,
+                manifestUrl = deltaManifestUrl,
+                patchSizeBytes = deltaSize
+            )
+        } else null
 
         return AppUpdateState.Available(
             versionName = tag,
             apkUrl = apkUrl,
             sha256Url = shaUrl,
-            releaseNotes = json.optString("body").take(UPDATE_NOTES_LIMIT)
+            releaseNotes = json.optString("body").take(UPDATE_NOTES_LIMIT),
+            delta = delta
         )
     }
 
     private fun downloadAndVerify(release: AppUpdateState.Available): File {
         val updateDir = File(activity.externalCacheDir ?: activity.cacheDir, "updates").apply { mkdirs() }
-        updateDir.listFiles()?.forEach { old ->
-            if (old.name != "AlShorti-${release.versionName}.apk") runCatching { old.delete() }
+        updateDir.listFiles()?.forEach { runCatching { it.delete() } }
+
+        val releaseHash = expectedHash(release.sha256Url)
+        val delta = release.delta
+        if (delta != null && activity.applicationInfo.splitSourceDirs.isNullOrEmpty()) {
+            val patched = runCatching {
+                downloadApplyAndVerifyDelta(release, delta, updateDir, releaseHash)
+            }.getOrNull()
+            if (patched != null) return patched
         }
 
-        val target = File(updateDir, "AlShorti-${release.versionName}.apk")
-        val partial = File(updateDir, "${target.name}.part")
-        runCatching { partial.delete() }
+        return downloadFullAndVerify(release, updateDir, releaseHash)
+    }
 
-        val connection = openConnection(release.apkUrl)
-        val response = connection.responseCode
-        if (response !in 200..299) {
+    private fun downloadApplyAndVerifyDelta(
+        release: AppUpdateState.Available,
+        delta: AppUpdateState.DeltaPackage,
+        updateDir: File,
+        releaseHash: String
+    ): File {
+        val manifest = parseDeltaManifest(downloadText(delta.manifestUrl))
+        require(manifest.fromVersion == BuildConfig.VERSION_NAME) { "Delta source version mismatch." }
+        require(manifest.toVersion == release.versionName) { "Delta target version mismatch." }
+        require(manifest.targetSha256 == releaseHash) { "Delta target hash does not match release APK." }
+
+        val installedApk = File(activity.applicationInfo.sourceDir)
+        require(installedApk.isFile && installedApk.length() > 0L) { "Installed APK is unavailable for delta update." }
+        require(sha256(installedApk) == manifest.sourceSha256) {
+            "Installed APK differs from the delta source."
+        }
+
+        val patchFile = File(updateDir, "AlShorti-${manifest.fromVersion}-to-${manifest.toVersion}.bsdiff")
+        downloadFile(
+            url = delta.patchUrl,
+            target = patchFile,
+            versionName = release.versionName,
+            delta = true,
+            advertisedBytes = delta.patchSizeBytes
+        )
+        require(sha256(patchFile) == manifest.patchSha256) { "Delta patch integrity check failed." }
+
+        val target = File(updateDir, "AlShorti-${release.versionName}.apk")
+        val partial = File(updateDir, "${target.name}.rebuild")
+        runCatching { partial.delete() }
+        BsDiffPatch.apply(installedApk, patchFile, partial)
+
+        require(partial.length() == manifest.targetSizeBytes) { "Reconstructed APK size mismatch." }
+        require(sha256(partial) == releaseHash) { "Reconstructed APK integrity check failed." }
+        finalizeDownloadedApk(partial, target, release.versionName)
+        patchFile.delete()
+        return target
+    }
+
+    private fun downloadFullAndVerify(
+        release: AppUpdateState.Available,
+        updateDir: File,
+        releaseHash: String
+    ): File {
+        val target = File(updateDir, "AlShorti-${release.versionName}.apk")
+        downloadFile(
+            url = release.apkUrl,
+            target = target,
+            versionName = release.versionName,
+            delta = false,
+            advertisedBytes = 0L
+        )
+        require(sha256(target) == releaseHash) {
+            target.delete()
+            "Full update integrity check failed."
+        }
+        verifyCandidate(target, release.versionName)
+        return target
+    }
+
+    private fun finalizeDownloadedApk(partial: File, target: File, versionName: String) {
+        if (!partial.renameTo(target)) {
+            partial.copyTo(target, overwrite = true)
+            partial.delete()
+        }
+        verifyCandidate(target, versionName)
+    }
+
+    private fun verifyCandidate(apkFile: File, expectedVersionName: String) {
+        val candidate = activity.packageManager.getPackageArchiveInfo(
+            apkFile.absolutePath,
+            PackageManager.GET_SIGNING_CERTIFICATES
+        ) ?: run {
+            apkFile.delete()
+            error("Reconstructed update is not a valid Android package.")
+        }
+
+        if (candidate.packageName != activity.packageName || candidate.versionName != expectedVersionName) {
+            apkFile.delete()
+            error("Update package identity/version mismatch.")
+        }
+        if (!hasSameSigningCertificate(apkFile)) {
+            apkFile.delete()
+            throw SigningMismatchException(
+                "يلزم أن تكون النسخة الحالية والتحديث موقّعين بنفس المفتاح الدائم حتى يثبت التحديث فوق النسخة السابقة."
+            )
+        }
+    }
+
+    private fun downloadFile(
+        url: String,
+        target: File,
+        versionName: String,
+        delta: Boolean,
+        advertisedBytes: Long
+    ) {
+        val partial = File(target.parentFile, "${target.name}.part")
+        runCatching { partial.delete() }
+        val connection = openConnection(url)
+        if (connection.responseCode !in 200..299) {
             connection.disconnect()
             error("تعذر تنزيل ملف التحديث.")
         }
 
-        val totalBytes = connection.contentLengthLong
+        val totalBytes = connection.contentLengthLong.takeIf { it > 0L } ?: advertisedBytes
         var copied = 0L
         var lastProgress = -1
-
         connection.inputStream.use { input ->
             FileOutputStream(partial).use { output ->
                 val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
@@ -223,18 +334,13 @@ class AppUpdateManager(private val activity: ComponentActivity) {
                     if (read < 0) break
                     output.write(buffer, 0, read)
                     copied += read
-
-                    if (totalBytes > 0L) {
-                        val progress = ((copied.toDouble() / totalBytes.toDouble()) * 100.0)
-                            .roundToInt()
-                            .coerceIn(0, 100)
-                        if (progress != lastProgress) {
-                            lastProgress = progress
-                            _state.value = AppUpdateState.Downloading(release.versionName, progress)
-                        }
-                    } else if (lastProgress != 0) {
-                        lastProgress = 0
-                        _state.value = AppUpdateState.Downloading(release.versionName, 0)
+                    val progress = if (totalBytes > 0L) {
+                        ((copied.toDouble() / totalBytes.toDouble()) * 100.0)
+                            .roundToInt().coerceIn(0, 100)
+                    } else 0
+                    if (progress != lastProgress) {
+                        lastProgress = progress
+                        _state.value = AppUpdateState.Downloading(versionName, progress, delta)
                     }
                 }
                 output.fd.sync()
@@ -246,41 +352,37 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             partial.copyTo(target, overwrite = true)
             partial.delete()
         }
-
-        val expectedHash = downloadText(release.sha256Url)
-            .trim()
-            .substringBefore(' ')
-            .lowercase()
-
-        require(expectedHash.matches(Regex("[0-9a-f]{64}"))) {
-            "ملف التحقق من التحديث غير صالح."
-        }
-
-        val actualHash = sha256(target)
-        if (actualHash != expectedHash) {
-            target.delete()
-            error("فشل التحقق من سلامة التحديث؛ لم يتم فتح ملف التثبيت.")
-        }
-
-        if (!hasSameSigningCertificate(target)) {
-            target.delete()
-            throw SigningMismatchException(
-                "هذه النسخة الحالية موقعة بمفتاح اختبار مختلف عن التحديث الرسمي. " +
-                    "يلزم الانتقال مرة واحدة إلى النسخة الموقعة رسميًا؛ بعد ذلك ستثبت جميع التحديثات فوق السابقة بدون حذف."
-            )
-        }
-
-        return target
     }
+
+    private fun parseDeltaManifest(raw: String): DeltaManifest {
+        val json = JSONObject(raw)
+        require(json.optString("format") == "BSDIFF40") { "Unsupported delta manifest." }
+        fun hash(name: String): String = json.optString(name).trim().lowercase().also {
+            require(it.matches(Regex("[0-9a-f]{64}"))) { "Invalid delta manifest hash: $name" }
+        }
+        return DeltaManifest(
+            fromVersion = json.getString("fromVersion"),
+            toVersion = json.getString("toVersion"),
+            sourceSha256 = hash("sourceSha256"),
+            targetSha256 = hash("targetSha256"),
+            patchSha256 = hash("patchSha256"),
+            targetSizeBytes = json.getLong("targetSizeBytes")
+        )
+    }
+
+    private fun expectedHash(url: String): String = downloadText(url)
+        .trim()
+        .substringBefore(' ')
+        .lowercase()
+        .also { require(it.matches(Regex("[0-9a-f]{64}"))) { "Invalid update SHA-256." } }
 
     private fun requestInstall(apkFile: File, versionName: String) {
         if (canInstallPackages()) {
             launchPackageInstaller(apkFile, versionName)
-            return
+        } else {
+            _state.value = AppUpdateState.PermissionRequired(versionName)
+            openUnknownSourcesSettings()
         }
-
-        _state.value = AppUpdateState.PermissionRequired(versionName)
-        openUnknownSourcesSettings()
     }
 
     private fun canInstallPackages(): Boolean =
@@ -308,12 +410,7 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             return
         }
 
-        val uri = FileProvider.getUriForFile(
-            activity,
-            "${activity.packageName}.updates",
-            apkFile
-        )
-
+        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.updates", apkFile)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, APK_MIME_TYPE)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -325,10 +422,7 @@ class AppUpdateManager(private val activity: ComponentActivity) {
             runCatching { activity.startActivity(intent) }
                 .onSuccess { pendingInstall = null }
                 .onFailure {
-                    _state.value = AppUpdateState.Error(
-                        "تعذر فتح مثبت Android. أعد المحاولة.",
-                        retryable = true
-                    )
+                    _state.value = AppUpdateState.Error("تعذر فتح مثبت Android. أعد المحاولة.", true)
                 }
         }
     }
@@ -336,18 +430,12 @@ class AppUpdateManager(private val activity: ComponentActivity) {
     private fun hasSameSigningCertificate(apkFile: File): Boolean {
         val flags = PackageManager.GET_SIGNING_CERTIFICATES
         val installed = activity.packageManager.getPackageInfo(activity.packageName, flags)
-        val candidate = activity.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
-            ?: return false
+        val candidate = activity.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags) ?: return false
 
         val installedDigests = installed.signingInfo?.apkContentsSigners
-            ?.map { certificate -> sha256(certificate.toByteArray()) }
-            ?.toSet()
-            .orEmpty()
+            ?.map { sha256(it.toByteArray()) }?.toSet().orEmpty()
         val candidateDigests = candidate.signingInfo?.apkContentsSigners
-            ?.map { certificate -> sha256(certificate.toByteArray()) }
-            ?.toSet()
-            .orEmpty()
-
+            ?.map { sha256(it.toByteArray()) }?.toSet().orEmpty()
         return installedDigests.isNotEmpty() && installedDigests == candidateDigests
     }
 
@@ -381,13 +469,11 @@ class AppUpdateManager(private val activity: ComponentActivity) {
                 digest.update(buffer, 0, read)
             }
         }
-        return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { byte -> "%02x".format(byte) }
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun compareVersions(a: String, b: String): Int {
         val left = a.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
@@ -402,7 +488,6 @@ class AppUpdateManager(private val activity: ComponentActivity) {
     }
 
     private fun isSigningMismatch(error: Throwable): Boolean = error is SigningMismatchException
-
     private class SigningMismatchException(message: String) : IllegalStateException(message)
 
     private companion object {
