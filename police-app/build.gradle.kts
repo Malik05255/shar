@@ -98,6 +98,50 @@ android {
     }
 }
 
+// Migration-only allowlist. These are the old full-frame MP4 fallbacks already shipped before the
+// runtime-3D architecture. New scenarios must be composed from independent GLB actors + animation
+// clips instead of adding another cinematic video.
+val legacyFullSceneVideos = setOf(
+    "dog_idle_loop.mp4",
+    "dog_talk_seated.mp4",
+    "dog_stand_up.mp4",
+    "dog_talk_standing.mp4",
+    "dog_approach_camera.mp4",
+    "dog_answer_phone.mp4",
+    "dog_walk_to_door.mp4",
+    "dog_review_file.mp4",
+    "dog_sit_down.mp4",
+    "dog_return_to_desk.mp4",
+    "dog_return_from_camera.mp4"
+)
+
+val guardCinematicVideoBloat by tasks.registering {
+    group = "verification"
+    description = "Rejects new full-scene MP4 assets; runtime scenes must use independent 3D actors."
+    doLast {
+        val rawDir = file("src/main/res/raw")
+        if (!rawDir.exists()) return@doLast
+
+        val bundledVideos = rawDir.listFiles()
+            .orEmpty()
+            .filter { it.isFile && it.extension.equals("mp4", ignoreCase = true) }
+            .map { it.name }
+            .toSet()
+
+        val unexpected = bundledVideos - legacyFullSceneVideos
+        if (unexpected.isNotEmpty()) {
+            throw GradleException(
+                "New full-scene cinematic MP4 assets are forbidden: ${unexpected.sorted().joinToString()}. " +
+                    "Add the object as an independent GLB/PBR actor and reuse skeletal animation clips instead."
+            )
+        }
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(guardCinematicVideoBloat)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
