@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/office-foley-candidate.yml'
       - 'runtime3d/foley_sources.json'
+      - 'runtime3d/extract_recorded_door_events.py'
 
 permissions:
   contents: read
@@ -81,14 +82,14 @@ jobs:
           ffmpeg -hide_banner -loglevel error -y -i "$SRC/Turning_a_page.ogg" \
             -af "highpass=f=75,loudnorm=I=-24:TP=-4:LRA=10,afade=t=in:st=0:d=0.01,afade=t=out:st=3.15:d=0.18" \
             -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/page_turn.ogg"
-          # The public-domain source is one physical opening+closing cycle. Split the two halves
-          # without synthesizing anything so OpenDoor and CloseDoor can be synchronized separately.
-          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Squeaky_door.ogg" -ss 0 -t 4.25 \
-            -af "highpass=f=55,loudnorm=I=-25:TP=-4:LRA=12,afade=t=in:st=0:d=0.015,afade=t=out:st=4.05:d=0.18" \
-            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/door_open.ogg"
-          ffmpeg -hide_banner -loglevel error -y -i "$SRC/Squeaky_door.ogg" -ss 4.25 -t 4.25 \
-            -af "highpass=f=55,loudnorm=I=-25:TP=-4:LRA=12,afade=t=in:st=0:d=0.015,afade=t=out:st=4.05:d=0.18" \
-            -ac 1 -ar 44100 -c:a libvorbis -q:a 5 "$OUT/door_close.ogg"
+          # Detect the two real physical events in the source recording. The earlier midpoint split
+          # cut the second half from digital silence; this analyzer uses decoded RMS and refuses to
+          # fabricate a close sound from silence.
+          python3 runtime3d/extract_recorded_door_events.py \
+            --input "$SRC/Squeaky_door.ogg" \
+            --open-output "$OUT/door_open.ogg" \
+            --close-output "$OUT/door_close.ogg" \
+            --report "$RUNNER_TEMP/foley/door-events.json"
           sha256sum "$OUT"/* | tee "$RUNNER_TEMP/foley/final-sha256.txt"
 
       - name: Validate duration loudness and non-silence
@@ -102,15 +103,14 @@ jobs:
           expected={
               'phone_ring.ogg':(1.2,2.2),
               'page_turn.ogg':(2.5,4.2),
-              'door_open.ogg':(3.5,4.5),
-              'door_close.ogg':(3.5,4.5),
+              # Door event lengths come from the physical recording rather than an arbitrary
+              # 4.25-second midpoint. Both must still be substantial audible events.
+              'door_open.ogg':(0.18,4.5),
+              'door_close.ogg':(0.18,4.5),
           }
           report={}
           for name,(lo,hi) in expected.items():
               p=root/name
-              # Vorbis can compress sparse physical transients below 5KB. Treat a tiny-but-valid
-              # container as suspicious only below 1KB; decoded duration/format/loudness below are
-              # the authoritative non-silence and corruption gates.
               if not p.is_file() or p.stat().st_size < 1000:
                   raise SystemExit(f'missing/corrupt cue: {name}')
               probe=subprocess.check_output([
@@ -150,6 +150,7 @@ jobs:
           path: |
             ${{ runner.temp }}/foley/final/*
             ${{ runner.temp }}/foley/foley-qc.json
+            ${{ runner.temp }}/foley/door-events.json
             ${{ runner.temp }}/foley/source-sha256.txt
             ${{ runner.temp }}/foley/final-sha256.txt
             runtime3d/foley_sources.json
