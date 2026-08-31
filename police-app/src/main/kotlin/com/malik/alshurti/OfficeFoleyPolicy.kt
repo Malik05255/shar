@@ -16,28 +16,32 @@ internal object OfficeFoleyPolicy {
     }
 
     fun cooldownMs(cue: OfficeCue): Long = when (cue) {
-        OfficeCue.PHONE_RING -> 5_000L
-        OfficeCue.DOOR_OPEN -> 1_250L
-        OfficeCue.DOOR_CLOSE -> 1_500L
-        OfficeCue.PAPER_RUSTLE -> 900L
+        OfficeCue.PHONE_RING -> 8_000L
+        OfficeCue.DOOR_OPEN -> 2_000L
+        OfficeCue.DOOR_CLOSE -> 2_000L
+        OfficeCue.PAPER_RUSTLE -> 2_200L
         else -> Long.MAX_VALUE
     }
 
+    /**
+     * These are intentionally audible on a normal phone speaker. The previous values were mixed
+     * like distant ambience and could be effectively inaudible once multiplied by phase gain.
+     */
     fun baseVolume(cue: OfficeCue): Float = when (cue) {
-        OfficeCue.PHONE_RING -> 0.44f
-        OfficeCue.DOOR_OPEN -> 0.40f
-        OfficeCue.DOOR_CLOSE -> 0.48f
-        OfficeCue.PAPER_RUSTLE -> 0.24f
+        OfficeCue.PHONE_RING -> 0.82f
+        OfficeCue.DOOR_OPEN -> 0.68f
+        OfficeCue.DOOR_CLOSE -> 0.76f
+        OfficeCue.PAPER_RUSTLE -> 0.58f
         else -> 0f
     }
 
-    /** Keep physical events audible without letting the phone/door leak dominate speech or ASR. */
+    /** Keep physical events below dialogue, but never reduce them to near-silence. */
     fun phaseGain(phase: CallPhase): Float = when (phase) {
-        CallPhase.STARTING -> 0.55f
-        CallPhase.LISTENING -> 0.50f
-        CallPhase.THINKING -> 0.70f
-        CallPhase.SPEAKING -> 0.35f
-        CallPhase.ERROR -> 0.40f
+        CallPhase.STARTING -> 0.82f
+        CallPhase.LISTENING -> 0.78f
+        CallPhase.THINKING -> 0.82f
+        CallPhase.SPEAKING -> 0.42f
+        CallPhase.ERROR -> 0.66f
     }
 }
 
