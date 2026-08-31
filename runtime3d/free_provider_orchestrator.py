@@ -42,11 +42,23 @@ def download_reference(url: str, destination: Path) -> None:
     if not url.startswith("https://"):
         raise RuntimeError("Reference URL must use HTTPS")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-free-provider-pool/1.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-free-provider-pool/1.2"})
     with urllib.request.urlopen(req, timeout=90) as response, destination.open("wb") as handle:
         shutil.copyfileobj(response, handle)
     if destination.stat().st_size < 10_000:
         raise RuntimeError(f"Reference image is unexpectedly small: {destination.stat().st_size} bytes")
+
+
+def stage_local_reference(source: Path, destination: Path) -> None:
+    """Copy an exact artifact-produced reference without a public re-download round trip."""
+    if not source.is_file():
+        raise RuntimeError(f"Reference file does not exist: {source}")
+    if source.stat().st_size < 10_000:
+        raise RuntimeError(f"Reference file is unexpectedly small: {source.stat().st_size} bytes")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    if destination.stat().st_size != source.stat().st_size:
+        raise RuntimeError("Local reference copy changed byte size")
 
 
 def _existing_glb(value: Any) -> Path | None:
@@ -103,11 +115,7 @@ def _sanitize(name: str) -> str:
 
 
 def _shape_call(client: Any, endpoint: str, endpoint_info: dict[str, Any], reference: Path, octree: int) -> tuple[Any, list[str]]:
-    """Build kwargs from the live Gradio schema instead of assuming input positions.
-
-    Gradio State components can disappear from the public API, which changes positional
-    indexes. Using parameter names makes provider adapters resilient to those changes.
-    """
+    """Build kwargs from the live Gradio schema instead of assuming input positions."""
     from gradio_client import handle_file
 
     kwargs: dict[str, Any] = {}
@@ -141,10 +149,8 @@ def _shape_call(client: Any, endpoint: str, endpoint_info: dict[str, Any], refer
         elif lower == "randomize_seed":
             kwargs[name] = False
         elif parameter.get("parameter_has_default"):
-            # Let the remote app apply its own declared default.
             continue
         else:
-            # Unknown required inputs are safer as explicit None than guessing a value.
             kwargs[name] = None
 
     if not any(k.lower() == "image" for k in kwargs):
@@ -225,19 +231,30 @@ def safe_reason(exc: BaseException) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry", type=Path, default=Path("runtime3d/free_provider_pool.json"))
-    parser.add_argument("--reference-url", required=True)
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--reference-url")
+    source_group.add_argument("--reference-file", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
 
     registry = load_registry(args.registry)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    reference = args.output_dir / "approved-master-reference.png"
+
+    if args.reference_file:
+        suffix = args.reference_file.suffix.lower() or ".img"
+        reference = args.output_dir / f"hero-reference{suffix}"
+        reference_source = f"local-artifact:{args.reference_file.name}"
+    else:
+        suffix = Path(str(args.reference_url).split("?", 1)[0]).suffix.lower() or ".img"
+        reference = args.output_dir / f"hero-reference{suffix}"
+        reference_source = str(args.reference_url)
+
     report_path = args.output_dir / "provider-pool-report.json"
     report: dict[str, Any] = {
         "startedAt": utc_now(),
         "freeOnly": True,
         "paidFallbackAllowed": False,
-        "referenceUrl": args.reference_url,
+        "referenceSource": reference_source,
         "attempts": [],
         "winner": None,
         "productionReady": False,
@@ -245,8 +262,12 @@ def main() -> int:
     }
 
     try:
-        download_reference(args.reference_url, reference)
+        if args.reference_file:
+            stage_local_reference(args.reference_file, reference)
+        else:
+            download_reference(str(args.reference_url), reference)
         report["referenceBytes"] = reference.stat().st_size
+        report["referenceSuffix"] = reference.suffix.lower()
     except Exception as exc:
         report["fatal"] = safe_reason(exc)
         report["finishedAt"] = utc_now()
@@ -287,14 +308,14 @@ def main() -> int:
                     "provider": provider["id"],
                     "providerClass": provider.get("class"),
                     "costMode": "free-only",
-                    "sourceImage": args.reference_url,
+                    "sourceImage": reference_source,
                     "structuralGate": gate,
                     "adapterMetadata": metadata,
                     "productionReady": False,
                     "requiredNextStages": [
-                        "visual identity comparison",
+                        "visual identity and isolated-silhouette comparison",
                         "authored PBR/fur/uniform finishing",
-                        "quadruped and facial rig",
+                        "biped canine and facial rig",
                         "required named animation clips",
                         "Arabic viseme/lip-sync validation",
                         "physical Android acceptance gate"
