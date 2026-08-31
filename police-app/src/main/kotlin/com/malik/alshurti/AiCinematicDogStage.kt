@@ -43,6 +43,7 @@ fun AiCinematicDogStage(
     var stickyJob by remember { mutableStateOf<Job?>(null) }
     var continuationAction by remember { mutableStateOf<DogAction?>(null) }
     var continuationNonce by remember { mutableStateOf(0L) }
+    var speakingVisualStage by remember { mutableIntStateOf(0) }
 
     // A coherent, unique ambient deck. Blocks are shuffled per app-screen session but paired
     // transitions (walk-to-door -> return, stand -> sit) keep their physical continuity.
@@ -59,8 +60,8 @@ fun AiCinematicDogStage(
     val usedAmbientSources = remember { linkedSetOf<String>() }
 
     LaunchedEffect(officeScene.revision, phase) {
-        // Conversation / explicit world state changes override a locally chained continuation.
         continuationAction = null
+        if (phase != CallPhase.SPEAKING) speakingVisualStage = 0
         val eventAction = when {
             officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
             officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
@@ -113,17 +114,16 @@ fun AiCinematicDogStage(
         source != null && source !in usedAmbientSources
     }
 
-    // Silent observation ignores repetitive ViewModel ambient action changes and advances only
-    // through the unique deck. Explicit physical events may override it only if their exact source
-    // has not already appeared during this session.
     var ambientAction by remember { mutableStateOf<DogAction?>(null) }
     LaunchedEffect(phase) {
         if (phase == CallPhase.LISTENING && ambientAction == null) {
             ambientAction = nextUnusedAmbient()
         }
+        if (phase == CallPhase.SPEAKING) speakingVisualStage = 0
     }
 
-    val baseAction = when {
+    val baseAction: DogAction? = when {
+        phase == CallPhase.SPEAKING && speakingVisualStage >= 2 -> null
         phase == CallPhase.SPEAKING && officeScene.dogAction == DogAction.TALK_STANDING -> DogAction.TALK_STANDING
         phase == CallPhase.SPEAKING -> DogAction.TALK_SEATED
         phase == CallPhase.THINKING -> DogAction.SEATED_IDLE
@@ -173,19 +173,27 @@ fun AiCinematicDogStage(
         continuationNonce += 1L
         when (phase) {
             CallPhase.LISTENING -> {
-                // Consume the current ambient scene and advance to a URL that has not appeared in
-                // this session. Never fall back to the beginning of the deck.
                 continuationAction = null
                 ambientAction = nextUnusedAmbient()
             }
             CallPhase.SPEAKING -> {
-                // Speaking clips are interaction assets, not ambient life. A long reply can use the
-                // alternate posture once, but must not continuously recycle the same full scene.
-                continuationAction = when (completed) {
-                    DogAction.TALK_SEATED -> DogAction.TALK_STANDING
-                    DogAction.TALK_STANDING -> null
-                    DogAction.STAND_UP -> DogAction.TALK_STANDING
-                    else -> null
+                when (completed) {
+                    DogAction.TALK_SEATED -> {
+                        speakingVisualStage = 1
+                        continuationAction = DogAction.TALK_STANDING
+                    }
+                    DogAction.TALK_STANDING -> {
+                        speakingVisualStage = 2
+                        continuationAction = null
+                    }
+                    DogAction.STAND_UP -> {
+                        speakingVisualStage = 1
+                        continuationAction = DogAction.TALK_STANDING
+                    }
+                    else -> {
+                        speakingVisualStage = 2
+                        continuationAction = null
+                    }
                 }
             }
             else -> {
