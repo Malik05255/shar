@@ -42,8 +42,10 @@ jobs:
           echo 'REMESH=false'
           echo 'PRESERVE_SKIN=true'
           echo 'PRESERVE_26_CLIPS=true'
-          echo 'PRESERVE_SPARSE_FACE_LAYERS=true'
-          echo 'SEAM_SAFE_LOOP_UV=true'
+          echo 'SKIN_SEMANTIC_REGIONS=true'
+          echo 'PART_LOCAL_NORMALIZATION=true'
+          echo 'SURFACE_NORMAL_BUCKETS=true'
+          echo 'LOOP_CORNER_UV=true'
           echo 'PRODUCTION_ACTIVATION=false'
           python3 - <<'PY'
           import json
@@ -117,7 +119,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
           blender --version | head -n 2
 
-      - name: Hydrate PBR and transfer seam-safe loop UVs onto Motion V2
+      - name: Transfer PBR with skin semantic regions and surface direction
         shell: bash
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -141,15 +143,25 @@ jobs:
           from pathlib import Path
           qc=json.loads((Path(os.environ['RUNNER_TEMP'])/'pbr-motion-v2'/'police_dog.motion_v2_pbr_candidate.qc.json').read_text())
           uv=qc.get('uvTransfer') or {}
-          if uv.get('algorithm') != 'nearest-donor-triangle + per-target-polygon loop-corner UV':
-              raise SystemExit('Seam-safe UV algorithm marker missing')
+          expected='skin-semantic + part-local-normalization + surface-normal-bucket + loop-corner UV'
+          if uv.get('algorithm') != expected:
+              raise SystemExit('Semantic/normal-aware UV algorithm marker missing')
           if int(uv.get('loopsWritten',0)) != int(uv.get('targetLoops',-1)):
               raise SystemExit('Not all target UV loops were written')
-          if int(uv.get('donorUvSeamVertices',0)) <= 0:
-              raise SystemExit('Donor seam diagnostics unexpectedly empty')
-          if int(uv.get('targetVerticesWithPerLoopUvSplits',0)) <= 0:
-              raise SystemExit('Target did not preserve any per-loop UV splits')
-          print('SEAM_SAFE_LOOP_UV_GATE=PASS')
+          target=uv.get('targetVerticesByCategory') or {}
+          donor=uv.get('donorTrianglesByCategory') or {}
+          required={'head','torso','arm.L','arm.R','leg.L','leg.R','tail'}
+          if set(target) != required or any(int(target[k]) <= 0 for k in required):
+              raise SystemExit(f'Target skin semantic coverage failed: {target}')
+          if set(donor) != required or any(int(donor[k]) < 12 for k in required):
+              raise SystemExit(f'Donor semantic triangle coverage failed: {donor}')
+          fallbacks=int(uv.get('normalBucketFallbackVertices',10**9))
+          if fallbacks > int(uv.get('targetVertices',0))*0.25:
+              raise SystemExit(f'Too many normal-bucket fallbacks: {fallbacks}')
+          mean=float(uv.get('meanSemanticSurfaceDistance',99.0))
+          if not (0.0 <= mean < 0.25):
+              raise SystemExit(f'Semantic surface distance unreasonable: {mean}')
+          print('SEMANTIC_NORMAL_UV_GATE=PASS')
           PY
 
       - name: Validate embedded PBR skin topology and all 26 clips
@@ -191,15 +203,13 @@ jobs:
           print('MOTION_V2_PBR_STRUCTURAL_GATE=PASS')
           PY
 
-      - name: Revalidate sparse facial deformation after PBR export
+      - name: Defer sparse facial gate to exact raw Motion V2 transplant
         shell: bash
         run: |
           set -euo pipefail
-          python3 runtime3d/validate_facial_motion_cubic.py \
-            "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
-            --report "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.facial.json"
-          test -s "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.facial.json"
-          echo 'MOTION_V2_PBR_FACIAL_GATE=PASS'
+          echo 'BLENDER_INTERMEDIATE_MAY_REBAKE_ANIMATION_CHANNELS=true'
+          echo 'FINAL_SPARSE_TRANSPLANT_REQUIRED=true'
+          echo 'FINAL_FACIAL_GATE_REQUIRED=true'
           echo 'PRODUCTION_GATE=CLOSED'
 
       - name: Upload Motion V2 PBR candidate and QC renders
