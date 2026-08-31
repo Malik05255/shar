@@ -1,0 +1,121 @@
+name: Author Reusable Runtime3D Office Props
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-office-props.yml'
+      - 'runtime3d/blender_author_office_props.py'
+      - 'runtime3d/inspect_glb.py'
+
+permissions:
+  contents: read
+
+jobs:
+  author-office-props:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Keep production disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert d.get('enabled') is False
+          assert d.get('actors') == []
+          print('FREE_ONLY=true')
+          print('INDEPENDENT_GLB_ACTORS=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Install Blender
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender libegl1 libgl1-mesa-dri
+          blender --version | head -n 2
+
+      - name: Author office shell and reusable props
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/office-props"
+          blender --background --python runtime3d/blender_author_office_props.py -- \
+            --output-dir "$RUNNER_TEMP/office-props" \
+            --report "$RUNNER_TEMP/office-props.qc.json"
+          test -s "$RUNNER_TEMP/office-props.qc.json"
+          test "$(find "$RUNNER_TEMP/office-props" -maxdepth 1 -name '*.glb' -type f | wc -l)" -eq 10
+
+      - name: Validate exact asset and animation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json
+          root=Path(os.environ['RUNNER_TEMP'])/'office-props'
+          expected={
+            'office_shell.glb':set(),
+            'desk.glb':set(),
+            'door.glb':{'Idle','OpenDoor','CloseDoor'},
+            'phone.glb':{'Idle','Ring'},
+            'file.glb':{'Idle','MoveToDesk','MoveToHand'},
+            'monitor.glb':set(),
+            'keyboard.glb':set(),
+            'chair.glb':{'Idle','Shift','Turn'},
+            'printer.glb':{'Idle','Print'},
+            'coffee_cup.glb':{'Idle','MoveToHand','MoveToDesk'},
+          }
+          summary={}
+          for filename, required in expected.items():
+              p=root/filename
+              if not p.is_file() or p.stat().st_size < 2_000:
+                  raise SystemExit(f'Missing/empty asset: {filename}')
+              d=read_glb_json(p)
+              names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+              meshes=d.get('meshes') or []; mats=d.get('materials') or []
+              if not meshes or not mats:
+                  raise SystemExit(f'{filename}: mesh/material payload missing')
+              if required and not required.issubset(names):
+                  raise SystemExit(f'{filename}: required={sorted(required)} actual={sorted(names)}')
+              extra=names-required
+              if required and extra:
+                  raise SystemExit(f'{filename}: unexpected clips {sorted(extra)}')
+              summary[filename]={'bytes':p.stat().st_size,'meshes':len(meshes),'materials':len(mats),'animations':sorted(names)}
+          print(json.dumps(summary,indent=2))
+          print('OFFICE_PROP_PACK_GATE=PASS')
+          PY
+
+      - name: Upload reusable office prop candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-office-props-candidate
+          path: |
+            ${{ runner.temp }}/office-props/*
+            ${{ runner.temp }}/office-props.qc.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production gate closed
+        if: success()
+        run: |
+          echo 'NON_CHARACTER_WORLD_ASSETS=PASS'
+          echo 'STAFF_CHARACTER_ASSETS=PENDING'
+          echo 'HERO_VISUAL_QC=PENDING'
+          echo 'PHYSICAL_ANDROID_GATE=PENDING'
+          echo 'PRODUCTION_GATE=CLOSED'
