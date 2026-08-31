@@ -7,6 +7,11 @@ on:
         description: Approved cinematic police-dog master reference (public HTTPS PNG/JPG)
         required: true
         default: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-generate.yml'
 
 permissions:
   contents: read
@@ -17,6 +22,7 @@ jobs:
     timeout-minutes: 30
     env:
       TRIPO_API_KEY: ${{ secrets.TRIPO_API_KEY }}
+      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png' }}
 
     steps:
       - name: Checkout PR branch
@@ -30,6 +36,7 @@ jobs:
             echo '::error::Repository secret TRIPO_API_KEY is missing. Add a Tripo v3 API key before running this paid generation workflow.'
             exit 1
           fi
+          echo 'TRIPO_API_KEY is configured.'
 
       - name: Generate high-fidelity rigged hero GLB candidate
         shell: bash
@@ -37,7 +44,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/runtime3d-candidate"
           python3 runtime3d/generate_tripo_candidate.py \
-            --image-url '${{ inputs.reference_url }}' \
+            --image-url "$REFERENCE_URL" \
             --output "$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.glb" \
             --metadata "$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.json"
 
