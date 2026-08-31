@@ -1,4 +1,4 @@
-name: Texture Runtime 3D Hero Candidate - Free Hunyuan PBR
+name: Texture Runtime 3D Hero Candidate - Free Donor Pool
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - fix/silent-listening-living-office
     paths:
       - '.github/workflows/runtime3d-texture.yml'
-      - 'runtime3d/hf_hunyuan_pbr_donor.py'
+      - 'runtime3d/free_texture_candidate.py'
       - 'runtime3d/blender_transfer_pbr_candidate.py'
 
 permissions:
@@ -92,18 +92,23 @@ jobs:
           print(f'heroReferenceBytes={ref.stat().st_size}')
           PY
 
-      - name: Install free Space client
-        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
+      - name: Install free provider clients
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' 'Pillow>=10,<12'
 
-      - name: Generate Hunyuan PBR donor on ZeroGPU
+      - name: Rotate free texture donors
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/pbr"
-          python3 runtime3d/hf_hunyuan_pbr_donor.py \
-            --reference "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE" \
-            --output "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.glb" \
-            --report "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.json"
+          mkdir -p "$RUNNER_TEMP/pbr/provider"
+          python3 runtime3d/free_texture_candidate.py \
+            --reference-file "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE" \
+            --output-dir "$RUNNER_TEMP/pbr/provider"
+          DONOR=$(find "$RUNNER_TEMP/pbr/provider" -maxdepth 1 -type f -name 'police_dog.*.texture_candidate.glb' | head -n 1)
+          test -n "$DONOR"
+          test -s "$DONOR"
+          cp "$DONOR" "$RUNNER_TEMP/pbr/free_texture_donor.glb"
+          echo "DONOR_FILE=$(basename "$DONOR")" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/pbr/provider/texture-provider-report.json"
 
       - name: Install free Blender runtime
         shell: bash
@@ -113,7 +118,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy
           blender --version | head -n 2
 
-      - name: Transfer PBR to animated hero and render QC views
+      - name: Transfer donor PBR to animated hero and render QC views
         shell: bash
         run: |
           set -euo pipefail
@@ -121,7 +126,7 @@ jobs:
           blender --background \
             --python runtime3d/blender_transfer_pbr_candidate.py -- \
             --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
-            --donor "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.glb" \
+            --donor "$RUNNER_TEMP/pbr/free_texture_donor.glb" \
             --output "$RUNNER_TEMP/pbr/police_dog.pbr_motion_candidate.glb" \
             --qc "$RUNNER_TEMP/pbr/police_dog.pbr_motion_candidate.qc.json" \
             --preview-dir "$RUNNER_TEMP/pbr/previews"
@@ -153,6 +158,7 @@ jobs:
           skins = d.get('skins') or []
           max_joints = max((len(s.get('joints') or []) for s in skins), default=0)
           summary = {
+              'donor': os.environ.get('DONOR_FILE'),
               'bytes': p.stat().st_size,
               'materials': len(materials), 'textures': len(textures), 'images': len(images),
               'animationCount': len(names), 'missingAnimations': missing,
@@ -164,7 +170,7 @@ jobs:
           }
           print(json.dumps(summary, indent=2))
           if len(materials) < 1 or (len(textures) < 1 and len(images) < 1):
-              raise SystemExit('PBR material payload missing')
+              raise SystemExit('Material/texture payload missing')
           if missing: raise SystemExit(f'Runtime animation names lost: {missing}')
           if len(skins) < 1 or max_joints < 24: raise SystemExit('Skin/joint contract failed')
           if q.get('geometryPreserved') is not True or q.get('decimationApplied') is not False or q.get('remeshApplied') is not False:
