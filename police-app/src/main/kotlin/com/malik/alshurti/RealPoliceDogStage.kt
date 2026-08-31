@@ -102,6 +102,7 @@ private fun animationFor(
     DogAction.WALK_TO_DOOR -> "WalkToDoor"
     DogAction.GREET_STAFF -> "GreetStaff"
     DogAction.RETURN_TO_DESK -> "ReturnToDesk"
+    DogAction.REVIEW_FILE -> "ReviewFile"
     DogAction.SIT_DOWN -> "SitDown"
     DogAction.TALK_SEATED -> when (viseme) {
         MouthViseme.OPEN -> "TalkOpen"

@@ -76,6 +76,7 @@ jobs:
           DOG_APPROACH_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142734_345318c2-5f9c-4f87-b067-8ca5bb5c5b54.mp4
           DOG_PHONE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_140952_4319b02c-dc65-4750-b24f-f5459350058b.mp4
           DOG_DOOR_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142029_d4e858db-fdfa-46ce-a248-34ccf47f19de.mp4
+          DOG_REVIEW_FILE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_145806_3f9ed13a-6db3-41a4-a89a-34a383d9f5a3.mp4
         run: |
           set -euo pipefail
           RAW_DIR="police-app/src/main/res/raw"
@@ -109,6 +110,7 @@ jobs:
           fetch_asset "$DOG_APPROACH_URL" "$RAW_DIR/dog_approach_camera.mp4"
           fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
           fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
+          fetch_asset "$DOG_REVIEW_FILE_URL" "$RAW_DIR/dog_review_file.mp4"
 
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update -qq
