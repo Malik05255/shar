@@ -21,9 +21,10 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Production Saudi speech engine.
  *
- * The path intentionally has no robotic Android-TTS fallback. Playback owns transient audio focus,
- * uses a short click-free gain ramp, keeps recurring lines in a bounded local cache, and protects
- * every MediaPlayer/network callback so an OEM audio-stack failure cannot terminate the app.
+ * The police voice is prewarmed through the real ElevenLabs endpoint before the session is marked
+ * ready. This prevents a build with a present-but-unusable key/voice from entering a silent call.
+ * Playback owns transient audio focus, uses a click-free gain ramp and keeps recurring lines in a
+ * bounded local cache. There is intentionally no robotic Android-TTS fallback.
  */
 class SaudiHumanVoice(
     context: Context,
@@ -44,7 +45,7 @@ class SaudiHumanVoice(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "saudi-human-voice-v3").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "saudi-human-voice-v4").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -137,9 +138,44 @@ class SaudiHumanVoice(
             return
         }
 
-        safeCallback {
-            callbacks.onPreparing(100, "")
-            callbacks.onReady()
+        if (role == VoiceRole.STAFF) {
+            safeCallback {
+                callbacks.onPreparing(100, "")
+                callbacks.onReady()
+            }
+            return
+        }
+
+        val ticket = generation.incrementAndGet()
+        safeCallback { callbacks.onPreparing(0, "") }
+        try {
+            networkExecutor.execute {
+                runCatching {
+                    val warmed = cachedOrSynthesize(
+                        ticket = ticket,
+                        apiKey = apiKey,
+                        voiceId = voiceId,
+                        text = PREWARM_GREETING
+                    ) ?: return@runCatching
+                    if (ticket != generation.get() || released || warmed.length() < MIN_AUDIO_BYTES) return@runCatching
+                    mainHandler.post {
+                        if (ticket == generation.get() && !released) {
+                            safeCallback {
+                                callbacks.onPreparing(100, "")
+                                callbacks.onReady()
+                            }
+                        }
+                    }
+                }.onFailure { throwable ->
+                    if (ticket == generation.get() && !released) {
+                        mainHandler.post { reportError(throwable.message) }
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            if (!released) reportError(null)
+        } catch (t: Throwable) {
+            if (!released) reportError(t.message)
         }
     }
 
@@ -232,8 +268,8 @@ class SaudiHumanVoice(
         )
         val connection = (endpoint.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 10_000
-            readTimeout = 35_000
+            connectTimeout = 15_000
+            readTimeout = 45_000
             doOutput = true
             setRequestProperty("xi-api-key", apiKey)
             setRequestProperty("Content-Type", "application/json")
@@ -244,21 +280,18 @@ class SaudiHumanVoice(
         val payload = JSONObject().apply {
             put("text", text)
             put("model_id", ELEVENLABS_MODEL)
-            put("language_code", "ar")
             put(
                 "voice_settings",
                 JSONObject().apply {
                     if (role == VoiceRole.POLICE) {
-                        // Slightly slower, highly similar and less stylized gives cleaner Saudi
-                        // consonants and avoids the exaggerated/robotic cadence heard in testing.
-                        put("stability", 0.38)
-                        put("similarity_boost", 0.91)
-                        put("style", 0.12)
-                        put("speed", 0.96)
-                    } else {
                         put("stability", 0.50)
+                        put("similarity_boost", 0.88)
+                        put("style", 0.05)
+                        put("speed", 0.98)
+                    } else {
+                        put("stability", 0.55)
                         put("similarity_boost", 0.84)
-                        put("style", 0.06)
+                        put("style", 0.04)
                         put("speed", 1.00)
                     }
                     put("use_speaker_boost", true)
@@ -518,7 +551,8 @@ class SaudiHumanVoice(
 
     private companion object {
         const val ELEVENLABS_MODEL = "eleven_multilingual_v2"
-        const val CACHE_SCHEMA = "v3"
+        const val CACHE_SCHEMA = "v4"
+        const val PREWARM_GREETING = "هلا يا بطل، معك الشرطي. وش عندك؟"
         const val MIN_AUDIO_BYTES = 2_048L
         const val MAX_CACHE_FILES = 32
         const val MAX_CACHE_BYTES = 96L * 1024L * 1024L
