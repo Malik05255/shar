@@ -49,6 +49,11 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
         else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
+    // Facial performance is high-frequency state, independent from office scenario choreography.
+    LaunchedEffect(state.viseme) {
+        RuntimeOfficePlanBus.publishViseme(state.viseme)
+    }
+
     Box(
         Modifier
             .fillMaxSize()
