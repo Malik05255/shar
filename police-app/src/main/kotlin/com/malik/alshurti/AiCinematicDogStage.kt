@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -20,10 +21,13 @@ import kotlinx.coroutines.launch
 /**
  * Transitional cinematic performance player.
  *
- * Full-quality clips are delivered from CDN/cache. A clip may be one-shot, but the *office* is not:
- * completion advances into another context-compatible continuation so the final frame is never
- * exposed as a long freeze. Runtime 3D remains the destination for fully independent continuous
- * motion; this player preserves the existing cinematic benchmark during that migration.
+ * Ambient office footage follows a per-screen-session deck. A full cinematic URL is never replayed
+ * automatically during silent observation. Once an ambient clip is consumed it is skipped for the
+ * rest of the session. This prevents the old idle <-> review-file recycle from looking like a loop.
+ *
+ * The finite MP4 deck is only a migration bridge. When it is exhausted we intentionally keep the
+ * final frame instead of silently starting an already-seen scene again. Persistent independent 3D
+ * actors remain the destination for unbounded office life without replay.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -40,8 +44,22 @@ fun AiCinematicDogStage(
     var continuationAction by remember { mutableStateOf<DogAction?>(null) }
     var continuationNonce by remember { mutableStateOf(0L) }
 
+    // A coherent, unique ambient deck. Blocks are shuffled per app-screen session but paired
+    // transitions (walk-to-door -> return, stand -> sit) keep their physical continuity.
+    val ambientDeck = remember {
+        val opening = listOf(DogAction.REVIEW_FILE, DogAction.SEATED_IDLE).shuffled()
+        val blocks = listOf(
+            listOf(DogAction.ANSWER_PHONE),
+            listOf(DogAction.WALK_TO_DOOR, DogAction.RETURN_TO_DESK),
+            listOf(DogAction.STAND_UP, DogAction.SIT_DOWN)
+        ).shuffled().flatten()
+        (opening + blocks).distinctBy { RemoteCinematicAssets.sourceFor(it) }
+    }
+    var ambientIndex by remember { mutableIntStateOf(0) }
+    val usedAmbientSources = remember { linkedSetOf<String>() }
+
     LaunchedEffect(officeScene.revision, phase) {
-        // A real state change always wins over a locally chained continuation.
+        // Conversation / explicit world state changes override a locally chained continuation.
         continuationAction = null
         val eventAction = when {
             officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
@@ -73,19 +91,47 @@ fun AiCinematicDogStage(
         onDispose { stickyJob?.cancel() }
     }
 
+    fun nextUnusedAmbient(): DogAction? {
+        while (ambientIndex < ambientDeck.size) {
+            val candidate = ambientDeck[ambientIndex++]
+            val source = RemoteCinematicAssets.sourceFor(candidate) ?: continue
+            if (usedAmbientSources.add(source)) return candidate
+        }
+        return null
+    }
+
+    val explicitEventAction = when {
+        officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
+        officeScene.cue == OfficeCue.DOOR_OPEN -> DogAction.WALK_TO_DOOR
+        officeScene.cue == OfficeCue.DOOR_CLOSE -> DogAction.RETURN_TO_DESK
+        officeScene.cue == OfficeCue.STAFF_SPEAK || officeScene.staffSpeaking -> DogAction.GREET_STAFF
+        officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
+        else -> null
+    }
+
+    // Silent observation ignores repetitive ViewModel ambient action changes and advances only
+    // through the unique deck. Explicit physical events may temporarily override it.
+    var ambientAction by remember { mutableStateOf<DogAction?>(null) }
+    LaunchedEffect(phase) {
+        if (phase == CallPhase.LISTENING && ambientAction == null) {
+            ambientAction = nextUnusedAmbient()
+        }
+    }
+
     val baseAction = when {
-        officeScene.dogAction != DogAction.SEATED_IDLE -> officeScene.dogAction
-        stickyAction != null -> stickyAction!!
-        officeScene.phoneRinging || officeScene.attention == DogAttention.PHONE -> DogAction.ANSWER_PHONE
-        officeScene.staffSpeaking || officeScene.staffAtDoor -> DogAction.GREET_STAFF
-        officeScene.doorOpen || officeScene.attention == DogAttention.DOOR -> DogAction.WALK_TO_DOOR
+        phase == CallPhase.SPEAKING && officeScene.dogAction == DogAction.TALK_STANDING -> DogAction.TALK_STANDING
         phase == CallPhase.SPEAKING -> DogAction.TALK_SEATED
+        phase == CallPhase.THINKING -> DogAction.SEATED_IDLE
+        phase == CallPhase.LISTENING && explicitEventAction != null -> explicitEventAction
+        phase == CallPhase.LISTENING -> ambientAction
+        officeScene.dogAction != DogAction.SEATED_IDLE -> officeScene.dogAction
+        stickyAction != null -> stickyAction
         else -> DogAction.SEATED_IDLE
     }
     val requestedAction = continuationAction ?: baseAction
 
-    val remoteSource = remember(requestedAction) { RemoteCinematicAssets.sourceFor(requestedAction) }
-    if (remoteSource == null) {
+    val remoteSource = requestedAction?.let { remember(it) { RemoteCinematicAssets.sourceFor(it) } }
+    if (requestedAction == null || remoteSource == null) {
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
@@ -95,11 +141,12 @@ fun AiCinematicDogStage(
     }
 
     LaunchedEffect(requestedAction, remoteSource) {
+        if (phase == CallPhase.LISTENING) usedAmbientSources.add(remoteSource)
         CinematicMediaCache.prefetch(
             context = context,
             urls = buildList {
                 add(remoteSource)
-                addAll(RemoteCinematicAssets.likelyNext(requestedAction))
+                addAll(RemoteCinematicAssets.likelyNext(requestedAction).filterNot { it in usedAmbientSources })
             }
         )
     }
@@ -117,20 +164,32 @@ fun AiCinematicDogStage(
 
     fun advanceFrom(completed: DogAction) {
         continuationNonce += 1L
-        continuationAction = when {
-            phase == CallPhase.SPEAKING && completed == DogAction.TALK_SEATED -> DogAction.TALK_SEATED
-            phase == CallPhase.SPEAKING && completed == DogAction.TALK_STANDING -> DogAction.TALK_STANDING
-            phase == CallPhase.LISTENING && completed == DogAction.REVIEW_FILE -> DogAction.SEATED_IDLE
-            phase == CallPhase.LISTENING && completed == DogAction.SEATED_IDLE -> DogAction.REVIEW_FILE
-            completed == DogAction.ANSWER_PHONE -> DogAction.SEATED_IDLE
-            completed == DogAction.WALK_TO_DOOR -> DogAction.RETURN_TO_DESK
-            completed == DogAction.GREET_STAFF -> DogAction.RETURN_TO_DESK
-            completed == DogAction.RETURN_TO_DESK -> DogAction.SEATED_IDLE
-            completed == DogAction.APPROACH_CAMERA -> DogAction.RETURN_FROM_CAMERA
-            completed == DogAction.RETURN_FROM_CAMERA -> DogAction.SEATED_IDLE
-            completed == DogAction.STAND_UP && phase == CallPhase.SPEAKING -> DogAction.TALK_STANDING
-            completed == DogAction.SIT_DOWN -> DogAction.SEATED_IDLE
-            else -> DogAction.SEATED_IDLE
+        when (phase) {
+            CallPhase.LISTENING -> {
+                // Consume the current ambient scene and advance to a URL that has not appeared in
+                // this session. Never fall back to the beginning of the deck.
+                continuationAction = null
+                ambientAction = nextUnusedAmbient()
+            }
+            CallPhase.SPEAKING -> {
+                // Speaking clips are interaction assets, not ambient life. A long reply can use the
+                // alternate posture once, but must not continuously recycle the same full scene.
+                continuationAction = when (completed) {
+                    DogAction.TALK_SEATED -> DogAction.TALK_STANDING
+                    DogAction.TALK_STANDING -> null
+                    DogAction.STAND_UP -> DogAction.TALK_STANDING
+                    else -> null
+                }
+            }
+            else -> {
+                continuationAction = when (completed) {
+                    DogAction.APPROACH_CAMERA -> DogAction.RETURN_FROM_CAMERA
+                    DogAction.WALK_TO_DOOR,
+                    DogAction.GREET_STAFF -> DogAction.RETURN_TO_DESK
+                    DogAction.STAND_UP -> DogAction.SIT_DOWN
+                    else -> null
+                }
+            }
         }
     }
 
