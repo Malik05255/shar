@@ -47,12 +47,24 @@ jobs:
           import json
           import os
           import shutil
+          import urllib.request
           from pathlib import Path
           from gradio_client import Client, handle_file
 
           out_dir = Path(os.environ['RUNNER_TEMP']) / 'runtime3d-candidate'
           target = out_dir / 'police_dog.hunyuan21.geometry.glb'
           meta_target = out_dir / 'police_dog.hunyuan21.geometry.json'
+          reference = out_dir / 'approved-master-reference.png'
+
+          req = urllib.request.Request(
+              os.environ['REFERENCE_URL'],
+              headers={'User-Agent': 'al-shorti-runtime3d-free-pipeline/1.0'},
+          )
+          with urllib.request.urlopen(req, timeout=60) as response, reference.open('wb') as handle:
+              shutil.copyfileobj(response, handle)
+          if reference.stat().st_size < 10_000:
+              raise SystemExit(f'Approved reference download is unexpectedly small: {reference.stat().st_size} bytes')
+          print(f'Approved reference materialized locally: {reference.stat().st_size} bytes')
 
           client = Client('tencent/Hunyuan3D-2.1', verbose=False)
           info = client.view_api(print_info=False, return_format='dict')
@@ -64,7 +76,7 @@ jobs:
 
           result = client.predict(
               None,
-              handle_file(os.environ['REFERENCE_URL']),
+              handle_file(str(reference)),
               None, None, None, None,
               30,
               7.5,
