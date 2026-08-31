@@ -9,6 +9,7 @@ on:
       - '.github/workflows/runtime3d-sf3d-transfer.yml'
       - 'runtime3d/blender_transfer_pbr_candidate.py'
       - 'runtime3d/blender_transfer_pbr_embedded.py'
+      - 'runtime3d/blender_transfer_pbr_seamsafe.py'
       - 'runtime3d/validate_facial_motion_cubic.py'
 
 permissions:
@@ -42,6 +43,7 @@ jobs:
           echo 'PRESERVE_SKIN=true'
           echo 'PRESERVE_26_CLIPS=true'
           echo 'PRESERVE_SPARSE_FACE_LAYERS=true'
+          echo 'SEAM_SAFE_LOOP_UV=true'
           echo 'PRODUCTION_ACTIVATION=false'
           python3 - <<'PY'
           import json
@@ -115,7 +117,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
           blender --version | head -n 2
 
-      - name: Hydrate embedded PBR and transfer onto Motion V2 without topology changes
+      - name: Hydrate PBR and transfer seam-safe loop UVs onto Motion V2
         shell: bash
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -124,7 +126,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pbr-motion-v2/previews"
           blender --background \
-            --python runtime3d/blender_transfer_pbr_embedded.py -- \
+            --python runtime3d/blender_transfer_pbr_seamsafe.py -- \
             --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
             --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
             --output "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
@@ -134,6 +136,21 @@ jobs:
           test -s "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.qc.json"
           COUNT=$(find "$RUNNER_TEMP/pbr-motion-v2/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
           [[ "$COUNT" -eq 3 ]] || { echo "::error::Expected 3 QC renders, got $COUNT"; exit 1; }
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          qc=json.loads((Path(os.environ['RUNNER_TEMP'])/'pbr-motion-v2'/'police_dog.motion_v2_pbr_candidate.qc.json').read_text())
+          uv=qc.get('uvTransfer') or {}
+          if uv.get('algorithm') != 'nearest-donor-triangle + per-target-polygon loop-corner UV':
+              raise SystemExit('Seam-safe UV algorithm marker missing')
+          if int(uv.get('loopsWritten',0)) != int(uv.get('targetLoops',-1)):
+              raise SystemExit('Not all target UV loops were written')
+          if int(uv.get('donorUvSeamVertices',0)) <= 0:
+              raise SystemExit('Donor seam diagnostics unexpectedly empty')
+          if int(uv.get('targetVerticesWithPerLoopUvSplits',0)) <= 0:
+              raise SystemExit('Target did not preserve any per-loop UV splits')
+          print('SEAM_SAFE_LOOP_UV_GATE=PASS')
+          PY
 
       - name: Validate embedded PBR skin topology and all 26 clips
         shell: bash
@@ -162,7 +179,8 @@ jobs:
                             'skins':len(skins),'maxJoints':joints,'materials':len(mats),
                             'textures':len(tex),'images':len(imgs),'baseColorTexture':pbr_ok,
                             'normalTexture':normal_ok,'verticesBeforeAfter':vb,
-                            'polygonsBeforeAfter':pb,'previews':qc.get('previewFiles')},indent=2))
+                            'polygonsBeforeAfter':pb,'previews':qc.get('previewFiles'),
+                            'uvTransfer':qc.get('uvTransfer')},indent=2))
           if len(vb)!=2 or vb[0]!=vb[1]: raise SystemExit('Target vertex topology changed')
           if len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Target polygon topology changed')
           if missing or len(names)!=26 or len(skins)!=1 or joints < 32: raise SystemExit('Skin/animation preservation failed')
