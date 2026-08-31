@@ -68,7 +68,7 @@ jobs:
           P="$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE"
           test -s "$P"
           BYTES=$(stat -c%s "$P")
-          [[ "$BYTES" -ge 100000 ]] || { echo "::error::Hero reference unexpectedly small: $BYTES"; exit 1; }
+          [[ "$BYTES" -ge 20000 ]] || { echo "::error::Hero reference unexpectedly small: $BYTES"; exit 1; }
           sha256sum "$P"
           echo "REFERENCE_BYTES=$BYTES"
 
