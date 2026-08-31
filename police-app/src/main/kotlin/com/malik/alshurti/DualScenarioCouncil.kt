@@ -15,23 +15,19 @@ class ScenarioPlanValidator {
         if (plan.durationHintMs !in 500L..30_000L) return null
         if (plan.commands.size > 10 || plan.sounds.size > 8) return null
 
-        val allowedDogClips = Runtime3DAssetCatalog.dogCoreClips
-        val allowedStaffClips = Runtime3DAssetCatalog.staffCoreClips
-        val propClips = Runtime3DAssetCatalog.propClips
-
         val safeCommands = plan.commands.filter { command ->
             when (command.actor) {
-                SceneActorId.POLICE_DOG -> command.clip in allowedDogClips
+                SceneActorId.POLICE_DOG -> command.clip in Runtime3DAssetCatalog.dogCoreClips
                 SceneActorId.STAFF_MALE_01,
                 SceneActorId.STAFF_MALE_02,
                 SceneActorId.STAFF_FEMALE_01,
-                SceneActorId.VISITOR_01 -> command.clip in allowedStaffClips
+                SceneActorId.VISITOR_01 -> command.clip in Runtime3DAssetCatalog.staffCoreClips
                 SceneActorId.DOOR,
                 SceneActorId.PHONE,
                 SceneActorId.FILE,
                 SceneActorId.CHAIR,
                 SceneActorId.PRINTER,
-                SceneActorId.COFFEE_CUP -> command.clip in propClips[command.actor].orEmpty()
+                SceneActorId.COFFEE_CUP -> command.clip in Runtime3DAssetCatalog.propClips[command.actor].orEmpty()
                 SceneActorId.DESK,
                 SceneActorId.OFFICE_SHELL,
                 SceneActorId.MONITOR,
@@ -66,8 +62,8 @@ class ScenarioPlanValidator {
 }
 
 /**
- * Exactly two AI planners are consulted in parallel. Neither is allowed to stall the office: the
- * council has a hard deadline and returns null on timeout so LivingOfficeWorld continues instantly.
+ * Two AI planners are optional future-beat advisors. The office always has a local plan already
+ * running, so model/network latency is never allowed to become visible as a frozen world.
  */
 class DualScenarioCouncil(
     private val continuityPlanner: ScenarioProvider,
@@ -90,7 +86,8 @@ class DualScenarioCouncil(
         val selected = candidates.maxByOrNull { score(it) }
         selected?.let {
             recent.addLast(it)
-            while (recent.size > 8) recent.removeFirst()
+            while (recent.size > 10) recent.removeFirst()
+            RuntimeOfficePlanBus.publish(it)
         }
         return selected
     }
@@ -103,22 +100,18 @@ class DualScenarioCouncil(
         var score = 100
         val signature = signature(candidate)
         recent.forEachIndexed { index, previous ->
-            if (signature(previous) == signature) score -= 80 - index * 6
+            if (signature(previous) == signature) score -= 90 - index * 6
         }
 
         val actors = candidate.commands.map { it.actor }.distinct()
         score += actors.size.coerceAtMost(5) * 7
-
-        val distinctDelays = candidate.commands.map { it.delayMs / 250L }.distinct().size
-        score += distinctDelays.coerceAtMost(6) * 4
-
+        score += candidate.commands.map { it.delayMs / 250L }.distinct().size.coerceAtMost(6) * 4
         score += candidate.sounds.size.coerceAtMost(3) * 3
         if (candidate.sounds.size > 5) score -= 12
 
-        val cameraLooks = candidate.commands.count {
+        score -= candidate.commands.count {
             it.actor == SceneActorId.POLICE_DOG && it.clip == "LookAtCamera"
-        }
-        score -= cameraLooks * 18
+        } * 18
 
         val walkers = candidate.commands.count { it.channel == AnimationChannel.LOCOMOTION }
         if (walkers > 2) score -= (walkers - 2) * 15
@@ -129,6 +122,7 @@ class DualScenarioCouncil(
         plan.commands.map { Triple(it.actor, it.channel, it.clip) }
 
     private companion object {
-        const val PLANNING_DEADLINE_MS = 8_500L
+        // Sub-second advisory deadline: local runtime choreography must never wait for AI.
+        const val PLANNING_DEADLINE_MS = 650L
     }
 }
