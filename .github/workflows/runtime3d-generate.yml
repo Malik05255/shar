@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       reference_url:
-        description: Photorealistic isolated K9 hero candidate (public HTTPS PNG/JPG/WEBP)
+        description: Optional public hero reference URL for a deliberate manual run
         required: true
         default: https://raw.githubusercontent.com/Malik05255/shar/5902631c5df905c8535bd150f40c6c1adcc294b4/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp
-  # Deliberate one-shot trigger. Normal future runs remain workflow_dispatch-only
-  # unless this marker is intentionally changed, so free GPU quota is not burned.
+  # Deliberate one-shot trigger. A push-triggered run consumes the exact reference
+  # artifact from the successful free hero-reference workflow instead of re-downloading
+  # a binary through raw GitHub.
   push:
     branches:
       - fix/silent-listening-living-office
@@ -17,15 +18,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   free-provider-pool:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://raw.githubusercontent.com/Malik05255/shar/5902631c5df905c8535bd150f40c6c1adcc294b4/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp' }}
-      # Optional. Anonymous public Spaces remain usable when this secret is absent.
-      # If supplied, this must be a normal Hugging Face account token; no billing token is required.
+      REFERENCE_URL: ${{ github.event.inputs.reference_url || '' }}
+      HERO_REFERENCE_RUN_ID: '33391759260'
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
     steps:
@@ -50,6 +51,32 @@ jobs:
           print('REFERENCE_CLASS=isolated-photorealistic-k9-candidate')
           PY
 
+      - name: Download exact successful hero-reference artifact
+        if: github.event_name == 'push'
+        uses: actions/download-artifact@v4
+        with:
+          name: Runtime3D-photorealistic-hero-reference-candidate
+          path: ${{ runner.temp }}/hero-reference-artifact
+          github-token: ${{ github.token }}
+          repository: Malik05255/shar
+          run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
+
+      - name: Verify exact local reference bytes
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/hero-reference-artifact/police_dog.hero_reference.fullbody.png"
+          test -s "$SRC"
+          BYTES=$(stat -c%s "$SRC")
+          if (( BYTES < 10000 )); then
+            echo "::error::Downloaded hero artifact is too small: $BYTES"
+            exit 1
+          fi
+          cp "$SRC" "$RUNNER_TEMP/hero-reference-input.webp"
+          echo "hero_reference_artifact_bytes=$BYTES"
+          file "$RUNNER_TEMP/hero-reference-input.webp"
+
       - name: Install free provider clients
         run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
 
@@ -60,9 +87,15 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/runtime3d-provider-pool"
-          python3 runtime3d/free_provider_orchestrator.py \
-            --reference-url "$REFERENCE_URL" \
-            --output-dir "$RUNNER_TEMP/runtime3d-provider-pool"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            python3 runtime3d/free_provider_orchestrator.py \
+              --reference-file "$RUNNER_TEMP/hero-reference-input.webp" \
+              --output-dir "$RUNNER_TEMP/runtime3d-provider-pool"
+          else
+            python3 runtime3d/free_provider_orchestrator.py \
+              --reference-url "$REFERENCE_URL" \
+              --output-dir "$RUNNER_TEMP/runtime3d-provider-pool"
+          fi
 
       - name: Show provider rotation report
         if: always()
@@ -75,6 +108,7 @@ jobs:
           from pathlib import Path
           p = Path(os.environ['RUNNER_TEMP']) / 'runtime3d-provider-pool' / 'provider-pool-report.json'
           r = json.loads(p.read_text())
+          print(f"referenceBytes={r.get('referenceBytes')}")
           print(f"winner={r.get('winner')}")
           for a in r.get('attempts', []):
               print(f"{a.get('priority'):>3} {a.get('provider')}: {a.get('status')} - {a.get('reason', '')}")
