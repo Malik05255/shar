@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Create a non-production biped/canine armature candidate without reducing mesh detail.
 
-Run inside Blender in background mode. The script preserves the source hero mesh,
-creates a biped K9 skeleton from measured model bounds, uses Blender automatic bone
-heat weights, limits skinning to 4 influences per vertex, and exports a GLB candidate.
-It deliberately does NOT fabricate the production animation clip set.
+Run inside Blender in background mode. Blender imports glTF into its native Z-up world,
+so this script measures and rigs in Blender coordinates (X right, Y forward/back, Z up),
+then lets the glTF exporter convert back to the runtime's +Y-up convention.
+
+The script preserves the source hero mesh, creates a biped K9 skeleton from measured
+model bounds, uses Blender automatic bone-heat weights, limits skinning to 4 influences
+per vertex, and exports a GLB candidate. It deliberately does NOT fabricate the final
+production animation clip set.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -58,19 +61,25 @@ def main() -> None:
     lo, hi = world_bounds(meshes)
     ext = hi - lo
     cx = (lo.x + hi.x) * 0.5
-    cz = (lo.z + hi.z) * 0.5
-    h, w, d = ext.y, ext.x, ext.z
-    if h <= 0 or w <= 0 or d <= 0:
-        raise RuntimeError(f"Invalid model bounds: {lo[:]=} {hi[:]=}")
+    cy = (lo.y + hi.y) * 0.5
+    width, depth, height = ext.x, ext.y, ext.z
+    if height <= 0 or width <= 0 or depth <= 0:
+        raise RuntimeError(f"Invalid model bounds: min={tuple(lo)} max={tuple(hi)}")
+    # K9 candidate should clearly be portrait/upright after Blender import.
+    if height < max(width, depth) * 1.15:
+        raise RuntimeError(
+            f"Imported model is not sufficiently upright for biped rigging: "
+            f"width={width:.4f} depth={depth:.4f} height={height:.4f}"
+        )
 
-    def Y(t: float) -> float:
-        return lo.y + h * t
+    def Z(t: float) -> float:  # vertical in Blender
+        return lo.z + height * t
 
     def X(t: float) -> float:
-        return cx + w * t
+        return cx + width * t
 
-    def Z(t: float) -> float:
-        return cz + d * t
+    def Y(t: float) -> float:  # depth/forward offset from model center
+        return cy + depth * t
 
     bpy.ops.object.armature_add(enter_editmode=True, location=(0, 0, 0))
     arm_obj = bpy.context.object
@@ -86,8 +95,8 @@ def main() -> None:
         b = arm.edit_bones.new(name)
         b.head = Vector(head)
         b.tail = Vector(tail)
-        if (b.tail - b.head).length < h * 0.01:
-            b.tail.y += h * 0.02
+        if (b.tail - b.head).length < height * 0.01:
+            b.tail.z += height * 0.02
         if parent:
             b.parent = bones[parent]
             b.use_connect = connect
@@ -95,46 +104,46 @@ def main() -> None:
         bones[name] = b
         return b
 
-    # Central chain. Y is vertical; +Z is the character's forward direction.
-    bone("root", (cx, Y(0.36), cz), (cx, Y(0.42), cz), deform=False)
-    bone("pelvis", (cx, Y(0.36), cz), (cx, Y(0.48), Z(0.00)), "root")
-    bone("spine_01", (cx, Y(0.48), Z(0.00)), (cx, Y(0.59), Z(0.01)), "pelvis", True)
-    bone("spine_02", (cx, Y(0.59), Z(0.01)), (cx, Y(0.69), Z(0.01)), "spine_01", True)
-    bone("chest", (cx, Y(0.69), Z(0.01)), (cx, Y(0.76), Z(0.02)), "spine_02", True)
-    bone("neck", (cx, Y(0.76), Z(0.02)), (cx, Y(0.82), Z(0.05)), "chest", True)
-    bone("head", (cx, Y(0.82), Z(0.05)), (cx, Y(0.94), Z(0.08)), "neck", True)
-    bone("jaw", (cx, Y(0.83), Z(0.10)), (cx, Y(0.84), Z(0.31)), "head", False, True)
-    bone("muzzle_ctrl", (cx, Y(0.86), Z(0.18)), (cx, Y(0.86), Z(0.30)), "head", False, False)
-    bone("eye.L", (X(-0.09), Y(0.88), Z(0.16)), (X(-0.09), Y(0.88), Z(0.24)), "head", False, False)
-    bone("eye.R", (X(0.09), Y(0.88), Z(0.16)), (X(0.09), Y(0.88), Z(0.24)), "head", False, False)
-    bone("ear.L", (X(-0.12), Y(0.91), Z(0.02)), (X(-0.17), Y(0.995), Z(0.00)), "head", False, True)
-    bone("ear.R", (X(0.12), Y(0.91), Z(0.02)), (X(0.17), Y(0.995), Z(0.00)), "head", False, True)
+    # Central chain. Blender is Z-up; negative Y is treated as character forward here.
+    bone("root", (cx, cy, Z(0.36)), (cx, cy, Z(0.42)), deform=False)
+    bone("pelvis", (cx, cy, Z(0.36)), (cx, Y(0.00), Z(0.48)), "root")
+    bone("spine_01", (cx, Y(0.00), Z(0.48)), (cx, Y(-0.01), Z(0.59)), "pelvis", True)
+    bone("spine_02", (cx, Y(-0.01), Z(0.59)), (cx, Y(-0.01), Z(0.69)), "spine_01", True)
+    bone("chest", (cx, Y(-0.01), Z(0.69)), (cx, Y(-0.02), Z(0.76)), "spine_02", True)
+    bone("neck", (cx, Y(-0.02), Z(0.76)), (cx, Y(-0.05), Z(0.82)), "chest", True)
+    bone("head", (cx, Y(-0.05), Z(0.82)), (cx, Y(-0.08), Z(0.94)), "neck", True)
+    bone("jaw", (cx, Y(-0.10), Z(0.83)), (cx, Y(-0.31), Z(0.84)), "head", False, True)
+    bone("muzzle_ctrl", (cx, Y(-0.18), Z(0.86)), (cx, Y(-0.30), Z(0.86)), "head", False, False)
+    bone("eye.L", (X(-0.09), Y(-0.16), Z(0.88)), (X(-0.09), Y(-0.24), Z(0.88)), "head", False, False)
+    bone("eye.R", (X(0.09), Y(-0.16), Z(0.88)), (X(0.09), Y(-0.24), Z(0.88)), "head", False, False)
+    bone("ear.L", (X(-0.12), Y(-0.02), Z(0.91)), (X(-0.17), Y(0.00), Z(0.995)), "head", False, True)
+    bone("ear.R", (X(0.12), Y(-0.02), Z(0.91)), (X(0.17), Y(0.00), Z(0.995)), "head", False, True)
 
-    # Arms follow the current relaxed-down source pose to make automatic weighting stable.
+    # Arms follow the relaxed-down source pose to improve automatic weighting stability.
     for side, s in (("L", -1.0), ("R", 1.0)):
         sx = 0.26 * s
         ex = 0.39 * s
         wx = 0.42 * s
         hx = 0.43 * s
-        bone(f"clavicle.{side}", (cx, Y(0.72), Z(0.01)), (X(sx), Y(0.72), Z(0.01)), "chest")
-        bone(f"upper_arm.{side}", (X(sx), Y(0.72), Z(0.01)), (X(ex), Y(0.53), Z(0.01)), f"clavicle.{side}", True)
-        bone(f"forearm.{side}", (X(ex), Y(0.53), Z(0.01)), (X(wx), Y(0.36), Z(0.04)), f"upper_arm.{side}", True)
-        bone(f"hand.{side}", (X(wx), Y(0.36), Z(0.04)), (X(hx), Y(0.27), Z(0.10)), f"forearm.{side}", True)
+        bone(f"clavicle.{side}", (cx, Y(-0.01), Z(0.72)), (X(sx), Y(-0.01), Z(0.72)), "chest")
+        bone(f"upper_arm.{side}", (X(sx), Y(-0.01), Z(0.72)), (X(ex), Y(-0.01), Z(0.53)), f"clavicle.{side}", True)
+        bone(f"forearm.{side}", (X(ex), Y(-0.01), Z(0.53)), (X(wx), Y(-0.04), Z(0.36)), f"upper_arm.{side}", True)
+        bone(f"hand.{side}", (X(wx), Y(-0.04), Z(0.36)), (X(hx), Y(-0.10), Z(0.27)), f"forearm.{side}", True)
 
-    # Legs and feet.
+    # Digitigrade legs and feet.
     for side, s in (("L", -1.0), ("R", 1.0)):
         hx = 0.14 * s
         kx = 0.16 * s
         ax = 0.16 * s
-        bone(f"thigh.{side}", (X(hx), Y(0.38), Z(0.00)), (X(kx), Y(0.23), Z(0.01)), "pelvis")
-        bone(f"shin.{side}", (X(kx), Y(0.23), Z(0.01)), (X(ax), Y(0.075), Z(0.00)), f"thigh.{side}", True)
-        bone(f"foot.{side}", (X(ax), Y(0.075), Z(0.00)), (X(ax), Y(0.025), Z(0.27)), f"shin.{side}", True)
-        bone(f"toe.{side}", (X(ax), Y(0.025), Z(0.27)), (X(ax), Y(0.025), Z(0.43)), f"foot.{side}", True)
+        bone(f"thigh.{side}", (X(hx), Y(0.00), Z(0.38)), (X(kx), Y(-0.01), Z(0.23)), "pelvis")
+        bone(f"shin.{side}", (X(kx), Y(-0.01), Z(0.23)), (X(ax), Y(0.00), Z(0.075)), f"thigh.{side}", True)
+        bone(f"foot.{side}", (X(ax), Y(0.00), Z(0.075)), (X(ax), Y(-0.27), Z(0.025)), f"shin.{side}", True)
+        bone(f"toe.{side}", (X(ax), Y(-0.27), Z(0.025)), (X(ax), Y(-0.43), Z(0.025)), f"foot.{side}", True)
 
-    # Tail chain; rear is -Z for this reconstruction.
-    bone("tail_01", (cx, Y(0.38), Z(-0.16)), (cx, Y(0.29), Z(-0.29)), "pelvis")
-    bone("tail_02", (cx, Y(0.29), Z(-0.29)), (X(0.05), Y(0.20), Z(-0.40)), "tail_01", True)
-    bone("tail_03", (X(0.05), Y(0.20), Z(-0.40)), (X(0.12), Y(0.15), Z(-0.47)), "tail_02", True)
+    # Tail chain. Positive Y is rear for this reconstruction.
+    bone("tail_01", (cx, Y(0.16), Z(0.38)), (cx, Y(0.29), Z(0.29)), "pelvis")
+    bone("tail_02", (cx, Y(0.29), Z(0.29)), (X(0.05), Y(0.40), Z(0.20)), "tail_01", True)
+    bone("tail_03", (X(0.05), Y(0.40), Z(0.20)), (X(0.12), Y(0.47), Z(0.15)), "tail_02", True)
 
     bpy.ops.object.mode_set(mode="OBJECT")
     arm_obj.show_in_front = True
@@ -150,13 +159,14 @@ def main() -> None:
     except RuntimeError as exc:
         raise RuntimeError(f"Blender automatic weights failed; refusing lower-quality fallback: {exc}") from exc
 
-    # Enforce the runtime contract: at most four influences per vertex, then normalize.
+    # Enforce runtime/mobile skinning constraints: max four influences per vertex.
     total_vertices = 0
     unweighted = 0
     max_influences = 0
     for obj in meshes:
-        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
         bpy.ops.object.vertex_group_limit_total(limit=4)
         bpy.ops.object.vertex_group_normalize_all(lock_active=False)
         total_vertices += len(obj.data.vertices)
@@ -165,11 +175,13 @@ def main() -> None:
             if not weighted:
                 unweighted += 1
             max_influences = max(max_influences, len(weighted))
-        obj.select_set(False)
 
     unweighted_ratio = unweighted / max(1, total_vertices)
     if unweighted_ratio > 0.005:
-        raise RuntimeError(f"Too many unweighted vertices after automatic weighting: {unweighted}/{total_vertices} ({unweighted_ratio:.4%})")
+        raise RuntimeError(
+            f"Too many unweighted vertices after automatic weighting: "
+            f"{unweighted}/{total_vertices} ({unweighted_ratio:.4%})"
+        )
     if max_influences > 4:
         raise RuntimeError(f"Skinning influence limit violated: {max_influences}")
 
@@ -198,11 +210,13 @@ def main() -> None:
     )
 
     qc = {
-        "source": str(args.input.name),
-        "output": str(args.output.name),
+        "source": args.input.name,
+        "output": args.output.name,
         "productionReady": False,
         "qualityDowngradeAllowed": False,
         "decimationApplied": False,
+        "coordinateSystemInBlender": "X right, Y depth, Z up",
+        "exportCoordinateSystem": "glTF +Y up",
         "meshObjects": len(meshes),
         "vertices": before_vertices,
         "polygons": before_polygons,
