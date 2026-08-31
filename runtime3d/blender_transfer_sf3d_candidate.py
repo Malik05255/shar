@@ -5,6 +5,12 @@ This wrapper keeps the topology/rig/animation preservation logic in the shared t
 module, but replaces Blender's fragile temporary GLB image references with BaseColor and
 Normal files extracted directly from the donor GLB. The final shader graph uses standard
 glTF-compatible nodes so both textures must be embedded in the exported GLB.
+
+For the very dense animated hero, UV projection is executed with Blender's native Data
+Transfer modifier against normalized temporary mesh copies. This preserves the original
+nearest-face/interpolated intent while moving the expensive surface lookup from a
+1.3M-iteration Python loop into Blender's compiled geometry code. The target topology,
+coordinates, skin weights, armature, and actions are never replaced or decimated.
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 import blender_transfer_pbr_candidate as base
@@ -38,6 +45,127 @@ def required_texture_path(env_name: str) -> Path:
 def clear_input_links(tree: bpy.types.NodeTree, socket) -> None:
     for link in list(socket.links):
         tree.links.remove(link)
+
+
+def _normalized_mesh_proxy(source: bpy.types.Object, name: str) -> tuple[bpy.types.Object, bpy.types.Mesh]:
+    """Create a temporary geometry-identical mesh normalized to a unit bounding box.
+
+    Normalization matches the previous Python BVH transfer semantics axis-by-axis, but
+    uses foreach_get/foreach_set + NumPy so coordinate preparation is vectorized.
+    """
+    mesh = source.data.copy()
+    proxy = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(proxy)
+    proxy.matrix_world.identity()
+
+    count = len(mesh.vertices)
+    if count == 0:
+        raise RuntimeError(f"Cannot normalize empty mesh proxy: {name}")
+    coords = np.empty(count * 3, dtype=np.float64)
+    mesh.vertices.foreach_get('co', coords)
+    xyz = coords.reshape((-1, 3))
+    mn = xyz.min(axis=0)
+    mx = xyz.max(axis=0)
+    ext = np.maximum(mx - mn, 1e-8)
+    xyz = (xyz - mn) / ext
+    mesh.vertices.foreach_set('co', np.ascontiguousarray(xyz.reshape(-1), dtype=np.float64))
+    mesh.update()
+    return proxy, mesh
+
+
+def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> dict[str, object]:
+    """Transfer donor UVs with Blender's compiled nearest-face interpolation.
+
+    Temporary normalized target/donor copies reproduce the unit-bounds spatial mapping
+    used by the former Python BVH implementation. Data Transfer operates on loop UVs,
+    retaining donor UV seams instead of averaging them down to one UV per vertex.
+    Only the resulting UV loop data is copied back to the real animated target.
+    """
+    if not donor.data.materials:
+        raise RuntimeError("Donor mesh has no material slots")
+    if donor.data.uv_layers.active is None:
+        raise RuntimeError("Textured donor has no active UV map")
+
+    target_proxy = donor_proxy = None
+    target_proxy_mesh = donor_proxy_mesh = None
+    try:
+        target_proxy, target_proxy_mesh = _normalized_mesh_proxy(target, 'SF3D_UV_TARGET_PROXY')
+        donor_proxy, donor_proxy_mesh = _normalized_mesh_proxy(donor, 'SF3D_UV_DONOR_PROXY')
+
+        source_uv = donor_proxy_mesh.uv_layers.active
+        if source_uv is None:
+            raise RuntimeError("Normalized donor proxy lost its active UV map")
+        destination_uv = target_proxy_mesh.uv_layers.active
+        if destination_uv is None:
+            destination_uv = target_proxy_mesh.uv_layers.new(name='GeometryAwarePBR_UV')
+
+        # Execute nearest source polygon + interpolated loop data in Blender's C core.
+        mod = target_proxy.modifiers.new(name='SF3D_NATIVE_UV_TRANSFER', type='DATA_TRANSFER')
+        mod.object = donor_proxy
+        mod.use_loop_data = True
+        mod.data_types_loops = {'UV'}
+        mod.loop_mapping = 'POLYINTERP_NEAREST'
+        mod.layers_uv_select_src = 'ACTIVE'
+        mod.layers_uv_select_dst = 'ACTIVE'
+        mod.mix_mode = 'REPLACE'
+        mod.mix_factor = 1.0
+
+        bpy.ops.object.select_all(action='DESELECT')
+        target_proxy.select_set(True)
+        bpy.context.view_layer.objects.active = target_proxy
+        result = bpy.ops.object.modifier_apply(modifier=mod.name)
+        if 'FINISHED' not in result:
+            raise RuntimeError(f"Native UV Data Transfer did not finish: {result}")
+
+        transferred_uv = target_proxy_mesh.uv_layers.active
+        if transferred_uv is None:
+            raise RuntimeError("Native UV Data Transfer produced no destination UV layer")
+        if len(transferred_uv.data) != len(target.data.loops):
+            raise RuntimeError(
+                f"UV loop cardinality changed on proxy: {len(transferred_uv.data)} != {len(target.data.loops)}"
+            )
+
+        # Copy only UV loop coordinates back. No target geometry data is replaced.
+        uv_buffer = np.empty(len(transferred_uv.data) * 2, dtype=np.float32)
+        transferred_uv.data.foreach_get('uv', uv_buffer)
+        if not bool(np.isfinite(uv_buffer).all()):
+            raise RuntimeError("Native UV Data Transfer produced non-finite UV coordinates")
+        uv_pairs = uv_buffer.reshape((-1, 2))
+        uv_min = uv_pairs.min(axis=0)
+        uv_max = uv_pairs.max(axis=0)
+        uv_span = uv_max - uv_min
+        if float(max(uv_span[0], uv_span[1])) < 1e-6:
+            raise RuntimeError(f"Native UV Data Transfer produced a degenerate UV map: span={uv_span.tolist()}")
+
+        real_uv = target.data.uv_layers.active
+        if real_uv is None:
+            real_uv = target.data.uv_layers.new(name='GeometryAwarePBR_UV')
+        if len(real_uv.data) != len(transferred_uv.data):
+            raise RuntimeError("Real target UV loop count does not match normalized transfer proxy")
+        real_uv.data.foreach_set('uv', uv_buffer)
+        target.data.update()
+
+        qc = {
+            'targetVertices': len(target.data.vertices),
+            'targetLoops': len(target.data.loops),
+            'donorVertices': len(donor.data.vertices),
+            'donorPolygons': len(donor.data.polygons),
+            'method': 'BLENDER_DATA_TRANSFER_POLYINTERP_NEAREST_NORMALIZED',
+            'compiledGeometryLookup': True,
+            'loopUvSeamsPreserved': True,
+            'targetTopologyChanged': False,
+            'uvMin': [float(uv_min[0]), float(uv_min[1])],
+            'uvMax': [float(uv_max[0]), float(uv_max[1])],
+        }
+        print('SF3D_NATIVE_UV_TRANSFER=' + __import__('json').dumps(qc, indent=2), flush=True)
+        return qc
+    finally:
+        for proxy in (target_proxy, donor_proxy):
+            if proxy is not None and proxy.name in bpy.data.objects:
+                bpy.data.objects.remove(proxy, do_unlink=True)
+        for mesh in (target_proxy_mesh, donor_proxy_mesh):
+            if mesh is not None and mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
 
 
 def force_cpu_decode_and_pack(image: bpy.types.Image, path: Path, label: str) -> None:
@@ -243,6 +371,7 @@ def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
     return outputs
 
 
+base.transfer_uvs = transfer_uvs_native
 base.copy_materials = copy_materials_with_physical_defaults
 base.ensure_images_packed = ensure_file_backed_images_ready
 base.setup_preview = setup_preview_compat
