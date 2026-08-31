@@ -1,0 +1,30 @@
+name: Probe Free Hunyuan3D Space API
+
+on:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/hunyuan-free-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install Gradio client only
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
+
+      - name: Inspect official Tencent Hunyuan3D-2.1 public API
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from gradio_client import Client
+          client = Client('tencent/Hunyuan3D-2.1', verbose=False)
+          info = client.view_api(print_info=False, return_format='dict')
+          print(info)
+          PY
