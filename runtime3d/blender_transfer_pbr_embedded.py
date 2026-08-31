@@ -13,10 +13,19 @@ from __future__ import annotations
 import base64
 import json
 import struct
+import sys
 from pathlib import Path
 from typing import Any
 
 import bpy
+
+# Blender's --python execution does not consistently add the script directory to
+# sys.path. Resolve the sibling transfer module explicitly so headless CI behaves the
+# same regardless of the runner's working directory.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 import blender_transfer_pbr_candidate as base
 
 ARGS = base.args_after_dash()
