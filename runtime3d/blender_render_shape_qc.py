@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -64,6 +63,17 @@ def make_clay_material() -> bpy.types.Material:
     return mat
 
 
+def select_eevee_engine(scene: bpy.types.Scene) -> str:
+    """Use the Eevee identifier exposed by the exact Blender build."""
+    available = {item.identifier for item in scene.bl_rna.properties["render"].fixed_type.properties["engine"].enum_items}
+    for candidate in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
+        if candidate in available:
+            scene.render.engine = candidate
+            return candidate
+    scene.render.engine = "BLENDER_WORKBENCH"
+    return "BLENDER_WORKBENCH"
+
+
 def main() -> int:
     args = parse_args()
     if not args.input.is_file() or args.input.stat().st_size < 100_000:
@@ -97,7 +107,7 @@ def main() -> int:
         raise RuntimeError("Degenerate GLB bounds")
 
     scene = bpy.context.scene
-    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    render_engine = select_eevee_engine(scene)
     scene.render.resolution_x = 900
     scene.render.resolution_y = 1200
     scene.render.resolution_percentage = 100
@@ -155,6 +165,7 @@ def main() -> int:
         "worldBoundsMin": [float(v) for v in mn],
         "worldBoundsMax": [float(v) for v in mx],
         "worldExtent": [float(v) for v in extent],
+        "renderEngine": render_engine,
         "renderedViews": rendered,
         "semanticOrientationClaimed": False,
         "materialMode": "temporary-neutral-clay-preview-only",
