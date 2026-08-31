@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Free-first 3D candidate orchestrator.
+"""Free-first 3D candidate orchestrator with automatic provider failover.
 
-The orchestrator walks runtime3d/free_provider_pool.json in priority order.
-It only executes providers explicitly marked automatedInGithub=true, never invokes a
-paid provider, and stops on the first structurally valid GLB candidate. On later runs,
-if the first provider has exhausted its normal free quota or is unavailable, the
-exception is recorded and the next free provider is attempted.
-
-A structurally valid candidate is NOT production-ready. The cinematic identity/PBR/
-rig/animation/device acceptance gates remain mandatory.
+Only providers marked automatedInGithub=true are invoked. Paid fallback is forbidden.
+The first provider that produces a structurally valid GLB wins for that run; if a free
+quota is exhausted or a provider is unavailable, the next provider is attempted.
+Production activation remains gated by visual identity/PBR/rig/animation/device checks.
 """
 
 from __future__ import annotations
@@ -16,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -36,8 +33,7 @@ def load_registry(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not data.get("freeOnly") or not data.get("stopBeforePaid"):
         raise RuntimeError("Provider registry must be freeOnly=true and stopBeforePaid=true")
-    providers = data.get("providers") or []
-    if not providers:
+    if not data.get("providers"):
         raise RuntimeError("Provider registry contains no providers")
     return data
 
@@ -46,7 +42,7 @@ def download_reference(url: str, destination: Path) -> None:
     if not url.startswith("https://"):
         raise RuntimeError("Reference URL must use HTTPS")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-free-provider-pool/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-free-provider-pool/1.1"})
     with urllib.request.urlopen(req, timeout=90) as response, destination.open("wb") as handle:
         shutil.copyfileobj(response, handle)
     if destination.stat().st_size < 10_000:
@@ -54,7 +50,6 @@ def download_reference(url: str, destination: Path) -> None:
 
 
 def _existing_glb(value: Any) -> Path | None:
-    """Find a materialized .glb path in nested Gradio return objects."""
     if value is None:
         return None
     if isinstance(value, Path):
@@ -63,7 +58,6 @@ def _existing_glb(value: Any) -> Path | None:
         candidate = Path(value)
         return candidate if candidate.suffix.lower() == ".glb" and candidate.exists() else None
     if isinstance(value, dict):
-        # Gradio updates/file objects may nest the real path under these keys.
         for key in ("path", "value", "name", "file", "data"):
             if key in value:
                 found = _existing_glb(value[key])
@@ -92,77 +86,99 @@ def _client(space: str):
     return Client(space, **kwargs)
 
 
-def _endpoint(client: Any, needle: str) -> str:
+def _endpoint_info(client: Any, needle: str) -> tuple[str, dict[str, Any]]:
     info = client.view_api(print_info=False, return_format="dict")
     named = info.get("named_endpoints") or {}
     endpoint = next((name for name in named if needle in name), None)
     if not endpoint:
         raise RuntimeError(f"Space does not expose {needle}; endpoints={list(named)}")
-    return endpoint
+    return endpoint, named[endpoint]
+
+
+def _sanitize(name: str) -> str:
+    name = re.sub(r"\W", "_", name.strip())
+    if name and name[0].isdigit():
+        name = "_" + name
+    return name
+
+
+def _shape_call(client: Any, endpoint: str, endpoint_info: dict[str, Any], reference: Path, octree: int) -> tuple[Any, list[str]]:
+    """Build kwargs from the live Gradio schema instead of assuming input positions.
+
+    Gradio State components can disappear from the public API, which changes positional
+    indexes. Using parameter names makes provider adapters resilient to those changes.
+    """
+    from gradio_client import handle_file
+
+    kwargs: dict[str, Any] = {}
+    exposed: list[str] = []
+    for parameter in endpoint_info.get("parameters") or []:
+        raw_name = str(parameter.get("parameter_name") or parameter.get("label") or "").strip()
+        if not raw_name:
+            continue
+        name = _sanitize(raw_name)
+        exposed.append(name)
+        lower = name.lower()
+
+        if lower == "image" or lower.endswith("_image") and not lower.startswith("mv_"):
+            kwargs[name] = handle_file(str(reference))
+        elif lower == "caption":
+            kwargs[name] = None
+        elif lower.startswith("mv_image_"):
+            kwargs[name] = None
+        elif lower in {"steps", "num_steps"}:
+            kwargs[name] = 30
+        elif lower in {"guidance_scale", "cfg_scale"}:
+            kwargs[name] = 7.5
+        elif lower == "seed":
+            kwargs[name] = 1234
+        elif lower == "octree_resolution":
+            kwargs[name] = octree
+        elif lower in {"check_box_rembg", "remove_background"}:
+            kwargs[name] = True
+        elif lower == "num_chunks":
+            kwargs[name] = 200000
+        elif lower == "randomize_seed":
+            kwargs[name] = False
+        elif parameter.get("parameter_has_default"):
+            # Let the remote app apply its own declared default.
+            continue
+        else:
+            # Unknown required inputs are safer as explicit None than guessing a value.
+            kwargs[name] = None
+
+    if not any(k.lower() == "image" for k in kwargs):
+        raise RuntimeError(f"Shape endpoint exposes no image parameter; parameters={exposed}")
+
+    result = client.predict(api_name=endpoint, **kwargs)
+    return result, exposed
+
+
+def _run_hunyuan(provider: dict[str, Any], reference: Path, octree: int) -> tuple[Path, dict[str, Any]]:
+    client = _client(str(provider["space"]))
+    endpoint, info = _endpoint_info(client, "shape_generation")
+    result, parameters = _shape_call(client, endpoint, info, reference, octree)
+    path = _existing_glb(result)
+    if not path:
+        raise RuntimeError(f"{provider['id']} returned no materialized GLB: {type(result).__name__}")
+    return path, {
+        "space": provider["space"],
+        "endpoint": endpoint,
+        "exposedParameters": parameters,
+        "inferenceSteps": 30,
+        "guidanceScale": 7.5,
+        "seed": 1234,
+        "octreeResolution": octree,
+        "textured": False,
+    }
 
 
 def run_hf_hunyuan21(provider: dict[str, Any], reference: Path) -> tuple[Path, dict[str, Any]]:
-    from gradio_client import handle_file
-
-    client = _client(str(provider["space"]))
-    endpoint = _endpoint(client, "shape_generation")
-    result = client.predict(
-        None,
-        handle_file(str(reference)),
-        None,
-        None,
-        None,
-        None,
-        30,
-        7.5,
-        1234,
-        384,
-        True,
-        200000,
-        False,
-        api_name=endpoint,
-    )
-    path = _existing_glb(result)
-    if not path:
-        raise RuntimeError(f"Hunyuan3D-2.1 returned no materialized GLB: {type(result).__name__}")
-    return path, {
-        "space": provider["space"],
-        "endpoint": endpoint,
-        "inferenceSteps": 30,
-        "guidanceScale": 7.5,
-        "seed": 1234,
-        "octreeResolution": 384,
-        "textured": False,
-    }
+    return _run_hunyuan(provider, reference, 384)
 
 
 def run_hf_hunyuan2(provider: dict[str, Any], reference: Path) -> tuple[Path, dict[str, Any]]:
-    from gradio_client import handle_file
-
-    client = _client(str(provider["space"]))
-    endpoint = _endpoint(client, "shape_generation")
-    result = client.predict(
-        None,
-        handle_file(str(reference)),
-        30,
-        7.5,
-        1234,
-        256,
-        True,
-        api_name=endpoint,
-    )
-    path = _existing_glb(result)
-    if not path:
-        raise RuntimeError(f"Hunyuan3D-2 returned no materialized GLB: {type(result).__name__}")
-    return path, {
-        "space": provider["space"],
-        "endpoint": endpoint,
-        "inferenceSteps": 30,
-        "guidanceScale": 7.5,
-        "seed": 1234,
-        "octreeResolution": 256,
-        "textured": False,
-    }
+    return _run_hunyuan(provider, reference, 256)
 
 
 ADAPTERS = {
@@ -199,7 +215,6 @@ def structural_gate(path: Path, registry: dict[str, Any]) -> dict[str, int]:
 
 def safe_reason(exc: BaseException) -> str:
     text = str(exc).replace("\n", " ").strip()
-    # Do not leak tokens/headers if a dependency includes them in an exception.
     for env_name in ("HF_TOKEN", "TRIPO_API_KEY"):
         secret = os.environ.get(env_name, "")
         if secret:
@@ -218,7 +233,6 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     reference = args.output_dir / "approved-master-reference.png"
     report_path = args.output_dir / "provider-pool-report.json"
-
     report: dict[str, Any] = {
         "startedAt": utc_now(),
         "freeOnly": True,
@@ -255,11 +269,10 @@ def main() -> int:
             attempt["finishedAt"] = utc_now()
             continue
 
-        adapter_name = provider.get("adapter")
-        adapter = ADAPTERS.get(str(adapter_name))
+        adapter = ADAPTERS.get(str(provider.get("adapter")))
         if adapter is None:
             attempt["status"] = "skipped-no-safe-adapter"
-            attempt["reason"] = f"No free-only adapter registered for {adapter_name}"
+            attempt["reason"] = f"No free-only adapter registered for {provider.get('adapter')}"
             attempt["finishedAt"] = utc_now()
             continue
 
@@ -269,26 +282,26 @@ def main() -> int:
             gate = structural_gate(source_path, registry)
             target = args.output_dir / f"police_dog.{provider['id']}.candidate.glb"
             shutil.copy2(source_path, target)
-            candidate_meta = {
-                "provider": provider["id"],
-                "providerClass": provider.get("class"),
-                "costMode": "free-only",
-                "sourceImage": args.reference_url,
-                "structuralGate": gate,
-                "adapterMetadata": metadata,
-                "productionReady": False,
-                "requiredNextStages": [
-                    "visual identity comparison",
-                    "authored PBR/fur/uniform finishing",
-                    "quadruped and facial rig",
-                    "required named animation clips",
-                    "Arabic viseme/lip-sync validation",
-                    "physical Android acceptance gate"
-                ],
-            }
-            meta_path = target.with_suffix(".json")
-            meta_path.write_text(json.dumps(candidate_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
+            target.with_suffix(".json").write_text(
+                json.dumps({
+                    "provider": provider["id"],
+                    "providerClass": provider.get("class"),
+                    "costMode": "free-only",
+                    "sourceImage": args.reference_url,
+                    "structuralGate": gate,
+                    "adapterMetadata": metadata,
+                    "productionReady": False,
+                    "requiredNextStages": [
+                        "visual identity comparison",
+                        "authored PBR/fur/uniform finishing",
+                        "quadruped and facial rig",
+                        "required named animation clips",
+                        "Arabic viseme/lip-sync validation",
+                        "physical Android acceptance gate"
+                    ]
+                }, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
             attempt.update({
                 "status": "success",
                 "elapsedSeconds": round(time.monotonic() - t0, 2),
@@ -308,11 +321,9 @@ def main() -> int:
             })
             print(f"::warning::Free provider {provider.get('id')} failed: {attempt['reason']}", flush=True)
             traceback.print_exc()
-            continue
 
     report["finishedAt"] = utc_now()
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
     if report["winner"]:
         print(f"FREE_PROVIDER_WINNER={report['winner']}")
         print(f"FREE_PROVIDER_CANDIDATE={report['winnerCandidate']}")
