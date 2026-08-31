@@ -8,17 +8,16 @@ import com.malik.alshurti.neural.PcmSpeechEnergy
 import com.malik.alshurti.voice.GeminiSilentListener
 import com.malik.alshurti.voice.OfflineArabicListener
 import com.malik.alshurti.voice.SaudiHumanVoice
-import com.malik.alshurti.voice.SystemArabicVoice
 
 /**
- * Hybrid failover half-duplex voice coordinator.
+ * Natural-voice half-duplex coordinator.
  *
- * Reliability order for speech output is intentionally independent:
- *   Gemini natural voice -> Android system TTS -> local Supertonic.
+ * Speech output intentionally has no Android system TTS path. The only allowed voices are:
+ *   1) Gemini natural Saudi voice while online;
+ *   2) local neural Supertonic when available/offline.
  *
- * The local ASR/TTS packs are still prepared for offline operation, but the app no longer locks
- * itself into an OFFLINE-only state merely because those packs are installed. That old policy made
- * one device-specific Supertonic playback problem capable of silencing the whole application.
+ * A failed natural/neural backend must surface as an error or fall through to the other neural
+ * backend. It must never silently degrade to a robotic platform TextToSpeech voice.
  */
 class PoliceVoiceEngine(
     private val context: Context,
@@ -38,7 +37,7 @@ class PoliceVoiceEngine(
         fun onViseme(viseme: MouthViseme)
     }
 
-    private enum class SpeechBackend { NONE, CLOUD, SYSTEM, LOCAL }
+    private enum class SpeechBackend { NONE, CLOUD, LOCAL }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mode: VoiceMode = VoiceMode.ONLINE
@@ -51,7 +50,6 @@ class PoliceVoiceEngine(
     private var readyReported = false
     private var localTtsReady = false
     private var cloudTtsReady = false
-    private var systemTtsReady = false
     private var localAsrReady = false
     private var activeSpeechBackend = SpeechBackend.NONE
     private val attemptedSpeechBackends = linkedSetOf<SpeechBackend>()
@@ -122,7 +120,7 @@ class PoliceVoiceEngine(
         context = context.applicationContext,
         callbacks = object : NeuralArabicVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
-                if (!readyReported && !cloudTtsReady && !systemTtsReady) {
+                if (!readyReported && !cloudTtsReady) {
                     listener.onTtsPreparing(percent, message)
                 }
             }
@@ -190,41 +188,6 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val systemVoice: SystemArabicVoice = SystemArabicVoice(
-        context = context.applicationContext,
-        callbacks = object : SystemArabicVoice.Callbacks {
-            override fun onPreparing(message: String) {
-                if (!readyReported && !cloudTtsReady) listener.onTtsPreparing(5, message)
-            }
-
-            override fun onReady() {
-                systemTtsReady = true
-                maybeReportReady()
-            }
-
-            override fun onSpeechStarted(durationMs: Long) {
-                if (activeSpeechBackend == SpeechBackend.SYSTEM) handleSpeechStarted()
-            }
-
-            override fun onSpeechCursor(fraction: Float) {
-                if (activeSpeechBackend == SpeechBackend.SYSTEM) handleSpeechCursor(fraction)
-            }
-
-            override fun onSpeechFinished() {
-                if (activeSpeechBackend == SpeechBackend.SYSTEM) handleSpeechFinished()
-            }
-
-            override fun onError(message: String) {
-                if (activeSpeechBackend == SpeechBackend.SYSTEM) {
-                    failActiveSpeechBackend(message)
-                } else {
-                    systemTtsReady = false
-                    maybeReportReady()
-                }
-            }
-        }
-    )
-
     fun localModelsInstalled(): Boolean =
         offlineListener.isModelInstalled() && localVoice.isModelInstalled()
 
@@ -234,14 +197,11 @@ class PoliceVoiceEngine(
     )
 
     fun setMode(newMode: VoiceMode) {
-        // Never silently rewrite ONLINE into strict OFFLINE. Local engines remain available, but
-        // keeping the hybrid mode allows independent failover when one Android audio path is bad.
         mode = newMode
         stopListening()
         interruptSpeech()
         observerHasSpoken = false
         readyReported = false
-        systemVoice.prepare()
 
         when (newMode) {
             VoiceMode.OFFLINE -> {
@@ -279,7 +239,6 @@ class PoliceVoiceEngine(
         attemptedSpeechBackends.clear()
         localVoice.interrupt()
         saudiVoice.interrupt()
-        systemVoice.interrupt()
         activeSpeechBackend = SpeechBackend.NONE
         resetMouth()
     }
@@ -305,7 +264,6 @@ class PoliceVoiceEngine(
         silentListener.release()
         localVoice.release()
         saudiVoice.release()
-        systemVoice.release()
         activeSpeechBackend = SpeechBackend.NONE
         resetMouth()
     }
@@ -315,7 +273,6 @@ class PoliceVoiceEngine(
 
         val next = when {
             mode == VoiceMode.ONLINE && cloudTtsReady && SpeechBackend.CLOUD !in attemptedSpeechBackends -> SpeechBackend.CLOUD
-            systemTtsReady && SpeechBackend.SYSTEM !in attemptedSpeechBackends -> SpeechBackend.SYSTEM
             localTtsReady && SpeechBackend.LOCAL !in attemptedSpeechBackends -> SpeechBackend.LOCAL
             else -> SpeechBackend.NONE
         }
@@ -323,7 +280,7 @@ class PoliceVoiceEngine(
         if (next == SpeechBackend.NONE) {
             activeSpeechBackend = SpeechBackend.NONE
             resetMouth()
-            listener.onTtsError(lastError ?: "لا يوجد مسار صوت جاهز على هذا الجهاز.")
+            listener.onTtsError(lastError ?: "لا يوجد صوت طبيعي أو عصبي جاهز على هذا الجهاز.")
             return
         }
 
@@ -331,7 +288,6 @@ class PoliceVoiceEngine(
         attemptedSpeechBackends += next
         when (next) {
             SpeechBackend.CLOUD -> saudiVoice.speak(spokenText)
-            SpeechBackend.SYSTEM -> systemVoice.speak(spokenText)
             SpeechBackend.LOCAL -> localVoice.speak(spokenText)
             SpeechBackend.NONE -> Unit
         }
@@ -343,7 +299,6 @@ class PoliceVoiceEngine(
         resetMouth()
         when (failed) {
             SpeechBackend.CLOUD -> cloudTtsReady = false
-            SpeechBackend.SYSTEM -> systemTtsReady = false
             SpeechBackend.LOCAL -> localTtsReady = false
             SpeechBackend.NONE -> Unit
         }
@@ -354,7 +309,7 @@ class PoliceVoiceEngine(
         if (released || readyReported) return
         val inputReady = localAsrReady || (mode == VoiceMode.ONLINE && cloudAvailable)
         val outputReady =
-            (mode == VoiceMode.ONLINE && cloudTtsReady) || systemTtsReady || localTtsReady
+            (mode == VoiceMode.ONLINE && cloudTtsReady) || localTtsReady
         if (inputReady && outputReady) {
             readyReported = true
             listener.onTtsReady()
