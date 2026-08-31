@@ -90,11 +90,7 @@ fun Runtime3DOfficeStage(
                         animationLoop = false,
                         position = Position(0f, 0f, 0f),
                         isVisible = visible,
-                        isEditable = false,
-                        apply = {
-                            setCastShadows(true)
-                            setReceiveShadows(true)
-                        }
+                        isEditable = false
                     )
                 }
             }
