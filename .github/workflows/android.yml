@@ -24,16 +24,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
+
       - name: Check Gemini natural voice configuration
         id: voice
         shell: bash
@@ -47,6 +51,7 @@ jobs:
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Restore permanent signing key when configured
         shell: bash
         env:
@@ -65,6 +70,7 @@ jobs:
           chmod 600 "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
           echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+
       - name: Prepare cinematic dog motion assets
         shell: bash
         env:
@@ -121,6 +127,7 @@ jobs:
 
           echo "Cinematic assets bundled (all playback is one-shot):"
           du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
+
       - name: Verify Gemini Saudi-directed voice end-to-end
         if: steps.voice.outputs.ready == 'true'
         shell: bash
@@ -139,7 +146,12 @@ jobs:
           print(json.dumps({
             "model": "gemini-3.1-flash-tts-preview",
             "input": prompt,
-            "response_format": {"type": "audio"},
+            "response_format": {
+              "type": "audio",
+              "mime_type": "audio/wav",
+              "delivery": "inline",
+              "sample_rate": 24000
+            },
             "generation_config": {"speech_config": [{"voice": voice}]}
           }, ensure_ascii=False))
           PY
@@ -150,6 +162,7 @@ jobs:
             -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" \
             -H "x-goog-api-key: ${GEMINI_API_KEY}" \
             -H 'Content-Type: application/json' \
+            -H 'Api-Revision: 2026-05-20' \
             --data "$PAYLOAD")
           if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
             echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
@@ -163,23 +176,52 @@ jobs:
           PY
             exit 1
           fi
+
           python3 - <<PY
-          import base64, json, wave
-          data=json.load(open("$RESPONSE"))
-          audio=data.get("output_audio") or data.get("outputAudio") or {}
-          encoded=audio.get("data","")
-          if not encoded:
-              raise SystemExit("Gemini response did not include output_audio.data")
-          pcm=base64.b64decode(encoded)
-          if len(pcm) < 3000:
-              raise SystemExit("Gemini returned an unexpectedly short audio buffer")
-          with wave.open("$WAV","wb") as w:
-              w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
-          print("Gemini Saudi-directed TTS bytes:", len(pcm))
+          import base64, json
+          response_path = "$RESPONSE"
+          wav_path = "$WAV"
+          data = json.load(open(response_path))
+          audio = None
+          for step in data.get("steps", []):
+              if step.get("type") != "model_output":
+                  continue
+              for block in step.get("content", []):
+                  if block.get("type") == "audio" and block.get("data"):
+                      audio = block
+                      break
+              if audio:
+                  break
+          if not audio:
+              for key in ("output_audio", "outputAudio"):
+                  candidate = data.get(key)
+                  if isinstance(candidate, dict) and candidate.get("data"):
+                      audio = candidate
+                      break
+          if not audio:
+              raise SystemExit("Gemini REST response contained no audio content block")
+          raw = base64.b64decode(audio["data"])
+          if len(raw) < 3000:
+              raise SystemExit("Gemini returned an unexpectedly short audio payload")
+          mime = audio.get("mime_type") or audio.get("mimeType") or ""
+          if mime == "audio/wav" or raw[:4] == b"RIFF":
+              open(wav_path, "wb").write(raw)
+          else:
+              import wave
+              sample_rate = int(audio.get("sample_rate") or audio.get("sampleRate") or 24000)
+              with wave.open(wav_path, "wb") as w:
+                  w.setnchannels(1)
+                  w.setsampwidth(2)
+                  w.setframerate(sample_rate)
+                  w.writeframes(raw)
+          print("Gemini Saudi-directed TTS payload bytes:", len(raw), "mime:", mime or "unspecified")
           PY
+
+          test -s "$WAV"
           ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$WAV"
           echo "Gemini 3.1 TTS returned a decodable Saudi-directed audio stream using ${VOICE}."
           rm -f "$RESPONSE" "$WAV"
+
       - name: Build Al-Shorti
         env:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
@@ -189,6 +231,7 @@ jobs:
           ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
           ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
+
       - name: Upload APK
         if: steps.voice.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
