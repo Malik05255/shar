@@ -96,6 +96,10 @@ android {
             "/META-INF/AL2.0",
             "/META-INF/LGPL2.1"
         )
+        // sherpa-onnx v1.13.4 is built against ONNX Runtime 1.27.0 and bundles the same
+        // native runtime. Keep exactly one ABI-identical libonnxruntime.so in the APK while
+        // retaining the Java ONNX Runtime API used by SupertonicCore.
+        jniLibs.pickFirsts += setOf("**/libonnxruntime.so")
     }
 }
 
@@ -156,7 +160,8 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    // Keep this aligned with sherpa-onnx v1.13.4's Android build default.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
     implementation("com.github.k2-fsa:sherpa-onnx:v1.13.4")
     implementation("io.github.sceneview:sceneview:4.33.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
