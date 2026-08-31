@@ -18,7 +18,7 @@ class NeuralArabicVoice(
         fun onPreparing(percent: Int, message: String)
         fun onReady()
         fun onSpeechStarted(durationMs: Long)
-        fun onSpeechCursor(fraction: Float)
+        fun onSpeechFrame(fraction: Float, energy: Float)
         fun onSpeechFinished()
         fun onError(message: String)
     }
@@ -187,6 +187,7 @@ class NeuralArabicVoice(
     ) {
         if (ticket != generation.get()) return
         val durationMs = (result.audio.size * 1000L / result.sampleRate).coerceAtLeast(1L)
+        val energyCalibration = PcmSpeechEnergy.calibrate(result.audio, result.sampleRate)
         val format = AudioFormat.Builder()
             .setSampleRate(result.sampleRate)
             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
@@ -218,11 +219,21 @@ class NeuralArabicVoice(
         track.play()
 
         val startedAt = System.nanoTime()
+        var smoothedEnergy = 0f
         while (ticket == generation.get()) {
             val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L
             val localFraction = (elapsedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             val globalFraction = overallStart + (overallEnd - overallStart) * localFraction
-            mainHandler.post { callbacks.onSpeechCursor(globalFraction.coerceIn(0f, 1f)) }
+            val rawEnergy = PcmSpeechEnergy.normalizedAt(
+                result.audio,
+                result.sampleRate,
+                localFraction,
+                energyCalibration
+            )
+            smoothedEnergy = PcmSpeechEnergy.smooth(smoothedEnergy, rawEnergy)
+            val callbackFraction = globalFraction.coerceIn(0f, 1f)
+            val callbackEnergy = smoothedEnergy
+            mainHandler.post { callbacks.onSpeechFrame(callbackFraction, callbackEnergy) }
             if (elapsedMs >= durationMs) break
             try {
                 Thread.sleep(58L)
@@ -239,7 +250,7 @@ class NeuralArabicVoice(
 
         if (completed && isLast) {
             mainHandler.post {
-                callbacks.onSpeechCursor(1f)
+                callbacks.onSpeechFrame(1f, 0f)
                 callbacks.onSpeechFinished()
             }
         }
