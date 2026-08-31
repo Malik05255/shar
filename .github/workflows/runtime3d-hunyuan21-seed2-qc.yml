@@ -1,0 +1,134 @@
+name: Render Hunyuan 2.1 Second Seed QC - Free Blender
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-hunyuan21-seed2-qc.yml'
+      - 'runtime3d/blender_render_shape_qc.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render-seed2-qc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_RUN_ID: '33420487516'
+      SOURCE_ARTIFACT: Runtime3D-hunyuan21-second-seed-candidate
+      SOURCE_GLB: police_dog.hunyuan21.seed-7319.shape_candidate.glb
+      BLENDER_VERSION: '4.0.2'
+      BLENDER_ARCHIVE: blender-4.0.2-linux-x64.tar.xz
+      BLENDER_ROOT: runtime3d/.toolcache/blender-4.0.2
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce comparison-only gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          print('SEED=7319')
+          print('VISUAL_COMPARISON_ONLY=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Download exact second-seed shape
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: ${{ runner.temp }}/source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify second-seed geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/source/$SOURCE_GLB"
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json
+          p=Path(os.environ['RUNNER_TEMP'])/'source'/os.environ['SOURCE_GLB']
+          d=read_glb_json(p); acc=d.get('accessors') or []; vertices=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
+          print(f'vertices={vertices} bytes={p.stat().st_size}')
+          if vertices < 100000: raise SystemExit('Second-seed geometry floor failed')
+          PY
+
+      - name: Restore verified Blender portable cache
+        uses: actions/cache@v4
+        with:
+          path: runtime3d/.toolcache/blender-4.0.2
+          key: blender-linux-x64-4.0.2-official-v1
+
+      - name: Prepare official portable Blender runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/$BLENDER_ROOT"
+          URL_BASE="https://download.blender.org/release/Blender4.0"
+          if [[ ! -x "$ROOT/blender" ]]; then
+            rm -rf "$ROOT"; mkdir -p "$(dirname "$ROOT")"
+            curl --fail --location --retry 3 "$URL_BASE/$BLENDER_ARCHIVE" -o "$RUNNER_TEMP/$BLENDER_ARCHIVE"
+            curl --fail --location --retry 3 "$URL_BASE/blender-4.0.2.sha256" -o "$RUNNER_TEMP/blender-4.0.2.sha256"
+            grep -E "[ *]${BLENDER_ARCHIVE}$" "$RUNNER_TEMP/blender-4.0.2.sha256" > "$RUNNER_TEMP/blender-selected.sha256"
+            ( cd "$RUNNER_TEMP" && sha256sum -c blender-selected.sha256 )
+            tar -xJf "$RUNNER_TEMP/$BLENDER_ARCHIVE" -C "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/blender-4.0.2-linux-x64" "$ROOT"
+          fi
+          echo "$ROOT" >> "$GITHUB_PATH"
+
+      - name: Ensure headless EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libEGL.so.1'; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
+          fi
+
+      - name: Render four-axis neutral QC
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seed2-qc/previews"
+          blender --background --python runtime3d/blender_render_shape_qc.py -- \
+            --input "$RUNNER_TEMP/source/$SOURCE_GLB" \
+            --output-dir "$RUNNER_TEMP/seed2-qc/previews" \
+            --report "$RUNNER_TEMP/seed2-qc/hunyuan_seed2_shape_qc.json"
+          [[ $(find "$RUNNER_TEMP/seed2-qc/previews" -name '*.png' -type f | wc -l) -eq 4 ]]
+          cp "$RUNNER_TEMP/source/$SOURCE_GLB" "$RUNNER_TEMP/seed2-qc/$SOURCE_GLB"
+
+      - name: Upload second-seed QC
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-hunyuan21-seed2-qc
+          path: ${{ runner.temp }}/seed2-qc/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production closed
+        run: |
+          echo 'MANUAL_SIDE_BY_SIDE_QC_REQUIRED=true'
+          echo 'PBR_NOT_STARTED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
