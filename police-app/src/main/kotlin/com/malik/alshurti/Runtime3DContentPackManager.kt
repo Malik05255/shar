@@ -19,9 +19,9 @@ import java.security.MessageDigest
  * Versioned delivery for cinematic 3D assets outside the APK.
  *
  * A validated local pack is exposed immediately so the office never waits on the network. The
- * remote manifest is then checked in the background of this suspend call. If it points to a newer
- * pack, unchanged actors are copied from the active pack and only changed GLBs are downloaded.
- * Promotion is atomic and only happens after every declared actor matches size + SHA-256.
+ * remote manifest is checked without replacing actors in the middle of a viewing session. A newer
+ * pack is downloaded, validated and marked active for the NEXT app launch; the currently rendered
+ * world remains untouched until then. Unchanged actors are reused byte-for-byte.
  */
 object Runtime3DContentPackManager {
     sealed interface State {
@@ -59,8 +59,9 @@ object Runtime3DContentPackManager {
     private val updateMutex = Mutex()
 
     /**
-     * Returns the best usable pack. A valid local pack remains active if the network, manifest, or
-     * replacement pack fails; a failed remote refresh can never evict a working office.
+     * Returns the pack selected for THIS session. If a newer valid pack is downloaded while an old
+     * one is already in use, the old pack remains selected until the next process launch so there is
+     * no visible GLB teardown/reload pop inside the office.
      */
     suspend fun ensureReady(context: Context): Pack? = withContext(Dispatchers.IO) {
         updateMutex.withLock {
@@ -80,13 +81,15 @@ object Runtime3DContentPackManager {
             }.getOrNull()
 
             when {
-                refreshed?.hasRequiredWorld() == true -> {
-                    _state.value = State.Ready(refreshed)
-                    refreshed
-                }
+                // Existing world always wins for the current session. A different refreshed pack
+                // has already been marked active on disk and will be picked up next launch.
                 local != null -> {
                     _state.value = State.Ready(local)
                     local
+                }
+                refreshed?.hasRequiredWorld() == true -> {
+                    _state.value = State.Ready(refreshed)
+                    refreshed
                 }
                 else -> {
                     _state.value = State.Unavailable
@@ -105,7 +108,13 @@ object Runtime3DContentPackManager {
         val packDir = File(root, version)
         val manifest = File(packDir, LOCAL_MANIFEST)
         if (!manifest.isFile) return null
-        return runCatching { parseLocalPack(packDir, manifest.readText()) }.getOrNull()
+        val parsed = runCatching { parseLocalPack(packDir, manifest.readText()) }.getOrNull()
+            ?.takeIf { it.hasRequiredWorld() }
+            ?: return null
+
+        // Safe at process/session startup before this pack has been handed to SceneView.
+        pruneOldPacks(root, keep = version)
+        return parsed
     }
 
     private fun downloadCurrentPack(context: Context, previous: Pack?): Pack? {
@@ -178,9 +187,10 @@ object Runtime3DContentPackManager {
                 ?.takeIf { it.hasRequiredWorld() }
                 ?: error("3D pack did not validate after promotion.")
 
-            // active.txt is written last: a process death before this line keeps the prior pack active.
+            // active.txt is written last. If an existing pack is in use, it is intentionally kept
+            // on disk for this session; next launch selects the new active version and prunes old.
             File(root, ACTIVE_FILE).writeText(version)
-            pruneOldPacks(root, keep = version)
+            if (previous == null) pruneOldPacks(root, keep = version)
             return promoted
         } catch (error: Throwable) {
             staging.deleteRecursively()
