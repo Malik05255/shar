@@ -1,0 +1,216 @@
+name: Finalize Motion V2 PBR Sparse Hero - Free
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-pbr-sparse-finalize.yml'
+      - 'runtime3d/transplant_sparse_motion_pbr.py'
+      - 'runtime3d/blender_render_runtime_qc.py'
+      - 'runtime3d/validate_facial_motion_cubic.py'
+      - 'runtime3d/inspect_glb.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finalize-sparse-pbr-hero:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MOTION_RUN_ID: '33427570106'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-v2-candidate
+      MOTION_GLB: police_dog.motion_v2_candidate.glb
+      PBR_RUN_ID: '33429968342'
+      PBR_ARTIFACT: Runtime3D-police-dog-motion-v2-pbr-candidate
+      PBR_GLB: police_dog.motion_v2_pbr_candidate.glb
+      FINAL_GLB: police_dog.motion_v2_pbr_sparse_candidate.glb
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Keep strict candidate-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'DECIMATION=false'
+          echo 'REMESH=false'
+          echo 'BLENDER_REEXPORT_ANIMATIONS=false'
+          echo 'SPARSE_MOTION_TRANSPLANT=true'
+          echo 'PRODUCTION_ACTIVATION=false'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          assert manifest.get('actors') == []
+          print('manifest.enabled=false; actors=[]')
+          PY
+
+      - name: Download validated Motion V2 source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Download embedded PBR structural-pass source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PBR_ARTIFACT }}
+          path: ${{ runner.temp }}/pbr
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.PBR_RUN_ID }}
+
+      - name: Transplant exact sparse Motion V2 and tune matte PBR
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/final/previews"
+          python3 runtime3d/transplant_sparse_motion_pbr.py \
+            --motion-source "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --pbr-source "$RUNNER_TEMP/pbr/$PBR_GLB" \
+            --output "$RUNNER_TEMP/final/$FINAL_GLB" \
+            --report "$RUNNER_TEMP/final/police_dog.motion_v2_pbr_sparse_candidate.qc.json" \
+            --metallic 0.0 \
+            --roughness 0.68 \
+            --normal-scale 0.28
+          test -s "$RUNNER_TEMP/final/$FINAL_GLB"
+          test -s "$RUNNER_TEMP/final/police_dog.motion_v2_pbr_sparse_candidate.qc.json"
+
+      - name: Validate final GLB structure materials skin and exact clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          root=Path(os.environ['RUNNER_TEMP'])/'final'
+          p=root/os.environ['FINAL_GLB']
+          d=read_glb_json(p)
+          names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+          missing=sorted(set(DOG_CLIPS)-names)
+          extra=sorted(names-set(DOG_CLIPS))
+          skins=d.get('skins') or []
+          joints=max((len(s.get('joints') or []) for s in skins),default=0)
+          accessors=d.get('accessors') or []
+          vertices=0
+          for mesh in d.get('meshes') or []:
+              for primitive in mesh.get('primitives') or []:
+                  pos=(primitive.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          mats=d.get('materials') or []
+          tex=d.get('textures') or []
+          imgs=d.get('images') or []
+          base_ok=False; normal_ok=False
+          metallic=[]; roughness=[]; normal_scales=[]
+          for mat in mats:
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              base_ok = base_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
+              normal=mat.get('normalTexture') or {}
+              normal_ok = normal_ok or isinstance(normal.get('index'),int)
+              metallic.append(float(pbr.get('metallicFactor',1.0)))
+              roughness.append(float(pbr.get('roughnessFactor',1.0)))
+              if normal:
+                  normal_scales.append(float(normal.get('scale',1.0)))
+          report=json.loads((root/'police_dog.motion_v2_pbr_sparse_candidate.qc.json').read_text())
+          print(json.dumps({
+              'bytes':p.stat().st_size,'vertices':vertices,'animations':len(names),
+              'missing':missing,'extra':extra,'skins':len(skins),'maxJoints':joints,
+              'materials':len(mats),'textures':len(tex),'images':len(imgs),
+              'baseColorTexture':base_ok,'normalTexture':normal_ok,
+              'metallicFactors':metallic,'roughnessFactors':roughness,
+              'normalScales':normal_scales,'motionQC':report.get('motion')
+          },indent=2))
+          if missing or extra or len(names)!=26:
+              raise SystemExit('Exact 26-clip contract failed')
+          if len(skins)!=1 or joints < 32:
+              raise SystemExit('Skin/joint contract failed')
+          if vertices < 1_000_000:
+              raise SystemExit('Full-detail geometry floor failed')
+          if len(tex)<2 or len(imgs)<2 or not mats or not base_ok or not normal_ok:
+              raise SystemExit('Embedded BaseColor+Normal PBR contract failed')
+          if any(abs(x) > 1e-6 for x in metallic):
+              raise SystemExit('Hero material is still metallic')
+          if any(x < 0.55 for x in roughness):
+              raise SystemExit('Hero material is still too glossy')
+          motion=report.get('motion') or {}
+          if float(motion.get('maxRestTransformDelta',1.0)) > 1e-5:
+              raise SystemExit('Skeleton equivalence tolerance failed')
+          print('FINAL_SPARSE_PBR_STRUCTURAL_GATE=PASS')
+          PY
+
+      - name: Validate sparse facial layering and viseme separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 runtime3d/validate_facial_motion_cubic.py \
+            "$RUNNER_TEMP/final/$FINAL_GLB" \
+            --report "$RUNNER_TEMP/final/police_dog.motion_v2_pbr_sparse_candidate.facial.json"
+          test -s "$RUNNER_TEMP/final/police_dog.motion_v2_pbr_sparse_candidate.facial.json"
+          echo 'FINAL_SPARSE_PBR_FACIAL_GATE=PASS'
+
+      - name: Install Blender only for visual QC rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender libegl1 libgl1-mesa-dri
+          blender --version | head -n 2
+
+      - name: Render final GLB without re-exporting animations
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          blender --background \
+            --python runtime3d/blender_render_runtime_qc.py -- \
+            --input "$RUNNER_TEMP/final/$FINAL_GLB" \
+            --preview-dir "$RUNNER_TEMP/final/previews"
+          COUNT=$(find "$RUNNER_TEMP/final/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
+          [[ "$COUNT" -eq 3 ]] || { echo "::error::Expected 3 final QC renders, got $COUNT"; exit 1; }
+          echo 'FINAL_RENDER_QC_ASSETS=PASS'
+
+      - name: Revalidate GLB after rendering step
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 runtime3d/validate_facial_motion_cubic.py \
+            "$RUNNER_TEMP/final/$FINAL_GLB" \
+            --report "$RUNNER_TEMP/final/police_dog.motion_v2_pbr_sparse_candidate.post_render_facial.json"
+          echo 'POST_RENDER_BINARY_UNCHANGED_FACE_GATE=PASS'
+
+      - name: Upload final candidate and rendered QC
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-motion-v2-pbr-sparse-candidate
+          path: ${{ runner.temp }}/final/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production gate closed for human visual and device acceptance
+        if: success()
+        shell: bash
+        run: |
+          echo 'STRUCTURAL_HERO_GATE=PASS'
+          echo 'FACIAL_LAYERING_GATE=PASS'
+          echo 'MANUAL_VISUAL_IDENTITY_GATE=PENDING'
+          echo 'ARABIC_LIPSYNC_TIMING_GATE=PENDING'
+          echo 'PHYSICAL_ANDROID_30_MIN_GATE=PENDING'
+          echo 'FULL_OFFICE_CONTENT_PACK_GATE=PENDING'
+          echo 'PRODUCTION_GATE=CLOSED'
