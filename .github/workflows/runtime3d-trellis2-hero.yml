@@ -1,0 +1,219 @@
+name: Generate Photoreal TRELLIS2 Hero - Free
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-trellis2-hero.yml'
+      - 'runtime3d/hf_gradio_direct_trellis2.py'
+      - 'runtime3d/blender_render_static_glb.py'
+      - 'runtime3d/inspect_glb.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  trellis2-hero:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HERO_REFERENCE_RUN_ID: '33391759260'
+      HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
+      HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
+      OUTPUT_GLB: police_dog.trellis2.hero_shape_candidate.glb
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce free-only fail-closed policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert d.get('enabled') is False
+          assert d.get('actors') == []
+          print('PROVIDER=microsoft/TRELLIS.2')
+          print('ZEROGPU_ONLY=true')
+          print('FREE_ONLY=true')
+          print('PAID_FALLBACK=false')
+          print('MANIFEST_ACTIVATION=false')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+          if [[ -z "${HF_TOKEN:-}" ]]; then
+            echo '::error::HF_TOKEN is required for legitimate Hugging Face ZeroGPU quota. Paid fallback is forbidden.'
+            exit 1
+          fi
+
+      - name: Download exact approved full-body hero reference
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.HERO_REFERENCE_ARTIFACT }}
+          path: ${{ runner.temp }}/hero-reference
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
+
+      - name: Verify immutable reference input
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE"
+          test -s "$P"
+          BYTES=$(stat -c%s "$P")
+          [[ "$BYTES" -ge 100000 ]] || { echo "::error::Hero reference unexpectedly small: $BYTES"; exit 1; }
+          sha256sum "$P"
+          echo "REFERENCE_BYTES=$BYTES"
+
+      - name: Install current free Gradio client
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'gradio_client>=1.8,<2' 'requests>=2.31,<3' 'pillow>=10,<12'
+          python3 - <<'PY'
+          import gradio_client, requests
+          print('gradio_client', getattr(gradio_client,'__version__','unknown'))
+          print('requests', requests.__version__)
+          PY
+
+      - name: Generate TRELLIS2 1024 PBR shape and extract GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trellis2"
+          python3 runtime3d/hf_gradio_direct_trellis2.py \
+            --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/trellis2/$OUTPUT_GLB" \
+            --report "$RUNNER_TEMP/trellis2/trellis2-generation.json" \
+            --resolution 1024 \
+            --decimation-target 300000 \
+            --texture-size 2048 \
+            --seed 42
+          test -s "$RUNNER_TEMP/trellis2/$OUTPUT_GLB"
+          cp "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" "$RUNNER_TEMP/trellis2/reference.png"
+
+      - name: Validate TRELLIS2 structural PBR payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json
+          p=Path(os.environ['RUNNER_TEMP'])/'trellis2'/os.environ['OUTPUT_GLB']
+          d=read_glb_json(p)
+          accessors=d.get('accessors') or []
+          vertices=0
+          faces=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  attrs=prim.get('attributes') or {}
+                  pos=attrs.get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+                  idx=prim.get('indices')
+                  if isinstance(idx,int) and 0 <= idx < len(accessors):
+                      faces += int(accessors[idx].get('count') or 0)//3
+          mats=d.get('materials') or []
+          tex=d.get('textures') or []
+          imgs=d.get('images') or []
+          base=any(isinstance((((m.get('pbrMetallicRoughness') or {}).get('baseColorTexture') or {}).get('index')),int) for m in mats)
+          normal=any(isinstance(((m.get('normalTexture') or {}).get('index')),int) for m in mats)
+          mime=sorted({str(i.get('mimeType')) for i in imgs if i.get('mimeType')})
+          info={'bytes':p.stat().st_size,'meshes':len(d.get('meshes') or []),'vertices':vertices,'faces':faces,
+                'materials':len(mats),'textures':len(tex),'images':len(imgs),'baseColorTexture':base,
+                'normalTexture':normal,'imageMimeTypes':mime,'skins':len(d.get('skins') or []),
+                'animations':len(d.get('animations') or [])}
+          print(json.dumps(info,indent=2))
+          if vertices < 100000:
+              raise SystemExit(f'TRELLIS2 density gate failed: {vertices} vertices')
+          if faces < 80000:
+              raise SystemExit(f'TRELLIS2 face-count gate failed: {faces} faces')
+          if not mats or not tex or not imgs or not base:
+              raise SystemExit('TRELLIS2 PBR/BaseColor gate failed')
+          (p.parent/'trellis2-structure.json').write_text(json.dumps(info,indent=2)+'\n')
+          print('TRELLIS2_STRUCTURAL_PBR_GATE=PASS')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Install free Blender headless renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
+          blender --version | head -n2
+
+      - name: Render deterministic four-view visual QC
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: surfaceless
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trellis2/previews"
+          blender --background \
+            --python runtime3d/blender_render_static_glb.py -- \
+            --input "$RUNNER_TEMP/trellis2/$OUTPUT_GLB" \
+            --preview-dir "$RUNNER_TEMP/trellis2/previews" \
+            --qc "$RUNNER_TEMP/trellis2/trellis2-render-qc.json"
+          test "$(find "$RUNNER_TEMP/trellis2/previews" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 4
+
+      - name: Reject black flat or missing-texture renders
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from PIL import Image, ImageStat
+          root=Path(os.environ['RUNNER_TEMP'])/'trellis2'/'previews'
+          report={}
+          for p in sorted(root.glob('*.png')):
+              im=Image.open(p).convert('RGB').resize((256,256))
+              stat=ImageStat.Stat(im)
+              mean=list(map(float,stat.mean)); std=list(map(float,stat.stddev))
+              px=list(im.getdata())
+              magenta=sum(1 for r,g,b in px if r>180 and b>180 and g<90)/len(px)
+              nonblack=sum(1 for r,g,b in px if max(r,g,b)>28)/len(px)
+              report[p.name]={'meanRGB':mean,'stdRGB':std,'magentaFraction':magenta,'nonBlackFraction':nonblack}
+              if nonblack < 0.12:
+                  raise SystemExit(f'Black/empty render rejected: {p.name} nonblack={nonblack:.4f}')
+              if max(std) < 12.0:
+                  raise SystemExit(f'Flat render rejected: {p.name} std={std}')
+              if magenta > 0.03:
+                  raise SystemExit(f'Missing-texture magenta render rejected: {p.name} magenta={magenta:.4f}')
+          if len(report)!=4:
+              raise SystemExit(f'Expected 4 QC renders, got {len(report)}')
+          out=Path(os.environ['RUNNER_TEMP'])/'trellis2'/'trellis2-pixel-qc.json'
+          out.write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          print('TRELLIS2_PIXEL_RENDER_GATE=PASS')
+          print('MANUAL_REALISM_QC_REQUIRED=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Upload TRELLIS2 hero candidate and four-view QC
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-trellis2-photoreal-hero-candidate
+          path: ${{ runner.temp }}/trellis2/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production gate closed
+        run: |
+          echo 'MANUAL_IDENTITY_QC_REQUIRED=true'
+          echo 'RIG_MOTION_V2_REQUIRED=true'
+          echo 'SPARSE_FACIAL_TRANSPLANT_REQUIRED=true'
+          echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
