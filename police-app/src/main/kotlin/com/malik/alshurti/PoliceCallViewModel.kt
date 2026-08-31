@@ -17,9 +17,9 @@ import kotlinx.coroutines.launch
 /**
  * Conversation coordinator for the living office.
  *
- * The office exists independently of the observer. Opening the app never triggers a greeting and
- * never makes the dog stare at the camera. Silent listening runs while the dog works. Only actual
- * detected speech interrupts the foreground task; after the reply the dog returns to office work.
+ * The office still runs independently of the observer, but a new session now performs one audible
+ * greeting before silent listening begins. This is deliberate: the first interaction doubles as an
+ * end-to-end audio-path proof instead of allowing a broken device route to look like normal silence.
  */
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
     private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
@@ -43,6 +43,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private var sessionStarted = false
     private var completedPoliceTurns = 0
     private var standingReplyActive = false
+    private var openingGreetingInFlight = false
     private var conversationJob: Job? = null
     private var ambientLifeJob: Job? = null
 
@@ -84,6 +85,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         ttsReady = false
         sessionStarted = false
         standingReplyActive = false
+        openingGreetingInFlight = false
         preferences.edit().putString(KEY_MODE, VoiceMode.ONLINE.name).apply()
         voiceEngine.setMode(VoiceMode.ONLINE)
         setPhase(CallPhase.STARTING)
@@ -116,34 +118,38 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         conversationJob?.cancel()
         conversationJob = null
         standingReplyActive = false
+        openingGreetingInFlight = false
         returnDogToWorkThenListen()
     }
 
     private fun tryStartSession() {
         if (!microphonePermissionGranted || !ttsReady || sessionStarted) return
         sessionStarted = true
-
-        // Deliberately no spoken greeting. The viewer enters an office that is already working.
-        setPhase(CallPhase.LISTENING)
+        openingGreetingInFlight = true
+        stopAmbientLife()
+        standingReplyActive = false
+        setPhase(CallPhase.SPEAKING)
         _uiState.update {
             it.copy(
-                mood = DogMood.CALM,
+                mood = DogMood.TALKING,
                 viseme = MouthViseme.REST,
-                replyText = "",
+                replyText = OPENING_GREETING,
                 heardText = "",
                 errorMessage = null,
                 firstGreetingDone = true,
                 officeScene = it.officeScene.copy(
-                    attention = DogAttention.PAPER,
-                    dogAction = DogAction.REVIEW_FILE,
-                    scenario = CinematicScenario.AMBIENT_WORK,
-                    backgroundActivity = BackgroundActivity.PAPERWORK,
+                    cue = OfficeCue.NONE,
+                    attention = DogAttention.CAMERA,
+                    dogAction = DogAction.TALK_SEATED,
+                    scenario = CinematicScenario.NONE,
+                    backgroundActivity = BackgroundActivity.CALM_WORK,
+                    phoneRinging = false,
                     revision = it.officeScene.revision + 1
                 )
             )
         }
-        startAmbientLife()
-        voiceEngine.startListening()
+        publishObserverPlan(speakingPlan(false))
+        voiceEngine.speak(OPENING_GREETING)
     }
 
     /**
@@ -201,9 +207,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Runtime 3D receives the full choreography first. DogAction mapping below is legacy-only so an
-     * old installation can still display the cinematic benchmark while the production GLB pack is
-     * not yet enabled.
+     * Runtime 3D receives the full choreography first. DogAction mapping below is legacy-only for
+     * state continuity while the production GLB pack is not yet enabled. The visual fallback no
+     * longer consumes finite MP4 clips, so these states cannot create a replay loop.
      */
     private fun applyAmbientPlan(plan: RuntimeScenarioPlan) {
         val scheduled = scheduleForRuntime(plan, observerEngaged = false)
@@ -300,7 +306,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         commands = listOf(
             SceneAnimationCommand(
                 SceneActorId.POLICE_DOG,
-                if (standing) "Talk" else "Talk",
+                "Talk",
                 AnimationChannel.FACE,
                 loop = true,
                 playbackRate = 1.0f
@@ -448,20 +454,18 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onReadyToListen() {
-        if (!sessionStarted) return
+        if (!sessionStarted || openingGreetingInFlight) return
         setPhase(CallPhase.LISTENING)
-        // Arming the microphone does not earn camera attention.
         if (ambientLifeJob?.isActive != true) startAmbientLife()
     }
 
     override fun onSpeechStarted() {
-        if (!sessionStarted) return
+        if (!sessionStarted || openingGreetingInFlight) return
         stopAmbientLife()
         standingReplyActive = false
         setPhase(CallPhase.LISTENING)
         publishObserverPlan(livingOffice.onObserverSpeechStarted())
 
-        // First visible response to the observer happens only after real voice activity.
         _uiState.update {
             it.copy(
                 mood = DogMood.LISTENING,
@@ -478,21 +482,22 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onPartialText(text: String) {
-        _uiState.update { it.copy(heardText = text) }
+        if (!openingGreetingInFlight) _uiState.update { it.copy(heardText = text) }
     }
 
-    override fun onFinalText(text: String) = handleRecognizedText(text)
+    override fun onFinalText(text: String) {
+        if (!openingGreetingInFlight) handleRecognizedText(text)
+    }
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
-        if (recoverable && microphonePermissionGranted && sessionStarted) {
-            // Silence/no-match is normal in an observational office.
+        if (recoverable && microphonePermissionGranted && sessionStarted && !openingGreetingInFlight) {
             setPhase(CallPhase.LISTENING)
             if (ambientLifeJob?.isActive != true) startAmbientLife()
             viewModelScope.launch {
                 delay(450L)
                 voiceEngine.startListening()
             }
-        } else {
+        } else if (!openingGreetingInFlight) {
             setPhase(CallPhase.ERROR)
             _uiState.update { it.copy(mood = DogMood.SERIOUS, errorMessage = message) }
         }
@@ -532,6 +537,13 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update { it.copy(viseme = MouthViseme.REST) }
         if (!microphonePermissionGranted) return
 
+        if (openingGreetingInFlight) {
+            openingGreetingInFlight = false
+            standingReplyActive = false
+            returnDogToWorkThenListen()
+            return
+        }
+
         completedPoliceTurns += 1
         if (standingReplyActive) {
             standingReplyActive = false
@@ -568,6 +580,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onTtsError(message: String) {
+        openingGreetingInFlight = false
         standingReplyActive = false
         setPhase(CallPhase.ERROR)
         _uiState.update {
@@ -608,6 +621,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private companion object {
         const val PREFS_NAME = "alshurti_voice_settings"
         const val KEY_MODE = "voice_mode"
+        const val OPENING_GREETING = "هلا يا بطل، معك الشرطي. وش عندك؟"
         const val STAND_UP_MS = 5_100L
         const val SIT_DOWN_MS = 5_100L
     }
