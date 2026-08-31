@@ -23,11 +23,9 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * High-naturalness Saudi speech path backed by Gemini 3.1 Flash TTS.
  *
- * Gemini is explicitly directed to perform a native Saudi/Riyadh conversational accent instead of
- * generic MSA. The selected stock voice supplies the timbre while the prompt controls accent,
- * cadence, warmth and conversational delivery. There is intentionally no robotic Android-TTS
- * fallback: if the cloud voice cannot produce valid PCM audio the turn fails instead of pretending
- * speech succeeded.
+ * The timbre comes from Gemini's prebuilt voice while the prompt directs a native Saudi/Riyadh
+ * conversational performance. REST responses are parsed from the Interactions API `steps` schema;
+ * SDK-only convenience fields such as output_audio are not required.
  */
 class SaudiHumanVoice(
     context: Context,
@@ -45,10 +43,16 @@ class SaudiHumanVoice(
         fun onError(message: String)
     }
 
+    private data class AudioPayload(
+        val data: String,
+        val mimeType: String,
+        val sampleRate: Int
+    )
+
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v1").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v2").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -75,6 +79,7 @@ class SaudiHumanVoice(
                         }
                     }
                 }
+
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                     if (runCatching { player.isPlaying }.getOrDefault(false)) {
@@ -82,6 +87,7 @@ class SaudiHumanVoice(
                         runCatching { player.pause() }
                     }
                 }
+
                 AudioManager.AUDIOFOCUS_LOSS -> {
                     pausedForFocus = false
                     stopPlayback()
@@ -112,9 +118,8 @@ class SaudiHumanVoice(
         if (released) return
         pruneVoiceCache()
 
-        val error = validateConfiguration()
-        if (error != null) {
-            reportError(error)
+        validateConfiguration()?.let {
+            reportError(it)
             return
         }
 
@@ -123,7 +128,10 @@ class SaudiHumanVoice(
         try {
             networkExecutor.execute {
                 runCatching {
-                    cachedOrSynthesize(ticket, prewarmText()) ?: return@runCatching
+                    val warmed = cachedOrSynthesize(ticket, prewarmText()) ?: return@runCatching
+                    if (warmed.length() < MIN_AUDIO_BYTES) {
+                        throw IllegalStateException("وصل ملف الصوت الطبيعي ناقصاً.")
+                    }
                     if (ticket == generation.get() && !released) {
                         dispatch {
                             callbacks.onPreparing(100, "")
@@ -147,9 +155,8 @@ class SaudiHumanVoice(
             return
         }
 
-        val error = validateConfiguration()
-        if (error != null) {
-            reportError(error)
+        validateConfiguration()?.let {
+            reportError(it)
             return
         }
 
@@ -211,7 +218,7 @@ class SaudiHumanVoice(
         val voice = configuredVoice()
         val prompt = directorPrompt(text)
         val destination = cacheFile(voice, prompt)
-        if (destination.exists() && destination.length() >= MIN_WAV_BYTES) {
+        if (destination.exists() && destination.length() >= MIN_AUDIO_BYTES) {
             destination.setLastModified(System.currentTimeMillis())
             return destination
         }
@@ -224,13 +231,20 @@ class SaudiHumanVoice(
             setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY.trim())
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Api-Revision", GEMINI_API_REVISION)
             setRequestProperty("User-Agent", "AlShorti-Android/${BuildConfig.VERSION_NAME}")
         }
+
+        val responseFormat = JSONObject()
+            .put("type", "audio")
+            .put("mime_type", "audio/wav")
+            .put("delivery", "inline")
+            .put("sample_rate", PCM_SAMPLE_RATE)
 
         val requestBody = JSONObject().apply {
             put("model", GEMINI_TTS_MODEL)
             put("input", prompt)
-            put("response_format", JSONObject().put("type", "audio"))
+            put("response_format", responseFormat)
             put(
                 "generation_config",
                 JSONObject().put(
@@ -269,18 +283,34 @@ class SaudiHumanVoice(
 
             if (ticket != generation.get() || released) return null
 
-            val encodedAudio = extractOutputAudioData(responseText)
-            if (encodedAudio.isBlank()) {
-                throw IllegalStateException("Gemini لم يُرجع مساراً صوتياً صالحاً.")
-            }
-            val pcm = runCatching { Base64.decode(encodedAudio, Base64.DEFAULT) }
+            val payload = extractAudioPayload(responseText)
+                ?: throw IllegalStateException("Gemini لم يُرجع مساراً صوتياً صالحاً.")
+            val bytes = runCatching { Base64.decode(payload.data, Base64.DEFAULT) }
                 .getOrElse { throw IllegalStateException("تعذر فك بيانات الصوت من Gemini.") }
-            if (pcm.size < MIN_PCM_BYTES) {
+            if (bytes.size < MIN_PROVIDER_BYTES) {
                 throw IllegalStateException("وصل الصوت من Gemini ناقصاً.")
             }
 
-            writePcm16MonoWav(partial, pcm, PCM_SAMPLE_RATE)
-            if (partial.length() < MIN_WAV_BYTES) {
+            when {
+                payload.mimeType.equals("audio/wav", ignoreCase = true) || looksLikeWav(bytes) -> {
+                    FileOutputStream(partial).buffered(128 * 1024).use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
+                }
+
+                payload.mimeType.equals("audio/l16", ignoreCase = true) || payload.mimeType.isBlank() -> {
+                    writePcm16MonoWav(
+                        file = partial,
+                        pcm = bytes,
+                        sampleRate = payload.sampleRate.takeIf { it > 0 } ?: PCM_SAMPLE_RATE
+                    )
+                }
+
+                else -> throw IllegalStateException("Gemini أعاد تنسيق صوت غير متوقع: ${payload.mimeType}")
+            }
+
+            if (partial.length() < MIN_AUDIO_BYTES) {
                 partial.delete()
                 throw IllegalStateException("تعذر تجهيز ملف الصوت الطبيعي.")
             }
@@ -300,45 +330,75 @@ class SaudiHumanVoice(
 
     private fun directorPrompt(text: String): String {
         val direction = if (role == VoiceRole.POLICE) {
-            "Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent. Mature calm police-officer presence, warm with children, confident but never theatrical. Speak like a real Saudi person in a room, not a broadcaster. Preserve colloquial Saudi wording. Medium-low pitch, relaxed pace, short natural pauses, subtle breathing, no announcer cadence, no exaggerated emotion."
+            "Native Saudi man from Riyadh. Natural conversational Najdi/Saudi accent. Mature calm presence, warm with children, confident but never theatrical. Speak like a real Saudi person nearby, not a broadcaster. Preserve colloquial Saudi wording. Medium-low pitch, relaxed pace, short natural pauses, subtle breathing, no announcer cadence, no exaggerated emotion."
         } else {
-            "Native Saudi woman, natural conversational Riyadh/Saudi accent. Professional office colleague, warm and realistic, relaxed pace, no broadcaster style, no exaggerated emotion."
+            "Native Saudi woman from Riyadh. Natural conversational Saudi accent. Professional office colleague, warm and realistic, relaxed pace, no broadcaster style, no exaggerated emotion."
         }
         return buildString {
             append("Generate speech audio only. Do not speak or paraphrase these directions.\n")
             append("Voice direction: ").append(direction).append('\n')
-            append("Speak the transcript exactly as written after [TRANSCRIPT].\n")
+            append("Speak exactly the transcript after [TRANSCRIPT].\n")
             append("[TRANSCRIPT]\n").append(text)
         }
     }
 
-    private fun extractOutputAudioData(responseText: String): String {
+    /** Raw REST places model output in steps[].content[]; output_audio is SDK-only convenience. */
+    private fun extractAudioPayload(responseText: String): AudioPayload? {
         val root = JSONObject(responseText)
-        val audioObject = root.optJSONObject("output_audio") ?: root.optJSONObject("outputAudio")
-        val direct = audioObject?.optString("data").orEmpty()
-        if (direct.isNotBlank()) return direct
 
-        // Defensive compatibility with minor response-shape changes in preview APIs.
-        fun findAudio(node: Any?): String {
-            return when (node) {
-                is JSONObject -> {
-                    val data = node.optString("data")
-                    val mime = node.optString("mime_type", node.optString("mimeType"))
-                    if (data.isNotBlank() && (mime.startsWith("audio/") || node.has("audio"))) {
-                        data
-                    } else {
-                        node.keys().asSequence().map { findAudio(node.opt(it)) }.firstOrNull { it.isNotBlank() }.orEmpty()
-                    }
+        val steps = root.optJSONArray("steps")
+        if (steps != null) {
+            for (stepIndex in 0 until steps.length()) {
+                val step = steps.optJSONObject(stepIndex) ?: continue
+                if (step.optString("type") != "model_output") continue
+                val content = step.optJSONArray("content") ?: continue
+                for (contentIndex in 0 until content.length()) {
+                    audioPayloadFrom(content.optJSONObject(contentIndex))?.let { return it }
                 }
-                is JSONArray -> (0 until node.length()).asSequence()
-                    .map { findAudio(node.opt(it)) }
-                    .firstOrNull { it.isNotBlank() }
-                    .orEmpty()
-                else -> ""
             }
         }
-        return findAudio(root)
+
+        // Compatibility with SDK-shaped/proxy responses.
+        audioPayloadFrom(root.optJSONObject("output_audio"))?.let { return it }
+        audioPayloadFrom(root.optJSONObject("outputAudio"))?.let { return it }
+
+        return findAudioPayload(root)
     }
+
+    private fun audioPayloadFrom(node: JSONObject?): AudioPayload? {
+        node ?: return null
+        val data = node.optString("data")
+        if (data.isBlank()) return null
+        val type = node.optString("type")
+        val mimeType = node.optString("mime_type", node.optString("mimeType"))
+        if (type != "audio" && !mimeType.startsWith("audio/")) return null
+        return AudioPayload(
+            data = data,
+            mimeType = mimeType,
+            sampleRate = node.optInt("sample_rate", node.optInt("sampleRate", PCM_SAMPLE_RATE))
+        )
+    }
+
+    private fun findAudioPayload(node: Any?): AudioPayload? = when (node) {
+        is JSONObject -> {
+            audioPayloadFrom(node) ?: node.keys().asSequence()
+                .mapNotNull { key -> findAudioPayload(node.opt(key)) }
+                .firstOrNull()
+        }
+
+        is JSONArray -> (0 until node.length()).asSequence()
+            .mapNotNull { index -> findAudioPayload(node.opt(index)) }
+            .firstOrNull()
+
+        else -> null
+    }
+
+    private fun looksLikeWav(bytes: ByteArray): Boolean =
+        bytes.size >= 12 &&
+            bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
+            bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
+            bytes[8] == 'W'.code.toByte() && bytes[9] == 'A'.code.toByte() &&
+            bytes[10] == 'V'.code.toByte() && bytes[11] == 'E'.code.toByte()
 
     private fun writePcm16MonoWav(file: File, pcm: ByteArray, sampleRate: Int) {
         FileOutputStream(file).buffered(64 * 1024).use { out ->
@@ -555,11 +615,12 @@ class SaudiHumanVoice(
 
     private companion object {
         const val GEMINI_TTS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
+        const val GEMINI_API_REVISION = "2026-05-20"
         const val GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-        const val CACHE_SCHEMA = "gemini-saudi-v1"
+        const val CACHE_SCHEMA = "gemini-saudi-v2"
         const val PCM_SAMPLE_RATE = 24_000
-        const val MIN_PCM_BYTES = 3_000
-        const val MIN_WAV_BYTES = 3_044L
+        const val MIN_PROVIDER_BYTES = 3_000
+        const val MIN_AUDIO_BYTES = 3_044L
         const val MAX_CACHE_FILES = 40
         const val MAX_CACHE_BYTES = 128L * 1024L * 1024L
         const val VOLUME_RAMP_STEPS = 8
