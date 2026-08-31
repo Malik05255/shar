@@ -13,8 +13,8 @@ import kotlin.math.max
 /**
  * Texture-backed muted cinematic player for exact-quality local-cache or CDN sources.
  *
- * Clips remain one-shot. Completion holds the final decoded frame; there is no loop, seek-back,
- * adaptive quality tier or transcode in this player.
+ * A completed clip never owns scene timing. Completion is reported to the stage immediately so the
+ * living-office director can move to a different continuation instead of exposing a frozen frame.
  */
 class CinematicClipView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private data class ClipConfig(
@@ -24,6 +24,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
     )
 
     private var config: ClipConfig? = null
+    private var completionCallback: (() -> Unit)? = null
     private var mediaPlayer: MediaPlayer? = null
     private var mediaSurface: Surface? = null
     private var videoWidth = 0
@@ -36,7 +37,13 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         alpha = 0f
     }
 
-    fun bind(source: String, randomizeStart: Boolean, seed: Long) {
+    fun bind(
+        source: String,
+        randomizeStart: Boolean,
+        seed: Long,
+        onCompletion: (() -> Unit)? = null
+    ) {
+        completionCallback = onCompletion
         val next = ClipConfig(source, randomizeStart, seed)
         if (config == next && mediaPlayer != null) return
         config = next
@@ -71,7 +78,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                     val durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                     if (active.randomizeStart && durationMs > 2_200L) {
                         val maxStartMs = minOf(
-                            (durationMs * 0.25f).toLong(),
+                            (durationMs * 0.28f).toLong(),
                             (durationMs - 1_800L).coerceAtLeast(0L)
                         )
                         val raw = (active.seed xor (active.source.hashCode().toLong() shl 17)).absoluteValue
@@ -90,18 +97,22 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     hasRenderedFrame = true
                     animate().cancel()
-                    if (alpha < 1f) animate().alpha(1f).setDuration(120L).start()
+                    if (alpha < 1f) animate().alpha(1f).setDuration(90L).start()
                 }
                 false
             }
 
             player.setOnCompletionListener { completed ->
                 runCatching { completed.setOnSeekCompleteListener(null) }
+                // MediaPlayer callbacks arrive on the UI looper. Post once more so Compose can
+                // update the source before this final decoded frame becomes visibly stationary.
+                post { completionCallback?.invoke() }
             }
 
             player.setOnErrorListener { _, _, _ ->
                 if (!hasRenderedFrame) alpha = 0f
                 releasePlayer()
+                post { completionCallback?.invoke() }
                 true
             }
 
@@ -109,6 +120,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         }.onFailure {
             if (!hasRenderedFrame) alpha = 0f
             releasePlayer()
+            post { completionCallback?.invoke() }
         }
     }
 
