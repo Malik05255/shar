@@ -36,6 +36,7 @@ class SystemArabicVoice(
 
     @Volatile private var ready = false
     @Volatile private var released = false
+    @Volatile private var initializing = false
     @Volatile private var currentUtteranceId: String? = null
     @Volatile private var currentDurationMs = 0L
     @Volatile private var startedAtMs = 0L
@@ -52,20 +53,25 @@ class SystemArabicVoice(
         }
     }
 
-    init {
+    /** Start Android TTS only after the owner has completed its own construction. */
+    fun prepare() {
+        if (released) return
+        if (ready) {
+            callbacks.onReady()
+            return
+        }
+        if (initializing) return
+        initializing = true
         callbacks.onPreparing("جاري تجهيز صوت النظام…")
         tts = TextToSpeech(appContext) { status ->
             if (released) return@TextToSpeech
+            initializing = false
             if (status != TextToSpeech.SUCCESS) {
                 callbacks.onError("تعذر تشغيل محرك الصوت الموجود على الجهاز.")
                 return@TextToSpeech
             }
             configureEngine()
         }
-    }
-
-    fun prepare() {
-        if (ready && !released) callbacks.onReady()
     }
 
     fun speak(text: String) {
@@ -108,6 +114,7 @@ class SystemArabicVoice(
         released = true
         interrupt()
         ready = false
+        initializing = false
         runCatching { tts?.shutdown() }
         tts = null
     }
