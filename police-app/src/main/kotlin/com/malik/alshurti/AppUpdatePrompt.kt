@@ -19,18 +19,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 /**
- * Forced update surface.
+ * Mandatory automatic update surface.
  *
- * Idle/Checking render absolutely nothing, so no window flashes during normal launches. Once a
- * strictly newer stable release has been confirmed, the dialog cannot be dismissed. Android's own
- * package installer remains the final trusted confirmation surface.
+ * Idle/Checking render absolutely nothing. A strictly newer release immediately transitions into
+ * delta download from MainActivity and cannot be dismissed. There is no app-level install/update
+ * button; Android's package installer remains the final trusted system confirmation.
  */
 @Composable
 fun AppUpdatePrompt(
     state: AppUpdateState,
-    onUpdateNow: () -> Unit,
-    onRetry: () -> Unit,
-    onDismiss: () -> Unit
+    onRetry: () -> Unit
 ) {
     when (state) {
         AppUpdateState.Idle,
@@ -42,11 +40,7 @@ fun AppUpdatePrompt(
                 icon = { Icon(Icons.Default.Download, contentDescription = null) },
                 title = null,
                 text = null,
-                confirmButton = {
-                    IconButton(onClick = onUpdateNow) {
-                        Icon(Icons.Default.Download, contentDescription = null)
-                    }
-                }
+                confirmButton = {}
             )
         }
 
