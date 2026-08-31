@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "policy": {
+    "recordedPhysicalSourcesOnly": true,
+    "proceduralOscillatorsAllowed": false,
+    "syntheticAmbienceAllowed": false,
+    "productionGate": "CLOSED"
+  },
+  "sources": [
+    {
+      "id": "phone_ring",
+      "sourceFile": "Ringingsound.wav",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Ringingsound.wav",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Ringingsound.wav",
+      "license": "CC0-1.0",
+      "author": "Kaga Sound",
+      "description": "Recorded ringback/ringing sound; short single physical cue."
+    },
+    {
+      "id": "door_cycle",
+      "sourceFile": "Squeaky_door.ogg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Squeaky_door.ogg",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Squeaky_door.ogg",
+      "license": "Public-Domain",
+      "author": "leonmire",
+      "description": "Recorded physical squeaky door opening and closing."
+    },
+    {
+      "id": "page_turn",
+      "sourceFile": "Turning_a_page.ogg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Turning_a_page.ogg",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Turning_a_page.ogg",
+      "license": "Public-Domain",
+      "author": "planish",
+      "description": "Recorded physical page turn."
+    }
+  ]
+}
