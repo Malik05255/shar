@@ -18,11 +18,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * State-specific cinematic performance player.
+ * Transitional cinematic performance player.
  *
- * Every generated clip is one-shot. The final rendered frame stays on screen until another action
- * arrives; no idle/talk clip is looped or ping-ponged. This avoids the visible "same scene again"
- * effect while keeping real motion for each conversation/action transition.
+ * The exact full-quality cinematic files are delivered from CDN/cache rather than bundled into the
+ * APK. Each clip stays one-shot and holds its final frame. Runtime 3D remains the long-term primary
+ * path; this player preserves the established film-quality benchmark during migration.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -78,34 +78,8 @@ fun AiCinematicDogStage(
         else -> DogAction.SEATED_IDLE
     }
 
-    val candidateClipNames = remember(requestedAction) {
-        when (requestedAction) {
-            DogAction.SEATED_IDLE -> listOf("dog_idle_loop")
-            DogAction.TALK_SEATED -> listOf("dog_talk_seated")
-            DogAction.STAND_UP -> listOf("dog_stand_up")
-            DogAction.TALK_STANDING -> listOf("dog_talk_standing")
-            DogAction.WALK_AROUND_DESK -> listOf("dog_walk_around_desk")
-            DogAction.APPROACH_CAMERA -> listOf("dog_approach_camera")
-            DogAction.RETURN_FROM_CAMERA -> listOf("dog_return_from_camera")
-            DogAction.WALK_TO_PHONE -> listOf("dog_walk_to_phone")
-            DogAction.ANSWER_PHONE -> listOf("dog_answer_phone")
-            DogAction.WALK_TO_DOOR -> listOf("dog_walk_to_door")
-            DogAction.GREET_STAFF -> listOf("dog_greet_staff", "dog_walk_to_door")
-            DogAction.RETURN_TO_DESK -> listOf("dog_return_to_desk")
-            DogAction.REVIEW_FILE -> listOf("dog_review_file")
-            DogAction.SIT_DOWN -> listOf("dog_sit_down")
-        }
-    }
-
-    val resolvedClip = remember(candidateClipNames) {
-        candidateClipNames.firstNotNullOfOrNull { name ->
-            context.resources.getIdentifier(name, "raw", context.packageName)
-                .takeIf { it != 0 }
-                ?.let { name to it }
-        }
-    }
-
-    if (resolvedClip == null) {
+    val remoteSource = remember(requestedAction) { RemoteCinematicAssets.sourceFor(requestedAction) }
+    if (remoteSource == null) {
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
@@ -114,9 +88,21 @@ fun AiCinematicDogStage(
         return
     }
 
-    val (_, clipResId) = resolvedClip
-    val playbackSeed = remember(requestedAction, clipResId) {
-        System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor clipResId.toLong()
+    LaunchedEffect(requestedAction, remoteSource) {
+        CinematicMediaCache.prefetch(
+            context = context,
+            urls = buildList {
+                add(remoteSource)
+                addAll(RemoteCinematicAssets.likelyNext(requestedAction))
+            }
+        )
+    }
+
+    val playbackSource = remember(requestedAction, remoteSource) {
+        CinematicMediaCache.localOrRemote(context, remoteSource)
+    }
+    val playbackSeed = remember(requestedAction, remoteSource) {
+        System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor remoteSource.hashCode().toLong()
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -131,7 +117,7 @@ fun AiCinematicDogStage(
             factory = { ctx ->
                 CinematicClipView(ctx).apply {
                     bind(
-                        resId = clipResId,
+                        source = playbackSource,
                         randomizeStart = false,
                         seed = playbackSeed
                     )
@@ -139,7 +125,7 @@ fun AiCinematicDogStage(
             },
             update = { view ->
                 view.bind(
-                    resId = clipResId,
+                    source = playbackSource,
                     randomizeStart = false,
                     seed = playbackSeed
                 )
