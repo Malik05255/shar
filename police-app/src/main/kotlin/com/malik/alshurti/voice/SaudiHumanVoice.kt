@@ -7,7 +7,10 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import com.malik.alshurti.BuildConfig
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -18,11 +21,12 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Saudi production speech path backed by Microsoft Azure Speech.
+ * High-naturalness Saudi speech path backed by Gemini 3.1 Flash TTS.
  *
- * Police uses the native Saudi male voice ar-SA-HamedNeural by default. Staff uses
- * ar-SA-ZariyahNeural by default so background characters sound distinct. There is no Android TTS
- * fallback: if Azure cannot synthesize a valid audio file the conversation does not pretend that
+ * Gemini is explicitly directed to perform a native Saudi/Riyadh conversational accent instead of
+ * generic MSA. The selected stock voice supplies the timbre while the prompt controls accent,
+ * cadence, warmth and conversational delivery. There is intentionally no robotic Android-TTS
+ * fallback: if the cloud voice cannot produce valid PCM audio the turn fails instead of pretending
  * speech succeeded.
  */
 class SaudiHumanVoice(
@@ -44,7 +48,7 @@ class SaudiHumanVoice(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "azure-saudi-voice-v1").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v1").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANT)
@@ -71,7 +75,6 @@ class SaudiHumanVoice(
                         }
                     }
                 }
-
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                     if (runCatching { player.isPlaying }.getOrDefault(false)) {
@@ -79,7 +82,6 @@ class SaudiHumanVoice(
                         runCatching { player.pause() }
                     }
                 }
-
                 AudioManager.AUDIOFOCUS_LOSS -> {
                     pausedForFocus = false
                     stopPlayback()
@@ -97,7 +99,7 @@ class SaudiHumanVoice(
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
             runnable,
-            if (role == VoiceRole.POLICE) "alshorti-azure-police" else "alshorti-azure-staff"
+            if (role == VoiceRole.POLICE) "alshorti-gemini-police" else "alshorti-gemini-staff"
         ).apply {
             priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
             uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable ->
@@ -110,9 +112,9 @@ class SaudiHumanVoice(
         if (released) return
         pruneVoiceCache()
 
-        val configurationError = validateConfiguration()
-        if (configurationError != null) {
-            reportError(configurationError)
+        val error = validateConfiguration()
+        if (error != null) {
+            reportError(error)
             return
         }
 
@@ -145,9 +147,9 @@ class SaudiHumanVoice(
             return
         }
 
-        val configurationError = validateConfiguration()
-        if (configurationError != null) {
-            reportError(configurationError)
+        val error = validateConfiguration()
+        if (error != null) {
+            reportError(error)
             return
         }
 
@@ -190,21 +192,14 @@ class SaudiHumanVoice(
     }
 
     private fun validateConfiguration(): String? {
-        if (BuildConfig.AZURE_SPEECH_KEY.trim().isBlank()) {
-            return "الصوت السعودي غير مهيأ في هذه النسخة."
-        }
-        if (BuildConfig.AZURE_SPEECH_REGION.trim().isBlank()) {
-            return "منطقة خدمة الصوت السعودي غير مهيأة."
-        }
-        if (configuredVoice().isBlank()) {
-            return "لم يتم تحديد الصوت السعودي."
-        }
+        if (BuildConfig.GEMINI_API_KEY.trim().isBlank()) return "الصوت الطبيعي غير مهيأ في هذه النسخة."
+        if (configuredVoice().isBlank()) return "لم يتم تحديد صوت الشخصية."
         return null
     }
 
     private fun configuredVoice(): String = when (role) {
-        VoiceRole.POLICE -> BuildConfig.AZURE_POLICE_VOICE.trim()
-        VoiceRole.STAFF -> BuildConfig.AZURE_STAFF_VOICE.trim()
+        VoiceRole.POLICE -> BuildConfig.GEMINI_POLICE_VOICE.trim()
+        VoiceRole.STAFF -> BuildConfig.GEMINI_STAFF_VOICE.trim()
     }
 
     private fun prewarmText(): String = when (role) {
@@ -214,64 +209,80 @@ class SaudiHumanVoice(
 
     private fun cachedOrSynthesize(ticket: Long, text: String): File? {
         val voice = configuredVoice()
-        val region = BuildConfig.AZURE_SPEECH_REGION.trim()
-        val destination = cacheFile(region, voice, text)
-        if (destination.exists() && destination.length() >= MIN_AUDIO_BYTES) {
+        val prompt = directorPrompt(text)
+        val destination = cacheFile(voice, prompt)
+        if (destination.exists() && destination.length() >= MIN_WAV_BYTES) {
             destination.setLastModified(System.currentTimeMillis())
             return destination
         }
 
-        val endpoint = URL("https://$region.tts.speech.microsoft.com/cognitiveservices/v1")
-        val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+        val connection = (URL(GEMINI_TTS_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 10_000
-            readTimeout = 35_000
+            connectTimeout = 12_000
+            readTimeout = 45_000
             doOutput = true
-            setRequestProperty("Ocp-Apim-Subscription-Key", BuildConfig.AZURE_SPEECH_KEY.trim())
-            setRequestProperty("Content-Type", "application/ssml+xml")
-            setRequestProperty("X-Microsoft-OutputFormat", AZURE_OUTPUT_FORMAT)
-            setRequestProperty("Accept", "audio/mpeg")
+            setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY.trim())
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "AlShorti-Android/${BuildConfig.VERSION_NAME}")
         }
+
+        val requestBody = JSONObject().apply {
+            put("model", GEMINI_TTS_MODEL)
+            put("input", prompt)
+            put("response_format", JSONObject().put("type", "audio"))
+            put(
+                "generation_config",
+                JSONObject().put(
+                    "speech_config",
+                    JSONArray().put(JSONObject().put("voice", voice))
+                )
+            )
+        }.toString()
 
         val partial = File(destination.parentFile, "${destination.name}.part")
         runCatching { partial.delete() }
 
         try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                writer.write(buildSsml(text, voice))
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(requestBody) }
+            val status = connection.responseCode
+            val responseText = if (status in 200..299) {
+                connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } else {
+                connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             }
 
-            val status = connection.responseCode
             if (status !in 200..299) {
-                val requestId = connection.getHeaderField("X-RequestId").orEmpty()
                 val reason = when (status) {
-                    400 -> "خدمة الصوت رفضت النص أو إعداد الصوت السعودي."
-                    401 -> "مفتاح Azure Speech غير صالح."
-                    403 -> "حساب Azure Speech لا يملك صلاحية لهذا الطلب."
-                    404 -> "منطقة Azure Speech أو نقطة الخدمة غير صحيحة."
-                    408 -> "خدمة الصوت تأخرت في الاستجابة."
-                    429 -> "تم بلوغ حد استخدام خدمة الصوت مؤقتاً."
-                    in 500..599 -> "خدمة الصوت السعودي غير متاحة مؤقتاً."
+                    400 -> "Gemini رفض إعداد توليد الصوت."
+                    401 -> "مفتاح Gemini غير صالح."
+                    403 -> "مفتاح Gemini لا يملك صلاحية توليد الصوت."
+                    404 -> "نموذج الصوت غير متاح لهذا الحساب."
+                    429 -> "تم بلوغ حد استخدام Gemini مؤقتاً."
+                    in 500..599 -> "خدمة Gemini الصوتية غير متاحة مؤقتاً."
                     else -> "خدمة الصوت أعادت خطأ $status."
                 }
                 throw IllegalStateException(
-                    if (requestId.isBlank()) reason else "$reason [$requestId]"
+                    if (responseText.isBlank()) reason else "$reason ${compactProviderError(responseText)}"
                 )
             }
 
             if (ticket != generation.get() || released) return null
 
-            connection.inputStream.use { input ->
-                FileOutputStream(partial).buffered(128 * 1024).use { output ->
-                    input.copyTo(output, 128 * 1024)
-                    output.flush()
-                }
+            val encodedAudio = extractOutputAudioData(responseText)
+            if (encodedAudio.isBlank()) {
+                throw IllegalStateException("Gemini لم يُرجع مساراً صوتياً صالحاً.")
+            }
+            val pcm = runCatching { Base64.decode(encodedAudio, Base64.DEFAULT) }
+                .getOrElse { throw IllegalStateException("تعذر فك بيانات الصوت من Gemini.") }
+            if (pcm.size < MIN_PCM_BYTES) {
+                throw IllegalStateException("وصل الصوت من Gemini ناقصاً.")
             }
 
-            if (partial.length() < MIN_AUDIO_BYTES) {
+            writePcm16MonoWav(partial, pcm, PCM_SAMPLE_RATE)
+            if (partial.length() < MIN_WAV_BYTES) {
                 partial.delete()
-                throw IllegalStateException("وصل ملف الصوت السعودي ناقصاً.")
+                throw IllegalStateException("تعذر تجهيز ملف الصوت الطبيعي.")
             }
 
             if (!partial.renameTo(destination)) {
@@ -287,29 +298,88 @@ class SaudiHumanVoice(
         }
     }
 
-    private fun buildSsml(text: String, voice: String): String {
-        val safeText = escapeXml(text)
-        val safeVoice = escapeXml(voice)
-        val prosody = if (role == VoiceRole.POLICE) {
-            "rate='-3%' pitch='-1%'"
+    private fun directorPrompt(text: String): String {
+        val direction = if (role == VoiceRole.POLICE) {
+            "Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent. Mature calm police-officer presence, warm with children, confident but never theatrical. Speak like a real Saudi person in a room, not a broadcaster. Preserve colloquial Saudi wording. Medium-low pitch, relaxed pace, short natural pauses, subtle breathing, no announcer cadence, no exaggerated emotion."
         } else {
-            "rate='0%' pitch='0%'"
+            "Native Saudi woman, natural conversational Riyadh/Saudi accent. Professional office colleague, warm and realistic, relaxed pace, no broadcaster style, no exaggerated emotion."
         }
-        return """
-            <speak version='1.0' xml:lang='ar-SA'>
-              <voice xml:lang='ar-SA' name='$safeVoice'>
-                <prosody $prosody>$safeText</prosody>
-              </voice>
-            </speak>
-        """.trimIndent()
+        return buildString {
+            append("Generate speech audio only. Do not speak or paraphrase these directions.\n")
+            append("Voice direction: ").append(direction).append('\n')
+            append("Speak the transcript exactly as written after [TRANSCRIPT].\n")
+            append("[TRANSCRIPT]\n").append(text)
+        }
     }
 
-    private fun escapeXml(value: String): String = value
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
+    private fun extractOutputAudioData(responseText: String): String {
+        val root = JSONObject(responseText)
+        val audioObject = root.optJSONObject("output_audio") ?: root.optJSONObject("outputAudio")
+        val direct = audioObject?.optString("data").orEmpty()
+        if (direct.isNotBlank()) return direct
+
+        // Defensive compatibility with minor response-shape changes in preview APIs.
+        fun findAudio(node: Any?): String {
+            return when (node) {
+                is JSONObject -> {
+                    val data = node.optString("data")
+                    val mime = node.optString("mime_type", node.optString("mimeType"))
+                    if (data.isNotBlank() && (mime.startsWith("audio/") || node.has("audio"))) {
+                        data
+                    } else {
+                        node.keys().asSequence().map { findAudio(node.opt(it)) }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    }
+                }
+                is JSONArray -> (0 until node.length()).asSequence()
+                    .map { findAudio(node.opt(it)) }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
+                else -> ""
+            }
+        }
+        return findAudio(root)
+    }
+
+    private fun writePcm16MonoWav(file: File, pcm: ByteArray, sampleRate: Int) {
+        FileOutputStream(file).buffered(64 * 1024).use { out ->
+            val dataSize = pcm.size
+            val byteRate = sampleRate * 2
+            val totalSize = dataSize + 36
+
+            fun writeAscii(value: String) = out.write(value.toByteArray(Charsets.US_ASCII))
+            fun writeLe16(value: Int) {
+                out.write(value and 0xff)
+                out.write((value ushr 8) and 0xff)
+            }
+            fun writeLe32(value: Int) {
+                out.write(value and 0xff)
+                out.write((value ushr 8) and 0xff)
+                out.write((value ushr 16) and 0xff)
+                out.write((value ushr 24) and 0xff)
+            }
+
+            writeAscii("RIFF")
+            writeLe32(totalSize)
+            writeAscii("WAVE")
+            writeAscii("fmt ")
+            writeLe32(16)
+            writeLe16(1)
+            writeLe16(1)
+            writeLe32(sampleRate)
+            writeLe32(byteRate)
+            writeLe16(2)
+            writeLe16(16)
+            writeAscii("data")
+            writeLe32(dataSize)
+            out.write(pcm)
+            out.flush()
+        }
+    }
+
+    private fun compactProviderError(body: String): String = runCatching {
+        val root = JSONObject(body)
+        root.optJSONObject("error")?.optString("message")?.take(180).orEmpty()
+    }.getOrDefault("")
 
     private fun startPlaybackSafely(ticket: Long, audioFile: File) {
         runCatching { startPlayback(ticket, audioFile) }
@@ -334,9 +404,7 @@ class SaudiHumanVoice(
                         releasePlayer(prepared)
                         return@runCatching
                     }
-                    if (!requestAudioFocus()) {
-                        throw IllegalStateException("تعذر الحصول على أولوية الصوت.")
-                    }
+                    if (!requestAudioFocus()) throw IllegalStateException("تعذر الحصول على أولوية الصوت.")
 
                     val duration = prepared.duration.coerceAtLeast(1)
                     dispatch { callbacks.onSpeechStarted(duration.toLong()) }
@@ -367,9 +435,7 @@ class SaudiHumanVoice(
                 if (mediaPlayer === failed) mediaPlayer = null
                 releasePlayer(failed)
                 abandonAudioFocus()
-                if (ticket == generation.get() && !released) {
-                    reportError("تعذر تشغيل ملف الصوت السعودي.")
-                }
+                if (ticket == generation.get() && !released) reportError("تعذر تشغيل ملف الصوت الطبيعي.")
                 true
             }
 
@@ -399,7 +465,7 @@ class SaudiHumanVoice(
         runCatching { player.setVolume(gain, gain) }
     }
 
-    private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.78f
+    private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.80f
 
     private fun requestAudioFocus(): Boolean {
         val result = runCatching { audioManager.requestAudioFocus(focusRequest) }
@@ -447,25 +513,23 @@ class SaudiHumanVoice(
         runCatching { player.release() }
     }
 
-    private fun cacheFile(region: String, voice: String, text: String): File {
-        val payload = "$CACHE_SCHEMA|${role.name}|$region|$voice|$AZURE_OUTPUT_FORMAT|$text"
+    private fun cacheFile(voice: String, prompt: String): File {
+        val payload = "$CACHE_SCHEMA|${role.name}|$GEMINI_TTS_MODEL|$voice|$prompt"
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(payload.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-        return File(voiceCacheDir, "$digest.mp3")
+        return File(voiceCacheDir, "$digest.wav")
     }
 
     private fun pruneVoiceCache() {
         runCatching {
-            val files = voiceCacheDir.listFiles { file -> file.isFile && file.extension == "mp3" }
+            val files = voiceCacheDir.listFiles { file -> file.isFile && file.extension == "wav" }
                 ?.sortedByDescending { it.lastModified() }
                 .orEmpty()
             var totalBytes = 0L
             files.forEachIndexed { index, file ->
                 totalBytes += file.length()
-                if (index >= MAX_CACHE_FILES || totalBytes > MAX_CACHE_BYTES) {
-                    runCatching { file.delete() }
-                }
+                if (index >= MAX_CACHE_FILES || totalBytes > MAX_CACHE_BYTES) runCatching { file.delete() }
             }
             voiceCacheDir.listFiles { file -> file.name.endsWith(".part") }
                 ?.forEach { runCatching { it.delete() } }
@@ -475,37 +539,30 @@ class SaudiHumanVoice(
     private fun reportError(message: String?) {
         if (released) return
         dispatch {
-            callbacks.onError(
-                message ?: if (role == VoiceRole.POLICE) {
-                    "تعذر تشغيل الصوت السعودي الطبيعي."
-                } else {
-                    "تعذر تشغيل صوت موظف المكتب."
-                }
-            )
+            callbacks.onError(message?.takeIf { it.isNotBlank() } ?: "تعذر تشغيل الصوت السعودي الطبيعي.")
         }
     }
 
     private fun dispatch(block: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            runCatching(block)
-        } else {
-            mainHandler.post { runCatching(block) }
-        }
+        if (Looper.myLooper() == Looper.getMainLooper()) runCatching(block)
+        else mainHandler.post { runCatching(block) }
     }
 
     private fun normalizeSaudiText(value: String): String = value
         .replace(Regex("\\s+"), " ")
         .replace("…", "،")
-        .replace("..", ".")
         .trim()
 
     private companion object {
-        const val AZURE_OUTPUT_FORMAT = "audio-24khz-96kbitrate-mono-mp3"
-        const val CACHE_SCHEMA = "azure-v1"
-        const val MIN_AUDIO_BYTES = 2_048L
-        const val MAX_CACHE_FILES = 48
+        const val GEMINI_TTS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
+        const val GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+        const val CACHE_SCHEMA = "gemini-saudi-v1"
+        const val PCM_SAMPLE_RATE = 24_000
+        const val MIN_PCM_BYTES = 3_000
+        const val MIN_WAV_BYTES = 3_044L
+        const val MAX_CACHE_FILES = 40
         const val MAX_CACHE_BYTES = 128L * 1024L * 1024L
-        const val VOLUME_RAMP_STEPS = 7
+        const val VOLUME_RAMP_STEPS = 8
         const val VOLUME_RAMP_STEP_MS = 12L
     }
 }
