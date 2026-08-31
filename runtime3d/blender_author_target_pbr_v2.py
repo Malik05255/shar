@@ -10,6 +10,14 @@ material slots have been authored.
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
+import sys
+
+# Blender's --python invocation does not reliably prepend the script directory to sys.path.
+# Make sibling runtime3d modules deterministic in GitHub Actions and local headless runs.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 import blender_author_target_pbr as authored
 
