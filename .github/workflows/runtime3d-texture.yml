@@ -120,11 +120,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender libegl1 libgl1
           blender --version | head -n 2
+          ldconfig -p | grep -E 'libEGL\.so\.1|libGL\.so\.1'
 
       - name: Apply reference PBR to animated hero and render QC
         shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/reference-pbr/previews"
