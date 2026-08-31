@@ -1,4 +1,4 @@
-name: Generate Hunyuan3D 2.1 PBR Hero - 130s Free Fork
+name: Generate Hunyuan3D 2.1 PBR Hero - Free Fork Pool
 
 on:
   workflow_dispatch:
@@ -13,14 +13,14 @@ permissions:
   actions: read
 
 jobs:
-  hunyuan21-pbr-130s:
+  hunyuan21-pbr-free-fork:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       HERO_REFERENCE_RUN_ID: '33391759260'
       HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
       HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
-      SPACE: imagine-io-webinar/image-to-3d
+      SPACE: AliothTalks/Hunyuan3D-2.1
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
     steps:
@@ -40,7 +40,7 @@ jobs:
           print('FREE_ONLY=true')
           print('PAID_FALLBACK=false')
           print('PRODUCTION_ACTIVATION=false')
-          print('TARGET_SPACE=imagine-io-webinar/image-to-3d')
+          print('TARGET_SPACE=AliothTalks/Hunyuan3D-2.1')
           PY
 
       - name: Download exact approved hero reference
@@ -68,12 +68,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/hunyuan21-130s"
+          mkdir -p "$RUNNER_TEMP/hunyuan21-free-fork"
           python3 runtime3d/hf_hunyuan21_textured_reference.py \
             --space "$SPACE" \
             --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
-            --output "$RUNNER_TEMP/hunyuan21-130s/police_dog.hunyuan21.130s.pbr.glb" \
-            --report "$RUNNER_TEMP/hunyuan21-130s/police_dog.hunyuan21.130s.pbr.json"
+            --output "$RUNNER_TEMP/hunyuan21-free-fork/police_dog.hunyuan21.free_fork.pbr.glb" \
+            --report "$RUNNER_TEMP/hunyuan21-free-fork/police_dog.hunyuan21.free_fork.pbr.json"
 
       - name: Validate textured GLB contract
         shell: bash
@@ -84,9 +84,9 @@ jobs:
           from pathlib import Path
           sys.path.insert(0,'runtime3d')
           from inspect_glb import read_glb_json
-          root=Path(os.environ['RUNNER_TEMP'])/'hunyuan21-130s'
-          glb=root/'police_dog.hunyuan21.130s.pbr.glb'
-          report=json.loads((root/'police_dog.hunyuan21.130s.pbr.json').read_text())
+          root=Path(os.environ['RUNNER_TEMP'])/'hunyuan21-free-fork'
+          glb=root/'police_dog.hunyuan21.free_fork.pbr.glb'
+          report=json.loads((root/'police_dog.hunyuan21.free_fork.pbr.json').read_text())
           d=read_glb_json(glb)
           acc=d.get('accessors') or []
           vertices=0
@@ -98,20 +98,20 @@ jobs:
           channels=report.get('pbrChannels') or []
           result={'bytes':glb.stat().st_size,'vertices':vertices,'materials':len(mats),'textures':len(tex),'images':len(imgs),'channels':channels,'space':report.get('space')}
           print(json.dumps(result,indent=2))
-          assert report.get('space') == 'imagine-io-webinar/image-to-3d'
+          assert report.get('space') == 'AliothTalks/Hunyuan3D-2.1'
           assert report.get('freeOnly') is True and report.get('paidFallbackAllowed') is False
           assert report.get('productionReady') is False
           if vertices < 100000: raise SystemExit('Geometry quality floor failed')
           if not mats or not tex or not imgs or 'baseColorTexture' not in channels: raise SystemExit('PBR payload gate failed')
-          print('HUNYUAN21_130S_PBR_STRUCTURAL_GATE=PASS')
+          print('HUNYUAN21_FREE_FORK_PBR_STRUCTURAL_GATE=PASS')
           print('PRODUCTION_GATE=CLOSED')
           PY
 
       - name: Upload Hunyuan 2.1 PBR candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-hunyuan21-130s-pbr-candidate
-          path: ${{ runner.temp }}/hunyuan21-130s/*
+          name: Runtime3D-hunyuan21-free-fork-pbr-candidate
+          path: ${{ runner.temp }}/hunyuan21-free-fork/*
           if-no-files-found: error
           retention-days: 14
 
