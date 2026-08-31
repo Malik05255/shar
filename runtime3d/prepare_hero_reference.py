@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare an isolated photorealistic full-body hero reference using free HF Spaces.
+"""Prepare a photorealistic full-body K9 officer reference using free HF Spaces.
 
-Free-only policy:
-- only public Hugging Face ZeroGPU Spaces are attempted;
-- no paid API key or billing fallback is allowed;
-- failures rotate to the next free editor;
-- outputs are references/candidates only, never production assets.
+Two-stage free pipeline:
+1) derive a clean realistic German-Shepherd anatomy/identity base from the old office image;
+2) convert that base into the production-style anthropomorphic K9 officer needed by
+   the runtime animation contract: biped stance, full navy uniform, usable arms/hands.
+
+No paid provider, paid overage, or automatic billing fallback is allowed.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def now() -> str:
@@ -27,7 +28,7 @@ def now() -> str:
 def download(url: str, path: Path) -> None:
     if not url.startswith("https://"):
         raise RuntimeError("reference URL must be HTTPS")
-    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-hero-reference/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-hero-reference/2.0"})
     with urllib.request.urlopen(req, timeout=90) as response, path.open("wb") as f:
         shutil.copyfileobj(response, f)
     if path.stat().st_size < 10_000:
@@ -81,31 +82,7 @@ def pick_endpoint(c: Any, *needles: str) -> str:
     raise RuntimeError("Space exposes no callable endpoints")
 
 
-def qwen_fast_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
-    """8-step Lightning Qwen edit. Space reserves only 60s ZeroGPU."""
-    from gradio_client import handle_file
-    space = "akhaliq/Qwen-Image-Edit-2509"
-    c = client(space)
-    endpoint = pick_endpoint(c, "prompt", "image")
-    result = c.predict(
-        handle_file(str(reference)),
-        handle_file(str(reference)),
-        prompt,
-        20260831,
-        1.0,
-        "cartoon, anime, illustration, mascot, toy, low detail, malformed anatomy, extra limbs, desk, office, text",
-        8,
-        1.0,
-        api_name=endpoint,
-    )
-    path = local_image_path(result)
-    if not path:
-        raise RuntimeError(f"Fast Qwen returned no materialized image: {type(result).__name__}")
-    return path, {"space": space, "endpoint": endpoint, "steps": 8, "seed": 20260831}
-
-
-def flux_kontext_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
-    """Official FLUX Kontext ZeroGPU fallback."""
+def flux_edit(reference: Path, prompt: str, steps: int = 20) -> tuple[Path, dict[str, Any]]:
     from gradio_client import handle_file
     space = "black-forest-labs/FLUX.1-Kontext-Dev"
     c = client(space)
@@ -116,35 +93,72 @@ def flux_kontext_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any
         20260831,
         False,
         2.5,
-        20,
+        steps,
         api_name=endpoint,
     )
     path = local_image_path(result)
     if not path:
         raise RuntimeError(f"FLUX Kontext returned no materialized image: {type(result).__name__}")
-    return path, {"space": space, "endpoint": endpoint, "steps": 20, "seed": 20260831}
+    return path, {"space": space, "endpoint": endpoint, "steps": steps, "seed": 20260831}
 
 
-def qwen_official_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
-    """Official Qwen fallback. It may exceed anonymous ZeroGPU duration."""
+def qwen_fast_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
     from gradio_client import handle_file
-    space = "Qwen/Qwen-Image-Edit"
+    space = "akhaliq/Qwen-Image-Edit-2509"
     c = client(space)
     endpoint = pick_endpoint(c, "prompt", "image")
     result = c.predict(
         handle_file(str(reference)),
+        handle_file(str(reference)),
         prompt,
         20260831,
-        False,
-        4.0,
-        24,
-        False,
+        1.0,
+        "cartoon, anime, illustration, mascot, toy, malformed anatomy, extra limbs, desk, office, text",
+        8,
+        1.0,
         api_name=endpoint,
     )
     path = local_image_path(result)
     if not path:
-        raise RuntimeError(f"Official Qwen returned no materialized image: {type(result).__name__}")
-    return path, {"space": space, "endpoint": endpoint, "steps": 24, "seed": 20260831}
+        raise RuntimeError(f"Fast Qwen returned no materialized image: {type(result).__name__}")
+    return path, {"space": space, "endpoint": endpoint, "steps": 8, "seed": 20260831}
+
+
+def validate_image(path: Path, stage: str) -> dict[str, Any]:
+    from PIL import Image
+    if not path.exists() or path.stat().st_size < 20_000:
+        raise RuntimeError(f"{stage} image missing/suspiciously small: {path.stat().st_size if path.exists() else 0}")
+    with Image.open(path) as im:
+        width, height = im.size
+        if min(width, height) < 700:
+            raise RuntimeError(f"{stage} image resolution too low: {width}x{height}")
+        return {"bytes": path.stat().st_size, "width": width, "height": height, "format": im.format}
+
+
+def run_stage(
+    stage: str,
+    source: Path,
+    prompt: str,
+    destination: Path,
+    report: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    providers: list[tuple[str, Callable[[Path, str], tuple[Path, dict[str, Any]]]]] = [
+        ("flux-kontext-official-zero", lambda p, q: flux_edit(p, q, 20)),
+        ("qwen-image-edit-2509-fast-zero", qwen_fast_edit),
+    ]
+    for provider_name, fn in providers:
+        attempt = {"stage": stage, "provider": provider_name, "startedAt": now()}
+        report["attempts"].append(attempt)
+        try:
+            produced, metadata = fn(source, prompt)
+            shutil.copy2(produced, destination)
+            gate = validate_image(destination, stage)
+            attempt.update({"status": "success", "gate": gate, "metadata": metadata, "finishedAt": now()})
+            return provider_name, gate
+        except Exception as exc:
+            attempt.update({"status": "failed-free-provider", "reason": str(exc)[:1500], "finishedAt": now()})
+            print(f"::warning::{stage}/{provider_name} failed: {exc}", flush=True)
+    raise RuntimeError(f"all free providers failed for stage {stage}; paid fallback disabled")
 
 
 def main() -> int:
@@ -155,6 +169,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     original = args.output_dir / "approved-master-reference.png"
+    anatomy = args.output_dir / "police_dog.stage1.anatomy.png"
     output = args.output_dir / "police_dog.hero_reference.fullbody.png"
     report_path = args.output_dir / "hero-reference-report.json"
     report: dict[str, Any] = {
@@ -163,50 +178,46 @@ def main() -> int:
         "paidFallbackAllowed": False,
         "productionReady": False,
         "attempts": [],
+        "productionGate": "CLOSED",
     }
     download(args.reference_url, original)
 
-    prompt = (
-        "Transform ONLY the central seated K9 police officer into a production-grade PHOTOREALISTIC full-body police dog character reference. "
-        "The final character must be a believable real German Shepherd police K9, not cartoon, anime, illustration, mascot, toy or anthropomorphic fantasy. "
-        "Preserve the recognizable face intent, alert friendly eyes, dark navy police uniform design, collar, badge/emblem placement and authoritative officer identity from the reference while correcting anatomy into a real German Shepherd. "
-        "Remove the entire office, desk, monitor, phone, chair, other characters, signs, text and every prop. "
-        "Reconstruct the complete body below the desk naturally: full torso, four anatomically correct legs and paws, tail, ears and muzzle, all fully visible and uncropped. "
-        "Use a neutral standing quadruped reference pose suitable for high-end 3D reconstruction and skeletal rigging; head facing camera, legs separated clearly, tail visible, no limb overlap. "
-        "Photorealistic individual fur strands and realistic black-and-tan German Shepherd coat pattern, physically plausible eyes/nose/claws, realistic navy fabric weave and metal badge response. "
-        "Use a clean light-gray seamless studio background, even soft neutral lighting and minimal shadow. No desk, no scenery, no text, no extra objects, no stylization. "
-        "Centered full-body character occupying most of the frame, reference-sheet quality."
+    anatomy_prompt = (
+        "Extract and reinterpret ONLY the central K9 officer as a real photorealistic German Shepherd. Remove the complete office, desk, chair, monitor, phone, people, signs and text. "
+        "Create one clean full-body real German Shepherd on a seamless light-gray studio background, all four legs and paws plus tail fully visible, realistic black-and-tan coat, individual fur strands, realistic eyes and nose, no costume except the existing collar/badge identity cue. "
+        "No illustration, anime, cartoon, mascot or toy. Center the dog and keep the entire body uncropped. This is a neutral high-fidelity anatomy/identity base for the next character-design stage."
+    )
+    officer_prompt = (
+        "Keep this exact realistic German Shepherd head, ears, muzzle, eyes, coat colors and fur identity. Transform the body into a believable CINEMATIC PHOTOREALISTIC anthropomorphic K9 police officer designed for a real-time 3D character. "
+        "The character stands upright on two digitigrade canine legs in a neutral A-pose, with two anatomically plausible furred arms ending in articulated canine-like hands/paws capable of holding a phone, pen and file. Do not make it cartoonish or mascot-like. "
+        "Dress the full torso and arms in a fitted dark navy professional police uniform matching the original reference: realistic fabric weave, collar, shoulder patches, chest badge, nameplate, belt and subtle K9 insignia; no readable fake text. "
+        "Head remains a fully realistic German Shepherd with individual fur strands and natural canine facial anatomy. Full body visible from ears to feet, tail visible, arms slightly separated from torso, hands visible, legs separated, symmetric neutral stance for biped skeletal rigging and facial rigging. "
+        "Clean seamless neutral light-gray studio background, even soft front/side lighting, minimal floor shadow, no office, no props, no text, no extra objects. High-end VFX character reference, realistic materials and proportions."
     )
 
-    providers = [
-        ("qwen-image-edit-2509-fast-zero", qwen_fast_edit),
-        ("flux-kontext-official-zero", flux_kontext_edit),
-        ("qwen-image-edit-official-zero", qwen_official_edit),
-    ]
-    for name, fn in providers:
-        attempt = {"provider": name, "startedAt": now()}
-        report["attempts"].append(attempt)
-        try:
-            path, meta = fn(original, prompt)
-            shutil.copy2(path, output)
-            if output.stat().st_size < 100_000:
-                raise RuntimeError(f"output image too small: {output.stat().st_size}")
-            attempt.update({"status": "success", "bytes": output.stat().st_size, "metadata": meta, "finishedAt": now()})
-            report["winner"] = name
-            report["output"] = output.name
-            break
-        except Exception as exc:
-            attempt.update({"status": "failed-free-provider", "reason": str(exc)[:1500], "finishedAt": now()})
-            print(f"::warning::{name} failed: {exc}", flush=True)
+    try:
+        stage1_provider, stage1_gate = run_stage("anatomy-base", original, anatomy_prompt, anatomy, report)
+        stage2_provider, stage2_gate = run_stage("k9-officer-biped", anatomy, officer_prompt, output, report)
+        report.update({
+            "stage1Provider": stage1_provider,
+            "stage2Provider": stage2_provider,
+            "anatomyBase": anatomy.name,
+            "winnerOutput": output.name,
+            "finalGate": stage2_gate,
+        })
+    except Exception as exc:
+        report["fatal"] = str(exc)[:2000]
+        report["finishedAt"] = now()
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"::error::{exc}")
+        return 2
 
     report["finishedAt"] = now()
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    if not report.get("winner"):
-        print("::error::No free image-edit provider produced the hero reference. Paid fallback disabled.")
-        return 2
     print(f"FREE_HERO_REFERENCE={output}")
-    print(f"FREE_HERO_REFERENCE_PROVIDER={report['winner']}")
-    print("Production gate remains CLOSED.")
+    print(f"STAGE1_PROVIDER={stage1_provider}")
+    print(f"STAGE2_PROVIDER={stage2_provider}")
+    print("Production gate remains CLOSED pending visual inspection and 3D validation.")
     return 0
 
 
