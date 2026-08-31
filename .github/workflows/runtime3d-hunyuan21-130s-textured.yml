@@ -1,4 +1,4 @@
-name: Generate Hunyuan3D 2.1 PBR Hero - Free Fork Pool
+name: Generate Hunyuan Textured Donor - Final 60s Free Slot
 
 on:
   workflow_dispatch:
@@ -13,21 +13,21 @@ permissions:
   actions: read
 
 jobs:
-  hunyuan21-pbr-free-fork:
+  hunyuan-turbo-textured-donor:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       HERO_REFERENCE_RUN_ID: '33391759260'
       HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
       HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
-      SPACE: AliothTalks/Hunyuan3D-2.1
+      SPACE: tencent/Hunyuan3D-2mini-Turbo
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
 
-      - name: Enforce free candidate-only policy
+      - name: Enforce free donor-only policy
         shell: bash
         run: |
           set -euo pipefail
@@ -39,8 +39,9 @@ jobs:
           assert m.get('enabled') is False
           print('FREE_ONLY=true')
           print('PAID_FALLBACK=false')
+          print('DONOR_ONLY=true')
           print('PRODUCTION_ACTIVATION=false')
-          print('TARGET_SPACE=AliothTalks/Hunyuan3D-2.1')
+          print('TARGET_SPACE=tencent/Hunyuan3D-2mini-Turbo')
           PY
 
       - name: Download exact approved hero reference
@@ -64,18 +65,18 @@ jobs:
       - name: Install Gradio client
         run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
 
-      - name: Generate Hunyuan 2.1 geometry-aware textured candidate
+      - name: Generate official Tencent textured donor in 60s slot
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/hunyuan21-free-fork"
+          mkdir -p "$RUNNER_TEMP/hunyuan-turbo"
           python3 runtime3d/hf_hunyuan21_textured_reference.py \
             --space "$SPACE" \
             --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
-            --output "$RUNNER_TEMP/hunyuan21-free-fork/police_dog.hunyuan21.free_fork.pbr.glb" \
-            --report "$RUNNER_TEMP/hunyuan21-free-fork/police_dog.hunyuan21.free_fork.pbr.json"
+            --output "$RUNNER_TEMP/hunyuan-turbo/police_dog.hunyuan_turbo.textured_donor.glb" \
+            --report "$RUNNER_TEMP/hunyuan-turbo/police_dog.hunyuan_turbo.textured_donor.json"
 
-      - name: Validate textured GLB contract
+      - name: Validate textured donor contract
         shell: bash
         run: |
           set -euo pipefail
@@ -84,11 +85,10 @@ jobs:
           from pathlib import Path
           sys.path.insert(0,'runtime3d')
           from inspect_glb import read_glb_json
-          root=Path(os.environ['RUNNER_TEMP'])/'hunyuan21-free-fork'
-          glb=root/'police_dog.hunyuan21.free_fork.pbr.glb'
-          report=json.loads((root/'police_dog.hunyuan21.free_fork.pbr.json').read_text())
-          d=read_glb_json(glb)
-          acc=d.get('accessors') or []
+          root=Path(os.environ['RUNNER_TEMP'])/'hunyuan-turbo'
+          glb=root/'police_dog.hunyuan_turbo.textured_donor.glb'
+          report=json.loads((root/'police_dog.hunyuan_turbo.textured_donor.json').read_text())
+          d=read_glb_json(glb); acc=d.get('accessors') or []
           vertices=0
           for mesh in d.get('meshes') or []:
               for prim in mesh.get('primitives') or []:
@@ -96,28 +96,29 @@ jobs:
                   if isinstance(p,int) and 0 <= p < len(acc): vertices += int(acc[p].get('count') or 0)
           mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []
           channels=report.get('pbrChannels') or []
-          result={'bytes':glb.stat().st_size,'vertices':vertices,'materials':len(mats),'textures':len(tex),'images':len(imgs),'channels':channels,'space':report.get('space')}
+          hero_eligible=vertices >= 100000
+          result={'bytes':glb.stat().st_size,'vertices':vertices,'heroGeometryEligible':hero_eligible,'materials':len(mats),'textures':len(tex),'images':len(imgs),'channels':channels,'space':report.get('space')}
           print(json.dumps(result,indent=2))
-          assert report.get('space') == 'AliothTalks/Hunyuan3D-2.1'
+          assert report.get('space') == 'tencent/Hunyuan3D-2mini-Turbo'
           assert report.get('freeOnly') is True and report.get('paidFallbackAllowed') is False
           assert report.get('productionReady') is False
-          if vertices < 100000: raise SystemExit('Geometry quality floor failed')
+          if vertices < 10000: raise SystemExit('Donor geometry floor failed')
           if not mats or not tex or not imgs or 'baseColorTexture' not in channels: raise SystemExit('PBR payload gate failed')
-          print('HUNYUAN21_FREE_FORK_PBR_STRUCTURAL_GATE=PASS')
+          print('HUNYUAN_TURBO_TEXTURED_DONOR_GATE=PASS')
+          print(f'HERO_GEOMETRY_ELIGIBLE={str(hero_eligible).lower()}')
           print('PRODUCTION_GATE=CLOSED')
           PY
 
-      - name: Upload Hunyuan 2.1 PBR candidate
+      - name: Upload textured donor candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-hunyuan21-free-fork-pbr-candidate
-          path: ${{ runner.temp }}/hunyuan21-free-fork/*
+          name: Runtime3D-hunyuan-turbo-textured-donor
+          path: ${{ runner.temp }}/hunyuan-turbo/*
           if-no-files-found: error
           retention-days: 14
 
       - name: Keep production gate closed
         run: |
           echo 'MANUAL_FOUR_VIEW_QC_REQUIRED=true'
-          echo 'RIG_DEFORMATION_QC_REQUIRED=true'
-          echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
+          echo 'DO_NOT_REPLACE_ACCEPTED_HUNYUAN21_SHAPE_AUTOMATICALLY=true'
           echo 'PRODUCTION_GATE=CLOSED'
