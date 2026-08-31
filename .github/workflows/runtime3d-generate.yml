@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       reference_url:
-        description: Approved cinematic police-dog master reference (public HTTPS PNG/JPG)
+        description: Photorealistic isolated K9 hero candidate (public HTTPS PNG/JPG/WEBP)
         required: true
-        default: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
-  # One-shot integration trigger. Normal future runs are deliberate workflow_dispatch runs,
-  # so free GPU quota is not burned by unrelated repository commits.
+        default: https://raw.githubusercontent.com/Malik05255/shar/fix/silent-listening-living-office/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp
+  # Deliberate one-shot trigger. Normal future runs remain workflow_dispatch-only
+  # unless this marker is intentionally changed, so free GPU quota is not burned.
   push:
     branches:
       - fix/silent-listening-living-office
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png' }}
+      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://raw.githubusercontent.com/Malik05255/shar/fix/silent-listening-living-office/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp' }}
       # Optional. Anonymous public Spaces remain usable when this secret is absent.
       # If supplied, this must be a normal Hugging Face account token; no billing token is required.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -47,6 +47,7 @@ jobs:
           print('FREE_ONLY=true')
           print('PAID_FALLBACK=false')
           print('QUALITY_DOWNGRADE=false')
+          print('REFERENCE_CLASS=isolated-photorealistic-k9-candidate')
           PY
 
       - name: Install free provider clients
@@ -101,4 +102,4 @@ jobs:
       - name: Keep production manifest closed
         run: |
           echo 'A successful candidate is still NOT production-ready.'
-          echo 'Identity, fur, uniform, PBR, quadruped/facial rig, exact animation clips, Arabic lip-sync and physical Android acceptance remain mandatory.'
+          echo 'Identity, isolated silhouette, fur, uniform, PBR, biped/facial rig, exact animation clips, Arabic lip-sync and physical Android acceptance remain mandatory.'
