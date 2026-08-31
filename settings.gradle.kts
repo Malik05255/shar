@@ -17,6 +17,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // sherpa-onnx publishes its Android AAR through the project's official JitPack setup.
+        maven("https://jitpack.io")
     }
 }
 
