@@ -20,6 +20,7 @@ DOG_CLIPS = {
     "LookAtDesk", "LookAtMonitor", "LookAtCamera", "LookAtDoor", "LookAtStaff",
     "ReachFile", "ReviewFile", "TurnPage", "WriteNote", "SetFileDown",
     "UsePhone", "Listen", "Talk", "StandUp", "SitDown", "Walk", "LeanBack",
+    "VisemeRest", "VisemeOpen", "VisemeWide", "VisemeRound", "VisemeClosed",
 }
 STAFF_CLIPS = {
     "IdleDesk", "Breathing", "Blink", "Type", "Read", "Write",
