@@ -16,11 +16,13 @@ class OfficeFoleyPolicyTest {
     }
 
     @Test
-    fun `rate gate blocks duplicate ring until cooldown expires`() {
+    fun `rate gate blocks duplicate ring until configured cooldown expires`() {
         val gate = OfficeFoleyGate()
-        assertTrue(gate.shouldPlay(OfficeCue.PHONE_RING, 10_000L))
-        assertFalse(gate.shouldPlay(OfficeCue.PHONE_RING, 14_999L))
-        assertTrue(gate.shouldPlay(OfficeCue.PHONE_RING, 15_000L))
+        val firstAt = 10_000L
+        val cooldown = OfficeFoleyPolicy.cooldownMs(OfficeCue.PHONE_RING)
+        assertTrue(gate.shouldPlay(OfficeCue.PHONE_RING, firstAt))
+        assertFalse(gate.shouldPlay(OfficeCue.PHONE_RING, firstAt + cooldown - 1L))
+        assertTrue(gate.shouldPlay(OfficeCue.PHONE_RING, firstAt + cooldown))
     }
 
     @Test
