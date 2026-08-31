@@ -20,20 +20,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
-
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-
       - name: Check signing and natural voice prerequisites
         id: prerequisites
         shell: bash
@@ -51,20 +47,17 @@ jobs:
           [[ -z "$KEY_ALIAS" ]] && missing+=("ALSHORTI_KEY_ALIAS")
           [[ -z "$KEY_PASSWORD" ]] && missing+=("ALSHORTI_KEY_PASSWORD")
           [[ -z "$GEMINI_API_KEY" ]] && missing+=("GEMINI_API_KEY")
-
           if (( ${#missing[@]} > 0 )); then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Signed release skipped. Missing repository secrets: ${missing[*]}"
             exit 0
           fi
-
           KEYSTORE_FILE="$RUNNER_TEMP/alshorti-release.jks"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           chmod 600 "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
           echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
           echo "ready=true" >> "$GITHUB_OUTPUT"
-
       - name: Check whether this version is already published
         if: steps.prerequisites.outputs.ready == 'true'
         id: release_check
@@ -80,7 +73,6 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Prepare cinematic dog motion assets
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         shell: bash
@@ -99,16 +91,13 @@ jobs:
           RAW_DIR="police-app/src/main/res/raw"
           DRAW_DIR="police-app/src/main/res/drawable-nodpi"
           mkdir -p "$RAW_DIR" "$DRAW_DIR"
-
           fetch_asset() {
             local url="$1"
             local out="$2"
             echo "Downloading $(basename "$out")"
-            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 \
-              --max-time 180 "$url" --output "$out"
+            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 --max-time 180 "$url" --output "$out"
             test -s "$out"
           }
-
           rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
           rm -f "$RAW_DIR/dog_idle_living.mp4" "$RAW_DIR/dog_talk_seated_living.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
           fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
@@ -120,22 +109,13 @@ jobs:
           fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
           fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
           fetch_asset "$DOG_REVIEW_FILE_URL" "$RAW_DIR/dog_review_file.mp4"
-
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq ffmpeg
           fi
-
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" \
-            -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
-            -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
-
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
+          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
       - name: Verify Gemini Saudi-directed voice end-to-end
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         shell: bash
@@ -159,13 +139,7 @@ jobs:
           }, ensure_ascii=False))
           PY
           )
-          HTTP_CODE=$(curl --silent --show-error --location \
-            --output "$RESPONSE" --write-out '%{http_code}' \
-            --connect-timeout 15 --max-time 60 \
-            -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" \
-            -H "x-goog-api-key: ${GEMINI_API_KEY}" \
-            -H 'Content-Type: application/json' \
-            --data "$PAYLOAD")
+          HTTP_CODE=$(curl --silent --show-error --location --output "$RESPONSE" --write-out '%{http_code}' --connect-timeout 15 --max-time 60 -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" -H "x-goog-api-key: ${GEMINI_API_KEY}" -H 'Content-Type: application/json' -H 'Api-Revision: 2026-05-20' --data "$PAYLOAD")
           if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
             echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
             exit 1
@@ -173,19 +147,35 @@ jobs:
           python3 - <<PY
           import base64, json, wave
           data=json.load(open("$RESPONSE"))
-          audio=data.get("output_audio") or data.get("outputAudio") or {}
-          encoded=audio.get("data","")
-          if not encoded:
-              raise SystemExit("Gemini response did not include output_audio.data")
-          pcm=base64.b64decode(encoded)
-          if len(pcm) < 3000:
-              raise SystemExit("Gemini returned an unexpectedly short audio buffer")
-          with wave.open("$WAV","wb") as w:
-              w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
+          audio=None
+          for step in data.get("steps", []):
+              if step.get("type") == "model_output":
+                  for block in step.get("content", []):
+                      if block.get("type") == "audio" and block.get("data"):
+                          audio=block; break
+              if audio: break
+          if not audio:
+              for key in ("output_audio", "outputAudio"):
+                  candidate=data.get(key)
+                  if isinstance(candidate, dict) and candidate.get("data"):
+                      audio=candidate; break
+          if not audio:
+              raise SystemExit("Gemini REST response contained no audio content block")
+          raw=base64.b64decode(audio["data"])
+          if len(raw) < 3000: raise SystemExit("Gemini returned an unexpectedly short audio payload")
+          mime=(audio.get("mime_type") or audio.get("mimeType") or "").lower()
+          if mime.startswith("audio/wav") or raw[:4] == b"RIFF":
+              open("$WAV","wb").write(raw)
+          elif mime.startswith("audio/l16") or mime.startswith("audio/pcm") or not mime:
+              rate=int(audio.get("sample_rate") or audio.get("sampleRate") or 24000)
+              with wave.open("$WAV","wb") as w:
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(raw)
+          else:
+              raise SystemExit("Unexpected Gemini audio MIME: " + mime)
           PY
+          test -s "$WAV"
           ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$WAV"
           rm -f "$RESPONSE" "$WAV"
-
       - name: Build signed release APK
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         env:
@@ -196,7 +186,6 @@ jobs:
           ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
           ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleRelease
-
       - name: Verify and prepare release files
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         shell: bash
@@ -204,15 +193,12 @@ jobs:
           set -euo pipefail
           SOURCE_APK="police-app/build/outputs/apk/release/police-app-release.apk"
           test -s "$SOURCE_APK"
-
           mkdir -p release-out
           RELEASE_APK="release-out/AlShorti-${VERSION_NAME}.apk"
           cp "$SOURCE_APK" "$RELEASE_APK"
           sha256sum "$RELEASE_APK" > "${RELEASE_APK}.sha256"
-
           echo "RELEASE_APK=$RELEASE_APK" >> "$GITHUB_ENV"
           echo "RELEASE_SHA=${RELEASE_APK}.sha256" >> "$GITHUB_ENV"
-
       - name: Publish GitHub Release
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         shell: bash
@@ -221,13 +207,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION_NAME}"
-          gh release create "$TAG" "$RELEASE_APK" "$RELEASE_SHA" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "الشرطي ${VERSION_NAME}" \
-            --generate-notes \
-            --latest
-
+          gh release create "$TAG" "$RELEASE_APK" "$RELEASE_SHA" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "الشرطي ${VERSION_NAME}" --generate-notes --latest
       - name: Upload signed APK artifact
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         uses: actions/upload-artifact@v4
