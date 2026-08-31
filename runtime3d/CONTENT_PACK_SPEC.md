@@ -50,14 +50,16 @@ This pack replaces full-scene MP4 playback with a persistent real-time office wo
 
 The hero GLB must expose these exact clip names:
 
-`IdleWork`, `Breathing`, `Blink`, `EyeSaccade`, `LookAtDesk`, `LookAtMonitor`, `LookAtCamera`, `LookAtDoor`, `LookAtStaff`, `ReachFile`, `ReviewFile`, `TurnPage`, `WriteNote`, `SetFileDown`, `UsePhone`, `Listen`, `Talk`, `StandUp`, `SitDown`, `Walk`, `LeanBack`.
+`IdleWork`, `Breathing`, `Blink`, `EyeSaccade`, `LookAtDesk`, `LookAtMonitor`, `LookAtCamera`, `LookAtDoor`, `LookAtStaff`, `ReachFile`, `ReviewFile`, `TurnPage`, `WriteNote`, `SetFileDown`, `UsePhone`, `Listen`, `Talk`, `StandUp`, `SitDown`, `Walk`, `LeanBack`, `VisemeRest`, `VisemeOpen`, `VisemeWide`, `VisemeRound`, `VisemeClosed`.
 
 ### Hero motion rules
 
 - Silence: never default to `LookAtCamera`; attention remains on desk, monitor, staff or room events.
 - User voice activity: eye gaze reacts first, then head, then torso. Do not snap the whole body in one frame.
-- Breathing, blink, gaze, facial motion and hands should be authored so they can be layered or blended without full-body pops.
-- Talking must support jaw / muzzle deformation suitable for runtime lip-sync; no baked full-scene video mouth movement.
+- Breathing, blink, gaze, facial motion and hands should be authored so they can be layered without full-body pops. A channel clip should animate only the bones/morphs it owns whenever layering is intended.
+- `Blink` and `EyeSaccade` are autonomous micro-motion clips. Runtime phases them independently per character so the office never blinks in sync.
+- `Viseme*` clips are facial pose clips isolated to the muzzle/jaw/mouth controls. Runtime can change them at speech cadence without recreating the scene or touching body motion.
+- `Talk` carries natural speaking posture/head micro-motion but must not bake phoneme-specific mouth shapes; phonemes come from the `Viseme*` layer.
 - Idle loops must have clean cycle boundaries but runtime scenario timing must not expose obvious repeated full-body cycles.
 
 ## Staff animation names
@@ -88,6 +90,7 @@ There is no continuous synthetic ambience oscillator. Background sound exists on
 - A new pack is staged completely and promoted atomically only after all required actors validate.
 - If one actor is unchanged between pack versions, the app reuses the previous validated bytes and does not redownload it.
 - Existing validated pack stays active during download and on any network/validation failure.
+- If a new pack finishes downloading during an active office session, it is activated on the next app launch to prevent a visible mid-scene GLB swap.
 - `minimumAppVersion` prevents a content pack from being loaded by an incompatible runtime.
 
 ## Acceptance gate
@@ -99,6 +102,7 @@ A pack must not be enabled until all of the following pass on a physical Android
 3. Background actors continue plausible independent work while hero listens/talks.
 4. No obvious synchronized loops across staff.
 5. No visible animation snap when plans change.
-6. No missing texture/material flashes.
-7. Stable frame pacing on the target phone.
-8. Visual comparison against the approved cinematic MP4 reference shows no accepted downgrade in hero identity, lighting, materials or framing.
+6. Lip-sync visemes move only the muzzle/jaw and do not disturb body/gaze animations.
+7. No missing texture/material flashes.
+8. Stable frame pacing on the target phone.
+9. Visual comparison against the approved cinematic MP4 reference shows no accepted downgrade in hero identity, lighting, materials or framing.
