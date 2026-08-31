@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a free Hunyuan3D-2.1 textured reference GLB from the approved hero image.
+"""Generate a free geometry-aware Hunyuan textured reference GLB.
 
-This script is candidate-only. It uses the official Hugging Face ZeroGPU Space and
-never calls a paid provider. The result is used as a 360-degree PBR texture source;
-it does not replace the animated production hero by itself.
+Candidate-only: use official Tencent Hugging Face ZeroGPU Spaces, never a paid
+provider. Hunyuan3D-2.1 is preferred only when an authenticated free HF token is
+available; anonymous runs use Hunyuan3D-2 because its combined shape+paint call is
+within the current anonymous ZeroGPU per-call duration cap.
 """
 from __future__ import annotations
 
@@ -28,6 +29,14 @@ def sanitize(name: str) -> str:
     return name
 
 
+def safe_reason(exc: BaseException) -> str:
+    text = str(exc).replace("\n", " ").strip()
+    token = os.environ.get("HF_TOKEN", "").strip()
+    if token:
+        text = text.replace(token, "***")
+    return text[:1200]
+
+
 def collect_glbs(value: Any, out: list[Path]) -> None:
     if value is None:
         return
@@ -49,31 +58,8 @@ def collect_glbs(value: Any, out: list[Path]) -> None:
             collect_glbs(nested, out)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--reference", type=Path, required=True)
-    ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--report", type=Path, required=True)
-    ap.add_argument("--space", default="tencent/Hunyuan3D-2.1")
-    args = ap.parse_args()
-
-    if not args.reference.is_file() or args.reference.stat().st_size < 10_000:
-        raise SystemExit("Approved hero reference is missing or unexpectedly small")
-
-    from gradio_client import Client, handle_file
-
-    token = os.environ.get("HF_TOKEN", "").strip() or None
-    kwargs: dict[str, Any] = {"verbose": False}
-    if token:
-        kwargs["hf_token"] = token
-    client = Client(args.space, **kwargs)
-
-    api = client.view_api(print_info=False, return_format="dict")
-    named = api.get("named_endpoints") or {}
-    endpoint = next((name for name in named if "generation_all" in name), None)
-    if not endpoint:
-        raise RuntimeError(f"Official Space exposes no generation_all endpoint; endpoints={list(named)}")
-    info = named[endpoint]
+def build_call(info: dict[str, Any], reference: Path) -> tuple[dict[str, Any], list[str]]:
+    from gradio_client import handle_file
 
     call: dict[str, Any] = {}
     exposed: list[str] = []
@@ -85,7 +71,7 @@ def main() -> int:
         exposed.append(name)
         lower = name.lower()
         if lower == "image" or (lower.endswith("_image") and not lower.startswith("mv_")):
-            call[name] = handle_file(str(args.reference))
+            call[name] = handle_file(str(reference))
         elif lower == "caption":
             call[name] = None
         elif lower.startswith("mv_image_"):
@@ -108,9 +94,56 @@ def main() -> int:
             continue
         else:
             call[name] = None
-
     if not any(k.lower() == "image" for k in call):
         raise RuntimeError(f"generation_all exposes no image parameter; parameters={exposed}")
+    return call, exposed
+
+
+def validate_textured_glb(path: Path) -> tuple[dict[str, Any], list[str]]:
+    doc = read_glb_json(path)
+    meshes = doc.get("meshes") or []
+    materials = doc.get("materials") or []
+    textures = doc.get("textures") or []
+    images = doc.get("images") or []
+    if not meshes:
+        raise RuntimeError("Textured reference contains no meshes")
+    if not materials or not textures or not images:
+        raise RuntimeError(
+            f"Incomplete material payload: materials={len(materials)} textures={len(textures)} images={len(images)}"
+        )
+
+    channels: list[str] = []
+    for material in materials:
+        pbr = material.get("pbrMetallicRoughness") or {}
+        if pbr.get("baseColorTexture") is not None:
+            channels.append("baseColorTexture")
+        if pbr.get("metallicRoughnessTexture") is not None:
+            channels.append("metallicRoughnessTexture")
+        if material.get("normalTexture") is not None:
+            channels.append("normalTexture")
+    if "baseColorTexture" not in channels:
+        raise RuntimeError(f"Generated reference lacks baseColorTexture; channels={sorted(set(channels))}")
+    return {
+        "meshes": len(meshes),
+        "materials": len(materials),
+        "textures": len(textures),
+        "images": len(images),
+    }, sorted(set(channels))
+
+
+def run_space(space: str, reference: Path, token: str | None) -> tuple[Path, dict[str, Any]]:
+    from gradio_client import Client
+
+    kwargs: dict[str, Any] = {"verbose": False}
+    if token:
+        kwargs["hf_token"] = token
+    client = Client(space, **kwargs)
+    api = client.view_api(print_info=False, return_format="dict")
+    named = api.get("named_endpoints") or {}
+    endpoint = next((name for name in named if "generation_all" in name), None)
+    if not endpoint:
+        raise RuntimeError(f"Space exposes no generation_all endpoint; endpoints={list(named)}")
+    call, exposed = build_call(named[endpoint], reference)
 
     t0 = time.monotonic()
     result = client.predict(api_name=endpoint, **call)
@@ -123,48 +156,76 @@ def main() -> int:
         raise RuntimeError(f"generation_all returned no materialized GLB: {type(result).__name__}")
     textured = [p for p in unique if "textured" in p.name.lower()]
     source = max(textured or unique, key=lambda p: p.stat().st_size)
+    structural, channels = validate_textured_glb(source)
+    return source, {
+        "space": space,
+        "endpoint": endpoint,
+        "elapsedSeconds": elapsed,
+        "exposedParameters": exposed,
+        "structural": structural,
+        "pbrChannels": channels,
+    }
 
-    doc = read_glb_json(source)
-    meshes = doc.get("meshes") or []
-    materials = doc.get("materials") or []
-    textures = doc.get("textures") or []
-    images = doc.get("images") or []
-    if not meshes:
-        raise RuntimeError("Textured reference contains no meshes")
-    if not materials or not textures or not images:
-        raise RuntimeError(
-            f"Textured reference has incomplete PBR payload: materials={len(materials)} textures={len(textures)} images={len(images)}"
-        )
 
-    pbr_channels = []
-    for material in materials:
-        pbr = material.get("pbrMetallicRoughness") or {}
-        if pbr.get("baseColorTexture") is not None:
-            pbr_channels.append("baseColorTexture")
-        if pbr.get("metallicRoughnessTexture") is not None:
-            pbr_channels.append("metallicRoughnessTexture")
-        if material.get("normalTexture") is not None:
-            pbr_channels.append("normalTexture")
-    if "baseColorTexture" not in pbr_channels:
-        raise RuntimeError(f"Generated reference lacks baseColorTexture; channels={sorted(set(pbr_channels))}")
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reference", type=Path, required=True)
+    ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--report", type=Path, required=True)
+    ap.add_argument("--space", default=None, help="Optional explicit official Tencent Space")
+    args = ap.parse_args()
+
+    if not args.reference.is_file() or args.reference.stat().st_size < 10_000:
+        raise SystemExit("Approved hero reference is missing or unexpectedly small")
+
+    token = os.environ.get("HF_TOKEN", "").strip() or None
+    if args.space:
+        spaces = [args.space]
+    elif token:
+        spaces = ["tencent/Hunyuan3D-2.1", "tencent/Hunyuan3D-2"]
+    else:
+        # 2.1 currently requests 270s for generation_all, above anonymous per-call cap.
+        # 2.0's official Space requests 90s and remains a legitimate free ZeroGPU path.
+        spaces = ["tencent/Hunyuan3D-2"]
+
+    attempts: list[dict[str, Any]] = []
+    source: Path | None = None
+    metadata: dict[str, Any] | None = None
+    for space in spaces:
+        attempt = {"space": space, "status": "started"}
+        attempts.append(attempt)
+        try:
+            source, metadata = run_space(space, args.reference, token)
+            attempt.update({"status": "success", "elapsedSeconds": metadata["elapsedSeconds"]})
+            break
+        except Exception as exc:
+            attempt.update({"status": "failed-free-provider", "reason": safe_reason(exc), "exceptionType": type(exc).__name__})
+            print(f"::warning::{space} failed: {attempt['reason']}", flush=True)
+
+    if source is None or metadata is None:
+        raise RuntimeError(f"Every official free Hunyuan texture path failed: {attempts}")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, args.output)
+    structural = metadata["structural"]
     report = {
-        "provider": "official-hunyuan3d-2.1-zero",
-        "space": args.space,
-        "endpoint": endpoint,
+        "provider": "official-tencent-hunyuan-zero",
+        "space": metadata["space"],
+        "endpoint": metadata["endpoint"],
         "freeOnly": True,
+        "authenticatedFreeTokenUsed": bool(token),
         "paidFallbackAllowed": False,
+        "tripoApiUsed": False,
         "purpose": "360-degree geometry-aware PBR texture transfer source",
         "reference": args.reference.name,
-        "elapsedSeconds": elapsed,
+        "elapsedSeconds": metadata["elapsedSeconds"],
         "bytes": args.output.stat().st_size,
-        "meshes": len(meshes),
-        "materials": len(materials),
-        "textures": len(textures),
-        "images": len(images),
-        "pbrChannels": sorted(set(pbr_channels)),
+        "meshes": structural["meshes"],
+        "materials": structural["materials"],
+        "textures": structural["textures"],
+        "images": structural["images"],
+        "pbrChannels": metadata["pbrChannels"],
+        "attempts": attempts,
         "parameters": {
             "steps": 30,
             "guidanceScale": 7.5,
