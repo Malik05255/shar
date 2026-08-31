@@ -98,17 +98,7 @@ class PoliceVoiceEngine(
             override fun onError(message: String) {
                 lastViseme = MouthViseme.REST
                 listener.onViseme(MouthViseme.REST)
-                if (shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()) {
-                    val retryNumber = ++ttsRetryCount
-                    val retryText = spokenText
-                    mainHandler.postDelayed({
-                        if (!released && retryText == spokenText && mode == VoiceMode.ONLINE) {
-                            saudiVoice.speak(retryText)
-                        }
-                    }, RETRY_BASE_DELAY_MS * retryNumber)
-                } else {
-                    listener.onTtsError(message)
-                }
+                handleVoiceError(message)
             }
         }
     )
@@ -172,6 +162,21 @@ class PoliceVoiceEngine(
         saudiVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
+    }
+
+    private fun handleVoiceError(message: String) {
+        if (shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()) {
+            val retryNumber = ++ttsRetryCount
+            val retryText = spokenText
+            mainHandler.postDelayed({ retryCurrentSpeech(retryText) }, RETRY_BASE_DELAY_MS * retryNumber)
+        } else {
+            listener.onTtsError(message)
+        }
+    }
+
+    private fun retryCurrentSpeech(expectedText: String) {
+        if (released || mode != VoiceMode.ONLINE || expectedText != spokenText || expectedText.isBlank()) return
+        saudiVoice.speak(expectedText)
     }
 
     private fun shouldRetryVoice(message: String): Boolean {
