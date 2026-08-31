@@ -6,7 +6,7 @@ on:
       reference_url:
         description: Photorealistic isolated K9 hero candidate (public HTTPS PNG/JPG/WEBP)
         required: true
-        default: https://raw.githubusercontent.com/Malik05255/shar/fix/silent-listening-living-office/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp
+        default: https://raw.githubusercontent.com/Malik05255/shar/5902631c5df905c8535bd150f40c6c1adcc294b4/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp
   # Deliberate one-shot trigger. Normal future runs remain workflow_dispatch-only
   # unless this marker is intentionally changed, so free GPU quota is not burned.
   push:
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://raw.githubusercontent.com/Malik05255/shar/fix/silent-listening-living-office/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp' }}
+      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://raw.githubusercontent.com/Malik05255/shar/5902631c5df905c8535bd150f40c6c1adcc294b4/runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp' }}
       # Optional. Anonymous public Spaces remain usable when this secret is absent.
       # If supplied, this must be a normal Hugging Face account token; no billing token is required.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
