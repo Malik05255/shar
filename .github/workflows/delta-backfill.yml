@@ -1,0 +1,125 @@
+name: Backfill Al-Shorti Delta Updates
+
+on:
+  workflow_run:
+    workflows: ['Publish Al-Shorti Release']
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alshorti-delta-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install BSDIFF implementation
+        run: python3 -m pip install --quiet --disable-pip-version-check bsdiff4==1.2.6
+
+      - name: Generate direct deltas from recent stable releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t tags < <(
+            gh release list --repo "$GITHUB_REPOSITORY" --limit 8 \
+              --json tagName,isDraft,isPrerelease,createdAt \
+              --jq '[.[] | select((.isDraft == false) and (.isPrerelease == false))] | sort_by(.createdAt) | reverse | .[].tagName'
+          )
+          if (( ${#tags[@]} < 2 )); then
+            echo 'Fewer than two stable releases; nothing to backfill.'
+            exit 0
+          fi
+
+          latest_tag="${tags[0]}"
+          latest_version="${latest_tag#v}"
+          work="$RUNNER_TEMP/alshorti-deltas"
+          latest_dir="$work/latest"
+          mkdir -p "$latest_dir"
+
+          if ! gh release download "$latest_tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern "AlShorti-${latest_version}.apk" --dir "$latest_dir"; then
+            echo "Latest release has no signed APK; skipping backfill."
+            exit 0
+          fi
+          new_apk="$latest_dir/AlShorti-${latest_version}.apk"
+          test -s "$new_apk"
+          full_size=$(stat -c%s "$new_apk")
+
+          # The release workflow already creates the immediate previous delta. This job fills direct
+          # paths from older versions too so a user can skip releases without downloading full APK.
+          for old_tag in "${tags[@]:1}"; do
+            old_version="${old_tag#v}"
+            old_dir="$work/$old_version"
+            mkdir -p "$old_dir"
+            if ! gh release download "$old_tag" --repo "$GITHUB_REPOSITORY" \
+                --pattern "AlShorti-${old_version}.apk" --dir "$old_dir"; then
+              echo "Skipping $old_version: compatible signed APK asset missing."
+              continue
+            fi
+
+            old_apk="$old_dir/AlShorti-${old_version}.apk"
+            patch="$work/AlShorti-${old_version}-to-${latest_version}.bsdiff"
+            manifest="$work/AlShorti-${old_version}-to-${latest_version}.delta.json"
+            test -s "$old_apk"
+
+            # Do not regenerate an asset already published by the main release workflow.
+            if gh release view "$latest_tag" --repo "$GITHUB_REPOSITORY" \
+                --json assets --jq '.assets[].name' | grep -Fxq "$(basename "$patch")"; then
+              echo "Delta $old_version -> $latest_version already exists."
+              continue
+            fi
+
+            OLD_APK="$old_apk" NEW_APK="$new_apk" PATCH="$patch" MANIFEST="$manifest" \
+            FROM_VERSION="$old_version" TO_VERSION="$latest_version" python3 - <<'PY'
+          import hashlib, json, os
+          import bsdiff4
+
+          old = os.environ['OLD_APK']
+          new = os.environ['NEW_APK']
+          patch = os.environ['PATCH']
+          manifest = os.environ['MANIFEST']
+          bsdiff4.file_diff(old, new, patch)
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          payload = {
+              'format': 'BSDIFF40',
+              'fromVersion': os.environ['FROM_VERSION'],
+              'toVersion': os.environ['TO_VERSION'],
+              'sourceSha256': sha(old),
+              'targetSha256': sha(new),
+              'patchSha256': sha(patch),
+              'patchSizeBytes': os.path.getsize(patch),
+              'targetSizeBytes': os.path.getsize(new),
+          }
+          with open(manifest, 'w', encoding='utf-8') as handle:
+              json.dump(payload, handle, ensure_ascii=False, separators=(',', ':'))
+          PY
+
+            patch_size=$(stat -c%s "$patch")
+            if (( patch_size >= full_size )); then
+              echo "Skipping $old_version: patch is not smaller than full APK."
+              rm -f "$patch" "$manifest"
+              continue
+            fi
+
+            gh release upload "$latest_tag" "$patch" "$manifest" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            echo "Published direct delta $old_version -> $latest_version ($(du -h "$patch" | cut -f1))."
+          done
