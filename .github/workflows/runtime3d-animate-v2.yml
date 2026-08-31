@@ -1,0 +1,164 @@
+name: Author Layer-Safe Cinematic Hero Motion - Free
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-animate-v2.yml'
+      - 'runtime3d/blender_author_cinematic_animations.py'
+      - 'runtime3d/validate_facial_motion.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cinematic-motion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      SOURCE_RUN_ID: '33393540203'
+      SOURCE_ARTIFACT: Runtime3D-police-dog-blender-autorig-candidate
+      SOURCE_GLB: police_dog.blender_autorig.candidate.glb
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Enforce candidate-only quality policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'DECIMATION=false'
+          echo 'REMESH=false'
+          echo 'SPARSE_LAYER_SAFE_ANIMATIONS=true'
+          echo 'FACIAL_WEIGHT_RETROFIT=true'
+          echo 'PRODUCTION_ACTIVATION=false'
+
+      - name: Download exact successful full-detail rig
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: ${{ runner.temp }}/rig-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify immutable rig source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/rig-source/$SOURCE_GLB"
+          test -s "$SRC"
+          python3 - <<'PY'
+          import os, sys, json
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          p = Path(os.environ['RUNNER_TEMP'])/'rig-source'/os.environ['SOURCE_GLB']
+          d = read_glb_json(p)
+          skins = d.get('skins') or []
+          joints = max((len(x.get('joints') or []) for x in skins), default=0)
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in d.get('meshes') or []:
+              for primitive in mesh.get('primitives') or []:
+                  pos = (primitive.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({'bytes': p.stat().st_size, 'skins': len(skins), 'maxJoints': joints, 'vertices': vertices}, indent=2))
+          if len(skins) != 1 or joints < 24 or vertices < 200000:
+              raise SystemExit('Rig source structural floor failed')
+          PY
+
+      - name: Install free Blender runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy
+          blender --version | head -n 2
+
+      - name: Author sparse body and upgraded facial clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime3d-motion-v2"
+          blender --background \
+            --python runtime3d/blender_author_cinematic_animations.py -- \
+            --input "$RUNNER_TEMP/rig-source/$SOURCE_GLB" \
+            --output "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.glb" \
+            --qc "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.qc.json"
+          test -s "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.glb"
+          test -s "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.qc.json"
+
+      - name: Validate exact runtime clip names and preserved geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          root = Path(os.environ['RUNNER_TEMP'])/'runtime3d-motion-v2'
+          p = root/'police_dog.motion_v2_candidate.glb'
+          qc = json.loads((root/'police_dog.motion_v2_candidate.qc.json').read_text())
+          d = read_glb_json(p)
+          names = sorted({a.get('name') for a in (d.get('animations') or []) if a.get('name')})
+          missing = sorted(set(DOG_CLIPS) - set(names))
+          skins = d.get('skins') or []
+          joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in d.get('meshes') or []:
+              for primitive in mesh.get('primitives') or []:
+                  pos = (primitive.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({'bytes': p.stat().st_size, 'vertices': vertices, 'animationCount': len(names),
+                            'missing': missing, 'skins': len(skins), 'maxJoints': joints,
+                            'sparseAnimationExport': qc.get('sparseAnimationExport')}, indent=2))
+          if missing or len(skins) != 1 or joints < 24 or vertices < 200000:
+              raise SystemExit('Motion V2 structural contract failed')
+          if qc.get('sparseAnimationExport') is not True:
+              raise SystemExit('Sparse animation contract missing')
+          PY
+
+      - name: Enforce facial deformation and animation layering gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 runtime3d/validate_facial_motion.py \
+            "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.glb" \
+            --report "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.facial.json"
+          test -s "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.facial.json"
+          echo 'FACIAL_LAYERING_GATE=PASS'
+          echo 'PRODUCTION_GATE=CLOSED'
+
+      - name: Keep strict production gate closed
+        shell: bash
+        run: |
+          set +e
+          cp "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.motion_v2_candidate.glb" \
+             "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.glb"
+          python3 runtime3d/inspect_glb.py "$RUNNER_TEMP/runtime3d-motion-v2/police_dog.glb"
+          RC=$?
+          if [[ $RC -eq 0 ]]; then
+            echo '::error::Production inspector passed before PBR/fur/visual/device acceptance.'
+            exit 1
+          fi
+          echo 'Expected: production gate remains closed pending final PBR and visual/device acceptance.'
+          exit 0
+
+      - name: Upload layer-safe motion candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-motion-v2-candidate
+          path: ${{ runner.temp }}/runtime3d-motion-v2/*
+          if-no-files-found: warn
+          retention-days: 14
