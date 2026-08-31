@@ -12,6 +12,7 @@ on:
       - fix/silent-listening-living-office
     paths:
       - '.github/workflows/runtime3d-generate.yml'
+      - 'runtime3d/generate_tripo_candidate.py'
 
 permissions:
   contents: read
@@ -33,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${TRIPO_API_KEY:-}" ]]; then
-            echo '::error::Repository secret TRIPO_API_KEY is missing. Add a Tripo v3 API key before running this paid generation workflow.'
+            echo '::error::Repository secret TRIPO_API_KEY is missing. Add a Tripo API key before running this paid generation workflow.'
             exit 1
           fi
           echo 'TRIPO_API_KEY is configured.'
