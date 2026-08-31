@@ -1,4 +1,5 @@
 triggered=2026-08-31
 purpose=isolated-photorealistic-k9-to-3d
-attempt=3
+attempt=4
+reference_commit=5902631c5df905c8535bd150f40c6c1adcc294b4
 reference=runtime3d/reference_candidates/police_dog.photorealistic_biped_v1.webp
