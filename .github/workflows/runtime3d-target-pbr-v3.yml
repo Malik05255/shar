@@ -1,0 +1,195 @@
+name: Validate Target-Owned Hero PBR V3 Pixels
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-target-pbr-v3.yml'
+      - 'runtime3d/blender_author_target_pbr.py'
+      - 'runtime3d/blender_author_target_pbr_v2.py'
+      - 'runtime3d/blender_author_target_pbr_v3.py'
+      - 'runtime3d/inspect_glb.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  target-pbr-v3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      MOTION_RUN_ID: '33427570106'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-v2-candidate
+      MOTION_GLB: police_dog.motion_v2_candidate.glb
+      DONOR_RUN_ID: '33410396487'
+      DONOR_ARTIFACT: Runtime3D-sf3d-textured-reference-candidate
+      DONOR_GLB: police_dog.sf3d.textured_reference.glb
+      OUTPUT_GLB: police_dog.motion_v2_target_pbr_v3_candidate.glb
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enforce free candidate policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          assert manifest.get('actors') == []
+          print('FREE_ONLY=true')
+          print('PAID_FALLBACK=false')
+          print('REAL_PNG_PIXEL_PAYLOAD_REQUIRED=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Download exact Motion V2 source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Download free visual reference donor
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DONOR_ARTIFACT }}
+          path: ${{ runner.temp }}/donor
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.DONOR_RUN_ID }}
+
+      - name: Install Blender numpy and image decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy python3-pil libegl1 libgl1-mesa-dri
+          blender --version | head -n 2
+
+      - name: Author persistent target-owned PBR pixels
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/target-pbr-v3/previews"
+          blender --background \
+            --python runtime3d/blender_author_target_pbr_v3.py -- \
+            --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output "$RUNNER_TEMP/target-pbr-v3/$OUTPUT_GLB" \
+            --qc "$RUNNER_TEMP/target-pbr-v3/target-pbr-v3.qc.json" \
+            --preview-dir "$RUNNER_TEMP/target-pbr-v3/previews"
+          test -s "$RUNNER_TEMP/target-pbr-v3/$OUTPUT_GLB"
+          test -s "$RUNNER_TEMP/target-pbr-v3/target-pbr-v3.qc.json"
+          test "$(find "$RUNNER_TEMP/target-pbr-v3/previews" -type f -name '*.png' | wc -l)" -eq 3
+
+      - name: Validate structure skin clips and real texture pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io, json, os, struct, sys
+          from pathlib import Path
+          from PIL import Image, ImageStat
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+
+          root=Path(os.environ['RUNNER_TEMP'])/'target-pbr-v3'
+          p=root/os.environ['OUTPUT_GLB']
+          d=read_glb_json(p)
+          names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+          missing=sorted(set(DOG_CLIPS)-names); extra=sorted(names-set(DOG_CLIPS))
+          skins=d.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
+          mats=d.get('materials') or []; textures=d.get('textures') or []; images=d.get('images') or []
+          accessors=d.get('accessors') or []; vertices=0; material_indices=set()
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  attrs=prim.get('attributes') or {}; pos=attrs.get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors): vertices += int(accessors[pos].get('count') or 0)
+                  if isinstance(prim.get('material'),int): material_indices.add(int(prim['material']))
+
+          raw=p.read_bytes(); magic,version,total=struct.unpack_from('<4sII',raw,0)
+          if magic != b'glTF': raise SystemExit('Not a GLB')
+          off=12; gltf=None; binary=None
+          while off < total:
+              length,ctype=struct.unpack_from('<II',raw,off); off+=8
+              payload=raw[off:off+length]; off+=length
+              if ctype == 0x4E4F534A: gltf=json.loads(payload.decode('utf-8').rstrip('\x00 \t\r\n'))
+              elif ctype == 0x004E4942: binary=payload
+          if gltf is None or binary is None: raise SystemExit('GLB chunks missing')
+          views=gltf.get('bufferViews') or []
+          decoded=[]
+          for i,img in enumerate(gltf.get('images') or []):
+              bv_index=img.get('bufferView')
+              if not isinstance(bv_index,int): raise SystemExit(f'Image {i} is not embedded')
+              bv=views[bv_index]; start=int(bv.get('byteOffset') or 0); length=int(bv.get('byteLength') or 0)
+              blob=binary[start:start+length]
+              pil=Image.open(io.BytesIO(blob)).convert('RGB')
+              mean=tuple(v/255.0 for v in ImageStat.Stat(pil).mean)
+              extrema=pil.getextrema()
+              decoded.append({'index':i,'size':pil.size,'mean':mean,'extrema':extrema})
+
+          base_stats=[]; normal_stats=[]
+          for index,mat in enumerate(mats):
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              base_tex=(pbr.get('baseColorTexture') or {}).get('index')
+              normal_tex=(mat.get('normalTexture') or {}).get('index')
+              if not isinstance(base_tex,int) or not isinstance(normal_tex,int):
+                  raise SystemExit(f'Material {index} missing BaseColor/Normal')
+              base_source=textures[base_tex].get('source'); normal_source=textures[normal_tex].get('source')
+              base_stats.append(decoded[base_source]); normal_stats.append(decoded[normal_source])
+
+          base_luma=[sum(s['mean'])/3.0 for s in base_stats]
+          normal_blue=[s['mean'][2] for s in normal_stats]
+          preview_luma=[]
+          for preview in sorted((root/'previews').glob('*.png')):
+              image=Image.open(preview).convert('RGB')
+              preview_luma.append(sum(v/255.0 for v in ImageStat.Stat(image).mean)/3.0)
+
+          qc=json.loads((root/'target-pbr-v3.qc.json').read_text())
+          vb=qc.get('targetVerticesBeforeAfter') or []; pb=qc.get('targetPolygonsBeforeAfter') or []
+          summary={'bytes':p.stat().st_size,'vertices':vertices,'animations':len(names),'missing':missing,'extra':extra,
+                   'skins':len(skins),'joints':joints,'materials':len(mats),'textures':len(textures),'images':len(images),
+                   'primitiveMaterials':sorted(material_indices),'baseLuma':base_luma,'normalBlue':normal_blue,
+                   'previewLuma':preview_luma,'verticesBeforeAfter':vb,'polygonsBeforeAfter':pb}
+          print(json.dumps(summary,indent=2))
+          if missing or extra or len(names)!=26: raise SystemExit('Exact 26 animation contract failed')
+          if len(skins)!=1 or joints < 32: raise SystemExit('Skin/joint contract failed')
+          if vertices < 1_000_000: raise SystemExit('Full-detail geometry floor failed')
+          if len(vb)!=2 or vb[0]!=vb[1] or len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Topology changed')
+          if len(mats)<7 or len(textures)<14 or len(images)<14 or len(material_indices)<7: raise SystemExit('Seven-region PBR structure missing')
+          if min(base_luma) < 0.012 or max(base_luma) < 0.055: raise SystemExit(f'BaseColor pixels are still effectively black: {base_luma}')
+          if min(normal_blue) < 0.65: raise SystemExit(f'Normal-map pixels invalid/black: {normal_blue}')
+          if max(base_luma)-min(base_luma) < 0.025: raise SystemExit(f'Semantic material color separation too weak: {base_luma}')
+          if min(preview_luma) < 0.025: raise SystemExit(f'QC render remains effectively black: {preview_luma}')
+          print('TARGET_PBR_V3_PIXEL_GATE=PASS')
+          PY
+
+      - name: Upload candidate and renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-motion-v2-target-pbr-v3-candidate
+          path: ${{ runner.temp }}/target-pbr-v3/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production closed
+        if: success()
+        run: |
+          echo 'REAL_TEXTURE_PIXEL_GATE=PASS'
+          echo 'MANUAL_VISUAL_QC_REQUIRED=true'
+          echo 'SPARSE_MOTION_TRANSPLANT_REQUIRED=true'
+          echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
