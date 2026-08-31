@@ -1,4 +1,4 @@
-name: Generate Runtime 3D Hero Texture Candidate - Free Pool
+name: Texture Runtime 3D Hero Candidate - Free Hunyuan PBR
 
 on:
   workflow_dispatch:
@@ -7,92 +7,196 @@ on:
       - fix/silent-listening-living-office
     paths:
       - '.github/workflows/runtime3d-texture.yml'
-      - 'runtime3d/free_texture_candidate.py'
-      - 'runtime3d/.texture-run-once'
+      - 'runtime3d/hf_hunyuan_pbr_donor.py'
+      - 'runtime3d/blender_transfer_pbr_candidate.py'
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  free-texture-pool:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  pbr-transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     env:
+      MOTION_RUN_ID: '33393807309'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-candidate
+      MOTION_GLB: police_dog.motion_candidate.glb
       HERO_REFERENCE_RUN_ID: '33391759260'
+      HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
+      HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
 
-      - name: Enforce red lines
+      - name: Enforce free-only and topology-preservation policy
         shell: bash
         run: |
           set -euo pipefail
           echo 'FREE_ONLY=true'
           echo 'PAID_FALLBACK=false'
-          echo 'AUTO_REPLACE_HERO=false'
+          echo 'DONOR_GEOMETRY_ACCEPTED=false'
+          echo 'DECIMATION=false'
+          echo 'REMESH=false'
           echo 'PRODUCTION_ACTIVATION=false'
+
+      - name: Download exact motion hero artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
 
       - name: Download exact hero reference artifact
         uses: actions/download-artifact@v4
         with:
-          name: Runtime3D-photorealistic-hero-reference-candidate
-          path: ${{ runner.temp }}/hero-reference
+          name: ${{ env.HERO_REFERENCE_ARTIFACT }}
+          path: ${{ runner.temp }}/reference
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
 
-      - name: Verify reference
+      - name: Verify immutable inputs
         shell: bash
         run: |
           set -euo pipefail
-          SRC="$RUNNER_TEMP/hero-reference/police_dog.hero_reference.fullbody.png"
-          test -s "$SRC"
-          BYTES=$(stat -c%s "$SRC")
-          (( BYTES >= 10000 )) || { echo "::error::Hero reference too small: $BYTES"; exit 1; }
-          cp "$SRC" "$RUNNER_TEMP/hero-reference.webp"
-          file "$RUNNER_TEMP/hero-reference.webp"
+          test -s "$RUNNER_TEMP/motion/$MOTION_GLB"
+          test -s "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          motion = Path(os.environ['RUNNER_TEMP']) / 'motion' / os.environ['MOTION_GLB']
+          d = read_glb_json(motion)
+          names = {a.get('name') for a in (d.get('animations') or [])}
+          required = {
+              'IdleWork','Breathing','Blink','EyeSaccade','LookAtDesk','LookAtMonitor',
+              'LookAtCamera','LookAtDoor','LookAtStaff','ReachFile','ReviewFile','TurnPage',
+              'WriteNote','SetFileDown','UsePhone','Listen','Talk','StandUp','SitDown','Walk',
+              'LeanBack','VisemeRest','VisemeOpen','VisemeWide','VisemeRound','VisemeClosed'
+          }
+          missing = sorted(required - names)
+          skins = d.get('skins') or []
+          joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          print(json.dumps({'motionBytes': motion.stat().st_size, 'animations': len(names), 'missing': missing, 'skins': len(skins), 'maxJoints': joints}, indent=2))
+          if missing or len(skins) < 1 or joints < 24:
+              raise SystemExit('Motion source contract failed')
+          ref = Path(os.environ['RUNNER_TEMP']) / 'reference' / os.environ['HERO_REFERENCE_FILE']
+          if ref.stat().st_size < 10000:
+              raise SystemExit('Hero reference unexpectedly small')
+          print(f'heroReferenceBytes={ref.stat().st_size}')
+          PY
 
-      - name: Install free provider clients
-        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' 'Pillow>=10,<12'
+      - name: Install free Space client
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
 
-      - name: Rotate legitimate free texture providers
+      - name: Generate Hunyuan PBR donor on ZeroGPU
         shell: bash
         run: |
-          set +e
-          mkdir -p "$RUNNER_TEMP/runtime3d-texture"
-          python3 runtime3d/free_texture_candidate.py \
-            --reference-file "$RUNNER_TEMP/hero-reference.webp" \
-            --output-dir "$RUNNER_TEMP/runtime3d-texture"
-          RC=$?
-          echo "TEXTURE_POOL_EXIT=$RC" >> "$GITHUB_ENV"
-          exit 0
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pbr"
+          python3 runtime3d/hf_hunyuan_pbr_donor.py \
+            --reference "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.glb" \
+            --report "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.json"
 
-      - name: Show texture provider report
-        if: always()
+      - name: Install free Blender runtime
         shell: bash
         run: |
-          REPORT="$RUNNER_TEMP/runtime3d-texture/texture-provider-report.json"
-          if [[ -f "$REPORT" ]]; then cat "$REPORT"; else echo 'No texture report produced.'; fi
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy
+          blender --version | head -n 2
 
-      - name: Upload free texture candidate and report
-        if: always()
+      - name: Transfer PBR to animated hero and render QC views
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pbr/previews"
+          blender --background \
+            --python runtime3d/blender_transfer_pbr_candidate.py -- \
+            --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --donor "$RUNNER_TEMP/pbr/hunyuan_pbr_donor.glb" \
+            --output "$RUNNER_TEMP/pbr/police_dog.pbr_motion_candidate.glb" \
+            --qc "$RUNNER_TEMP/pbr/police_dog.pbr_motion_candidate.qc.json" \
+            --preview-dir "$RUNNER_TEMP/pbr/previews"
+
+      - name: Validate materials skin geometry and all runtime clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          root = Path(os.environ['RUNNER_TEMP']) / 'pbr'
+          p = root / 'police_dog.pbr_motion_candidate.glb'
+          q = json.loads((root / 'police_dog.pbr_motion_candidate.qc.json').read_text())
+          d = read_glb_json(p)
+          required = {
+              'IdleWork','Breathing','Blink','EyeSaccade','LookAtDesk','LookAtMonitor',
+              'LookAtCamera','LookAtDoor','LookAtStaff','ReachFile','ReviewFile','TurnPage',
+              'WriteNote','SetFileDown','UsePhone','Listen','Talk','StandUp','SitDown','Walk',
+              'LeanBack','VisemeRest','VisemeOpen','VisemeWide','VisemeRound','VisemeClosed'
+          }
+          names = {a.get('name') for a in (d.get('animations') or [])}
+          missing = sorted(required - names)
+          materials = d.get('materials') or []
+          textures = d.get('textures') or []
+          images = d.get('images') or []
+          skins = d.get('skins') or []
+          max_joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          summary = {
+              'bytes': p.stat().st_size,
+              'materials': len(materials), 'textures': len(textures), 'images': len(images),
+              'animationCount': len(names), 'missingAnimations': missing,
+              'skins': len(skins), 'maxJoints': max_joints,
+              'geometryPreserved': q.get('geometryPreserved'),
+              'targetVerticesBeforeAfter': q.get('targetVerticesBeforeAfter'),
+              'targetPolygonsBeforeAfter': q.get('targetPolygonsBeforeAfter'),
+              'decimationApplied': q.get('decimationApplied'), 'remeshApplied': q.get('remeshApplied')
+          }
+          print(json.dumps(summary, indent=2))
+          if len(materials) < 1 or (len(textures) < 1 and len(images) < 1):
+              raise SystemExit('PBR material payload missing')
+          if missing: raise SystemExit(f'Runtime animation names lost: {missing}')
+          if len(skins) < 1 or max_joints < 24: raise SystemExit('Skin/joint contract failed')
+          if q.get('geometryPreserved') is not True or q.get('decimationApplied') is not False or q.get('remeshApplied') is not False:
+              raise SystemExit('Topology preservation policy failed')
+          if q.get('targetVerticesBeforeAfter', [0,1])[0] != q.get('targetVerticesBeforeAfter', [0,1])[1]:
+              raise SystemExit('Target vertex count changed inside Blender')
+          if q.get('targetPolygonsBeforeAfter', [0,1])[0] != q.get('targetPolygonsBeforeAfter', [0,1])[1]:
+              raise SystemExit('Target polygon count changed inside Blender')
+          print('PBR_RUNTIME_STRUCTURAL_GATE=PASS')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+          cp "$RUNNER_TEMP/pbr/police_dog.pbr_motion_candidate.glb" "$RUNNER_TEMP/pbr/police_dog.glb"
+          python3 runtime3d/inspect_glb.py "$RUNNER_TEMP/pbr/police_dog.glb"
+          echo 'STRICT_GLB_CONTRACT=PASS'
+          echo 'VISUAL_FACIAL_DEVICE_ACCEPTANCE=STILL_REQUIRED'
+          echo 'PRODUCTION_GATE=CLOSED'
+
+      - name: Upload PBR motion candidate and visual QC
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-police-dog-free-texture-candidate
-          path: ${{ runner.temp }}/runtime3d-texture/*
-          if-no-files-found: warn
+          name: Runtime3D-police-dog-pbr-motion-candidate
+          path: ${{ runner.temp }}/pbr/*
+          if-no-files-found: error
           retention-days: 14
 
-      - name: Fail closed if all free providers are unavailable
-        shell: bash
+      - name: Keep production manifest closed
         run: |
-          if [[ "${TEXTURE_POOL_EXIT:-2}" != "0" ]]; then
-            echo '::error::No legitimate automated free texture provider succeeded. Paid fallback is disabled.'
-            exit 1
-          fi
-          echo 'FREE_TEXTURE_CANDIDATE_AVAILABLE=true'
-          echo 'AUTO_REPLACE_HERO=false'
-          echo 'PRODUCTION_GATE=CLOSED'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert d.get('enabled') is False, 'Production manifest must remain disabled during visual QC'
+          print('manifest.enabled=false')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
