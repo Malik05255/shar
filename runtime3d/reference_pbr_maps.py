@@ -18,10 +18,17 @@ from PIL import Image, ImageFilter
 
 def border_background(rgb: np.ndarray) -> np.ndarray:
     h, w, _ = rgb.shape
-    samples = np.concatenate([
-        rgb[0, ::max(1, w // 120)], :], rgb[-1, ::max(1, w // 120)], :],
-        rgb[::max(1, h // 160), 0, :], rgb[::max(1, h // 160), -1, :],
-    ], axis=0)
+    x_step = max(1, w // 120)
+    y_step = max(1, h // 160)
+    samples = np.concatenate(
+        [
+            rgb[0, ::x_step, :],
+            rgb[-1, ::x_step, :],
+            rgb[::y_step, 0, :],
+            rgb[::y_step, -1, :],
+        ],
+        axis=0,
+    )
     return np.median(samples.astype(np.float32), axis=0)
 
 
@@ -40,8 +47,10 @@ def foreground_crop(image: Image.Image) -> tuple[Image.Image, dict]:
     x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
     padx = max(3, int((x1 - x0 + 1) * 0.035))
     pady = max(3, int((y1 - y0 + 1) * 0.025))
-    x0 = max(0, x0 - padx); x1 = min(image.width - 1, x1 + padx)
-    y0 = max(0, y0 - pady); y1 = min(image.height - 1, y1 + pady)
+    x0 = max(0, x0 - padx)
+    x1 = min(image.width - 1, x1 + padx)
+    y0 = max(0, y0 - pady)
+    y1 = min(image.height - 1, y1 + pady)
     return image.crop((x0, y0, x1 + 1, y1 + 1)).convert("RGB"), {
         "backgroundEstimateRgb": [round(float(x), 2) for x in bg],
         "crop": [int(x0), int(y0), int(x1 + 1), int(y1 + 1)],
@@ -54,26 +63,29 @@ def contain_resize(image: Image.Image, size: int) -> Image.Image:
     # Preserve identity proportions. Extend edge pixels instead of adding a white/black border.
     src = image.convert("RGB")
     scale = min(size / src.width, size / src.height)
-    nw, nh = max(1, int(src.width * scale)), max(1, int(src.height * scale))
+    nw = max(1, int(src.width * scale))
+    nh = max(1, int(src.height * scale))
     resized = src.resize((nw, nh), Image.Resampling.LANCZOS)
     arr = np.asarray(resized)
     canvas = np.empty((size, size, 3), dtype=np.uint8)
-    ox, oy = (size - nw) // 2, (size - nh) // 2
-    canvas[oy:oy+nh, ox:ox+nw] = arr
+    ox = (size - nw) // 2
+    oy = (size - nh) // 2
+    canvas[oy:oy + nh, ox:ox + nw] = arr
     # Edge-extend horizontally and vertically to avoid background seams on the mesh.
     if ox:
-        canvas[oy:oy+nh, :ox] = arr[:, :1]
-        canvas[oy:oy+nh, ox+nw:] = arr[:, -1:]
+        canvas[oy:oy + nh, :ox] = arr[:, :1]
+        canvas[oy:oy + nh, ox + nw:] = arr[:, -1:]
     if oy:
-        canvas[:oy, :] = canvas[oy:oy+1, :]
-        canvas[oy+nh:, :] = canvas[oy+nh-1:oy+nh, :]
+        canvas[:oy, :] = canvas[oy:oy + 1, :]
+        canvas[oy + nh:, :] = canvas[oy + nh - 1:oy + nh, :]
     return Image.fromarray(canvas, "RGB")
 
 
 def derive_roughness(base: np.ndarray) -> np.ndarray:
     f = base.astype(np.float32) / 255.0
     lum = f[..., 0] * 0.2126 + f[..., 1] * 0.7152 + f[..., 2] * 0.0722
-    mx, mn = f.max(axis=2), f.min(axis=2)
+    mx = f.max(axis=2)
+    mn = f.min(axis=2)
     sat = (mx - mn) / np.maximum(mx, 1e-4)
     # Dark uniform/leather gets a little tighter response; colored/tan fur stays rougher.
     rough = 0.80 + 0.10 * sat
@@ -86,15 +98,22 @@ def derive_normal(base: np.ndarray) -> np.ndarray:
     f = base.astype(np.float32) / 255.0
     gray = f[..., 0] * 0.2126 + f[..., 1] * 0.7152 + f[..., 2] * 0.0722
     # High-frequency detail only: avoid turning broad lighting gradients into fake large dents.
-    blur = np.asarray(Image.fromarray((gray * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(3.2)), dtype=np.float32) / 255.0
+    blur_img = Image.fromarray((gray * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(3.2))
+    blur = np.asarray(blur_img, dtype=np.float32) / 255.0
     detail = gray - blur
     dy, dx = np.gradient(detail)
     strength = 6.0
-    nx, ny = -dx * strength, -dy * strength
+    nx = -dx * strength
+    ny = -dy * strength
     nz = np.ones_like(nx)
     length = np.sqrt(nx * nx + ny * ny + nz * nz)
-    nx, ny, nz = nx / length, ny / length, nz / length
-    normal = np.stack([(nx * 0.5 + 0.5), (ny * 0.5 + 0.5), (nz * 0.5 + 0.5)], axis=2)
+    nx = nx / length
+    ny = ny / length
+    nz = nz / length
+    normal = np.stack(
+        [(nx * 0.5 + 0.5), (ny * 0.5 + 0.5), (nz * 0.5 + 0.5)],
+        axis=2,
+    )
     return np.clip(normal * 255.0, 0, 255).astype(np.uint8)
 
 
@@ -106,6 +125,8 @@ def main() -> int:
     args = ap.parse_args()
     if not args.reference.is_file() or args.reference.stat().st_size < 10_000:
         raise SystemExit("Reference image missing or too small")
+    if args.size < 512 or args.size > 4096:
+        raise SystemExit("Texture size must be between 512 and 4096")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     source = Image.open(args.reference)
@@ -141,7 +162,10 @@ def main() -> int:
         "productionReady": False,
         "productionGate": "CLOSED",
     }
-    (args.output_dir / "reference-pbr-maps.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (args.output_dir / "reference-pbr-maps.json").write_text(
+        json.dumps(report, indent=2),
+        encoding="utf-8",
+    )
     print(json.dumps(report, indent=2))
     print("REFERENCE_PBR_MAPS_GATE=PASS")
     print("PRODUCTION_GATE=CLOSED")
