@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
@@ -53,8 +57,6 @@ def fit_donor_to_motion(donor: bpy.types.Object, target: bpy.types.Object) -> di
     if min(text.x, text.y, text.z, dext.x, dext.y, dext.z) <= 1e-8:
         raise RuntimeError('Degenerate target/donor bounds')
 
-    # Blender glTF import is Z-up here. Height-fit preserves donor proportions/identity;
-    # using target depth would over-stretch the muzzle/tail axis.
     scale = text.z / dext.z
     tc = (tmn + tmx) * 0.5
     dc = (dmn + dmx) * 0.5
@@ -101,16 +103,13 @@ def transfer_skin_weights(
 
     source_verts = [v.co.copy() for v in source.data.vertices]
     triangles: list[tuple[int, int, int]] = []
-    polygon_indices: list[int] = []
     for poly in source.data.polygons:
         ids = tuple(poly.vertices)
         if len(ids) == 3:
             triangles.append(ids)
-            polygon_indices.append(poly.index)
         elif len(ids) > 3:
             for i in range(1, len(ids) - 1):
                 triangles.append((ids[0], ids[i], ids[i + 1]))
-                polygon_indices.append(poly.index)
     if not triangles:
         raise RuntimeError('Animated source has no triangles')
     bvh = BVHTree.FromPolygons(source_verts, triangles, all_triangles=True)
@@ -135,8 +134,6 @@ def transfer_skin_weights(
                 if weight > 1e-8:
                     accum[membership.group] = accum.get(membership.group, 0.0) + weight
         if not accum:
-            # Use the nearest triangle vertex's strongest group rather than leaving an
-            # unweighted production vertex.
             nearest_vi = min(tri, key=lambda idx: (source_verts[idx] - loc).length_squared)
             source_groups = list(source.data.vertices[nearest_vi].groups)
             if not source_groups:
@@ -144,7 +141,6 @@ def transfer_skin_weights(
             strongest = max(source_groups, key=lambda g: g.weight)
             accum[int(strongest.group)] = float(strongest.weight)
 
-        # Match glTF's practical four-influence skin limit and normalize exactly.
         strongest_items = sorted(accum.items(), key=lambda item: item[1], reverse=True)[:4]
         total = sum(weight for _idx, weight in strongest_items)
         if total <= 1e-8:
@@ -159,8 +155,6 @@ def transfer_skin_weights(
     if misses:
         raise RuntimeError(f'Skin transfer missed {misses} donor vertices')
 
-    # Source groups intentionally include controller-only joints that may have no mesh
-    # weights. Record rather than fabricate facial weights that did not exist upstream.
     used_groups = [group_names[i] for i, count in enumerate(nonzero_group_hits) if count > 0]
     unused_groups = [group_names[i] for i, count in enumerate(nonzero_group_hits) if count == 0]
 
@@ -187,8 +181,7 @@ def apply_subdivision(donor: bpy.types.Object, levels: int) -> dict[str, int]:
     before_v = len(donor.data.vertices)
     before_p = len(donor.data.polygons)
 
-    # Apply subdivision before armature deformation while preserving UVs and interpolated
-    # vertex-group weights. Temporarily move the armature modifier after subdivision.
+    armature = donor.parent
     arm_mods = [m for m in donor.modifiers if m.type == 'ARMATURE']
     for m in arm_mods:
         donor.modifiers.remove(m)
@@ -207,8 +200,6 @@ def apply_subdivision(donor: bpy.types.Object, levels: int) -> dict[str, int]:
     for poly in donor.data.polygons:
         poly.use_smooth = True
 
-    # Rebind the exact source armature after topology refinement.
-    armature = donor.parent
     arm_mod = donor.modifiers.new(name='POLICE_DOG_ARMATURE', type='ARMATURE')
     arm_mod.object = armature
 
@@ -354,8 +345,6 @@ def main() -> int:
     if ratio < 0.999:
         raise RuntimeError(f'Rigged SF3D weighted-vertex gate failed: ratio={ratio}')
 
-    # Delete source/helper meshes but retain the exact armature/actions. This candidate is
-    # intentionally donor-geometry-first to preserve the accepted SF3D identity/PBR.
     for mesh in motion_meshes:
         if mesh.name in bpy.data.objects:
             bpy.data.objects.remove(mesh, do_unlink=True)
