@@ -6,26 +6,33 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import com.malik.alshurti.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
  * High-naturalness Saudi speech path backed by Gemini 3.1 Flash TTS.
  *
- * Gemini currently returns mono 16-bit little-endian PCM at 24 kHz. Playback deliberately uses
- * AudioTrack directly instead of WAV + MediaPlayer so OEM media decoders/audio-focus quirks cannot
- * turn a valid generated utterance into silence.
+ * Device playback deliberately has two independent paths:
+ *  1) streaming PCM through AudioTrack MODE_STREAM;
+ *  2) a WAV/MediaPlayer fallback when an OEM audio stack does not advance AudioTrack playback.
+ *
+ * prepare() never performs network TTS. The living office can start immediately; Gemini is called
+ * only when there is real speech to play.
  */
 class SaudiHumanVoice(
     context: Context,
@@ -57,7 +64,7 @@ class SaudiHumanVoice(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
-    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v4-pcm").apply { mkdirs() }
+    private val voiceCacheDir = File(appContext.cacheDir, "gemini-saudi-voice-v5-pcm").apply { mkdirs() }
 
     private val speechAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -67,17 +74,26 @@ class SaudiHumanVoice(
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusHeld = false
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var mediaPlayer: MediaPlayer? = null
     @Volatile private var released = false
 
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { change ->
         mainHandler.post {
-            val track = audioTrack ?: return@post
             when (change) {
-                AudioManager.AUDIOFOCUS_GAIN -> runCatching { track.setVolume(targetVolume()) }
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    runCatching { audioTrack?.setVolume(targetVolume()) }
+                    runCatching { mediaPlayer?.setVolume(targetVolume(), targetVolume()) }
+                }
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
-                    runCatching { track.setVolume(targetVolume() * 0.28f) }
-                AudioManager.AUDIOFOCUS_LOSS -> runCatching { track.setVolume(0f) }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    val duck = targetVolume() * 0.30f
+                    runCatching { audioTrack?.setVolume(duck) }
+                    runCatching { mediaPlayer?.setVolume(duck, duck) }
+                }
+                AudioManager.AUDIOFOCUS_LOSS -> {
+                    runCatching { audioTrack?.setVolume(0f) }
+                    runCatching { mediaPlayer?.setVolume(0f, 0f) }
+                }
             }
         }
     }
@@ -91,35 +107,23 @@ class SaudiHumanVoice(
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, if (role == VoiceRole.POLICE) "alshorti-gemini-police" else "alshorti-gemini-staff").apply {
             priority = if (role == VoiceRole.POLICE) Thread.NORM_PRIORITY + 1 else Thread.NORM_PRIORITY
-            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, throwable -> reportError(throwable.message) }
         }
     }
 
     private val playbackExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, if (role == VoiceRole.POLICE) "alshorti-pcm-police" else "alshorti-pcm-staff").apply {
+        Thread(runnable, if (role == VoiceRole.POLICE) "alshorti-audio-police" else "alshorti-audio-staff").apply {
             priority = Thread.NORM_PRIORITY + 1
         }
     }
 
+    /** Local readiness only. Never block office startup on a network TTS warm-up. */
     fun prepare() {
         if (released) return
         pruneVoiceCache()
         validateConfiguration()?.let { reportError(it); return }
-        val ticket = generation.incrementAndGet()
-        dispatch { callbacks.onPreparing(10, "") }
-        try {
-            networkExecutor.execute {
-                runCatching {
-                    val warmed = cachedOrSynthesize(ticket, prewarmText()) ?: return@runCatching
-                    if (warmed.file.length() < MIN_PCM_BYTES) throw IllegalStateException("وصل ملف الصوت الطبيعي ناقصاً.")
-                    if (ticket == generation.get() && !released) dispatch {
-                        callbacks.onPreparing(100, "")
-                        callbacks.onReady()
-                    }
-                }.onFailure { if (ticket == generation.get() && !released) reportError(it.message) }
-            }
-        } catch (_: RejectedExecutionException) {
-            reportError(null)
+        dispatch {
+            callbacks.onPreparing(100, "")
+            callbacks.onReady()
         }
     }
 
@@ -142,12 +146,12 @@ class SaudiHumanVoice(
                     if (ticket != generation.get() || released) return@runCatching
                     dispatch { callbacks.onPreparing(100, "") }
                     startPlaybackSafely(ticket, clip)
-                }.onFailure { if (ticket == generation.get() && !released) reportError(it.message) }
+                }.onFailure {
+                    if (ticket == generation.get() && !released) reportError(it.message)
+                }
             }
         } catch (_: RejectedExecutionException) {
-            reportError(null)
-        } catch (t: Throwable) {
-            reportError(t.message)
+            reportError("تعذر تشغيل الصوت الطبيعي.")
         }
     }
 
@@ -173,11 +177,6 @@ class SaudiHumanVoice(
     private fun configuredVoice(): String = when (role) {
         VoiceRole.POLICE -> BuildConfig.GEMINI_POLICE_VOICE.trim()
         VoiceRole.STAFF -> BuildConfig.GEMINI_STAFF_VOICE.trim()
-    }
-
-    private fun prewarmText(): String = when (role) {
-        VoiceRole.POLICE -> "هلا يا بطل، معك الشرطي. وش عندك؟"
-        VoiceRole.STAFF -> "سيدي، الملف جاهز."
     }
 
     private fun cachedOrSynthesize(ticket: Long, text: String): PcmClip? {
@@ -207,7 +206,10 @@ class SaudiHumanVoice(
             put("model", GEMINI_TTS_MODEL)
             put("input", prompt)
             put("response_format", JSONObject().put("type", "audio"))
-            put("generation_config", JSONObject().put("speech_config", JSONArray().put(JSONObject().put("voice", voice))))
+            put(
+                "generation_config",
+                JSONObject().put("speech_config", JSONArray().put(JSONObject().put("voice", voice)))
+            )
         }.toString()
 
         val partial = File(destination.parentFile, "${destination.name}.part")
@@ -268,7 +270,6 @@ class SaudiHumanVoice(
         throw IllegalStateException("Gemini أعاد تنسيق صوت غير متوقع: ${payload.mimeType}")
     }
 
-    /** Parse simple PCM16 mono WAV if the provider starts returning WAV directly in the future. */
     private fun decodeWavPcm(bytes: ByteArray): Pair<ByteArray, Int> {
         if (!looksLikeWav(bytes)) throw IllegalStateException("ملف WAV غير صالح.")
         var offset = 12
@@ -302,10 +303,11 @@ class SaudiHumanVoice(
             offset = end + (size and 1)
         }
 
-        if (audioFormat != 1 || channels != 1 || bitsPerSample != 16 || data == null) {
+        val pcm = data
+        if (audioFormat != 1 || channels != 1 || bitsPerSample != 16 || pcm == null) {
             throw IllegalStateException("تنسيق WAV غير مدعوم للتشغيل المباشر.")
         }
-        return data!! to sampleRate.coerceAtLeast(8_000)
+        return pcm to sampleRate.coerceAtLeast(8_000)
     }
 
     private fun directorPrompt(text: String): String {
@@ -360,8 +362,10 @@ class SaudiHumanVoice(
             ?.toIntOrNull()
 
     private fun looksLikeWav(bytes: ByteArray): Boolean = bytes.size >= 12 &&
-        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
-        bytes[8] == 'W'.code.toByte() && bytes[9] == 'A'.code.toByte() && bytes[10] == 'V'.code.toByte() && bytes[11] == 'E'.code.toByte()
+        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
+        bytes[8] == 'W'.code.toByte() && bytes[9] == 'A'.code.toByte() &&
+        bytes[10] == 'V'.code.toByte() && bytes[11] == 'E'.code.toByte()
 
     private fun compactProviderError(body: String): String = runCatching {
         JSONObject(body).optJSONObject("error")?.optString("message")?.take(180).orEmpty()
@@ -370,16 +374,22 @@ class SaudiHumanVoice(
     private fun startPlaybackSafely(ticket: Long, clip: PcmClip) {
         try {
             playbackExecutor.execute {
-                runCatching { startPlayback(ticket, clip) }.onFailure {
-                    if (ticket == generation.get() && !released) reportError(it.message)
-                }
+                runCatching { playStreamingPcm(ticket, clip) }
+                    .recoverCatching {
+                        if (ticket != generation.get() || released) return@recoverCatching
+                        playWavFallback(ticket, clip)
+                    }
+                    .onFailure {
+                        if (ticket == generation.get() && !released) reportError(it.message)
+                    }
             }
         } catch (_: RejectedExecutionException) {
             reportError("تعذر تشغيل الصوت الطبيعي.")
         }
     }
 
-    private fun startPlayback(ticket: Long, clip: PcmClip) {
+    /** Primary path: real streaming AudioTrack, not MODE_STATIC. */
+    private fun playStreamingPcm(ticket: Long, clip: PcmClip) {
         stopPlayback()
         if (ticket != generation.get() || released) return
         val pcm = clip.file.readBytes()
@@ -394,14 +404,14 @@ class SaudiHumanVoice(
             clip.sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
-        ).takeIf { it > 0 } ?: 0
-        val bufferBytes = maxOf(pcm.size, minBuffer)
+        )
+        if (minBuffer <= 0) throw IllegalStateException("تعذر تحديد ذاكرة تشغيل الصوت.")
 
         val track = AudioTrack.Builder()
             .setAudioAttributes(speechAttributes)
             .setAudioFormat(format)
-            .setTransferMode(AudioTrack.MODE_STATIC)
-            .setBufferSizeInBytes(bufferBytes)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setBufferSizeInBytes(maxOf(minBuffer * 4, STREAM_CHUNK_BYTES * 2))
             .build()
         if (track.state != AudioTrack.STATE_INITIALIZED) {
             track.release()
@@ -409,34 +419,40 @@ class SaudiHumanVoice(
         }
 
         audioTrack = track
+        val totalFrames = pcm.size / 2
+        val durationMs = ((totalFrames * 1_000L) / clip.sampleRate.toLong()).coerceAtLeast(1L)
         try {
-            val written = track.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-            if (written < pcm.size) throw IllegalStateException("تعذر تجهيز الصوت للسماعة.")
+            requestAudioFocus()
+            track.setVolume(targetVolume())
+            track.play()
+
+            var offset = 0
+            while (offset < pcm.size && ticket == generation.get() && !released && audioTrack === track) {
+                val length = minOf(STREAM_CHUNK_BYTES, pcm.size - offset)
+                val written = track.write(pcm, offset, length, AudioTrack.WRITE_BLOCKING)
+                if (written <= 0) throw IllegalStateException("تعذر إرسال الصوت للسماعة.")
+                offset += written
+
+                // OEM watchdog: after enough PCM has been queued, playbackHeadPosition must advance.
+                if (offset >= minOf(pcm.size, START_WATCHDOG_BYTES) && track.playbackHeadPosition == 0) {
+                    Thread.sleep(START_WATCHDOG_MS)
+                    if (track.playbackHeadPosition == 0) {
+                        throw IllegalStateException("مسار AudioTrack لم يبدأ على هذا الجهاز.")
+                    }
+                }
+            }
             if (ticket != generation.get() || released || audioTrack !== track) return
 
-            // Focus improves clarity when another app is playing audio, but a denied focus request
-            // must never make a perfectly valid TTS utterance silent.
-            requestAudioFocus()
-            track.setVolume(0f)
-            val totalFrames = pcm.size / 2
-            val durationMs = ((totalFrames * 1_000L) / clip.sampleRate.toLong()).coerceAtLeast(1L)
             dispatch { callbacks.onSpeechStarted(durationMs) }
-            track.play()
-            rampToTargetVolume(ticket, track)
-
+            val deadline = System.currentTimeMillis() + durationMs + PLAYBACK_GRACE_MS
             while (ticket == generation.get() && !released && audioTrack === track) {
                 val played = track.playbackHeadPosition.toLong().coerceAtLeast(0L)
                 val fraction = (played.toDouble() / totalFrames.toDouble()).toFloat().coerceIn(0f, 1f)
                 dispatch { callbacks.onSpeechCursor(fraction) }
                 if (played >= totalFrames - 2L) break
-                try {
-                    Thread.sleep(CURSOR_INTERVAL_MS)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return
-                }
+                if (System.currentTimeMillis() >= deadline) break
+                Thread.sleep(CURSOR_INTERVAL_MS)
             }
-
             if (ticket == generation.get() && !released && audioTrack === track) {
                 dispatch {
                     callbacks.onSpeechCursor(1f)
@@ -450,15 +466,90 @@ class SaudiHumanVoice(
         }
     }
 
-    private fun rampToTargetVolume(ticket: Long, track: AudioTrack) {
-        val target = targetVolume()
-        repeat(VOLUME_RAMP_STEPS) { index ->
-            mainHandler.postDelayed({
-                if (ticket != generation.get() || audioTrack !== track || released) return@postDelayed
-                val gain = target * ((index + 1f) / VOLUME_RAMP_STEPS.toFloat())
-                runCatching { track.setVolume(gain) }
-            }, index * VOLUME_RAMP_STEP_MS)
+    /** Secondary path for OEMs whose AudioTrack never starts despite valid PCM. */
+    private fun playWavFallback(ticket: Long, clip: PcmClip) {
+        stopPlayback()
+        if (ticket != generation.get() || released) return
+        val pcm = clip.file.readBytes()
+        if (pcm.size < MIN_PCM_BYTES) throw IllegalStateException("ملف الصوت ناقص.")
+
+        val wavFile = File(appContext.cacheDir, "alshorti-fallback-${role.name.lowercase()}-$ticket.wav")
+        wavFile.writeBytes(pcmToWav(pcm, clip.sampleRate))
+        val finished = CountDownLatch(1)
+        var completionError: Throwable? = null
+        val player = MediaPlayer()
+        mediaPlayer = player
+        val durationMs = ((pcm.size / 2L) * 1_000L / clip.sampleRate.toLong()).coerceAtLeast(1L)
+        try {
+            player.setAudioAttributes(speechAttributes)
+            player.setDataSource(wavFile.absolutePath)
+            player.setOnCompletionListener { finished.countDown() }
+            player.setOnErrorListener { _, what, extra ->
+                completionError = IllegalStateException("MediaPlayer فشل: $what/$extra")
+                finished.countDown()
+                true
+            }
+            player.prepare()
+            if (ticket != generation.get() || released || mediaPlayer !== player) return
+            requestAudioFocus()
+            player.setVolume(targetVolume(), targetVolume())
+            player.start()
+            dispatch { callbacks.onSpeechStarted(durationMs) }
+
+            val startedAt = System.currentTimeMillis()
+            while (ticket == generation.get() && !released && mediaPlayer === player && finished.count > 0L) {
+                val position = runCatching { player.currentPosition.toLong() }.getOrDefault(0L)
+                val fraction = (position.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
+                dispatch { callbacks.onSpeechCursor(fraction) }
+                if (System.currentTimeMillis() - startedAt > durationMs + PLAYBACK_GRACE_MS) break
+                if (finished.await(CURSOR_INTERVAL_MS, TimeUnit.MILLISECONDS)) break
+            }
+            completionError?.let { throw it }
+            if (ticket == generation.get() && !released && mediaPlayer === player) {
+                dispatch {
+                    callbacks.onSpeechCursor(1f)
+                    callbacks.onSpeechFinished()
+                }
+            }
+        } finally {
+            if (mediaPlayer === player) mediaPlayer = null
+            runCatching { player.setOnCompletionListener(null) }
+            runCatching { player.setOnErrorListener(null) }
+            runCatching { player.stop() }
+            runCatching { player.release() }
+            runCatching { wavFile.delete() }
+            abandonAudioFocus()
         }
+    }
+
+    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+        val out = ByteArrayOutputStream(pcm.size + 44)
+        fun ascii(value: String) = out.write(value.toByteArray(Charsets.US_ASCII))
+        fun le16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun le32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+        ascii("RIFF")
+        le32(pcm.size + 36)
+        ascii("WAVE")
+        ascii("fmt ")
+        le32(16)
+        le16(1)
+        le16(1)
+        le32(sampleRate)
+        le32(sampleRate * 2)
+        le16(2)
+        le16(16)
+        ascii("data")
+        le32(pcm.size)
+        out.write(pcm)
+        return out.toByteArray()
     }
 
     private fun targetVolume(): Float = if (role == VoiceRole.POLICE) 1f else 0.82f
@@ -479,6 +570,13 @@ class SaudiHumanVoice(
         val track = audioTrack
         audioTrack = null
         if (track != null) releaseTrack(track)
+
+        val player = mediaPlayer
+        mediaPlayer = null
+        if (player != null) {
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
         abandonAudioFocus()
     }
 
@@ -533,14 +631,16 @@ class SaudiHumanVoice(
         const val GEMINI_TTS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
         const val GEMINI_API_REVISION = "2026-05-20"
         const val GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-        const val CACHE_SCHEMA = "gemini-saudi-v4-pcm"
+        const val CACHE_SCHEMA = "gemini-saudi-v5-pcm"
         const val PCM_SAMPLE_RATE = 24_000
         const val MIN_PROVIDER_BYTES = 3_000
         const val MIN_PCM_BYTES = 3_000
         const val MAX_CACHE_FILES = 40
         const val MAX_CACHE_BYTES = 128L * 1024L * 1024L
-        const val VOLUME_RAMP_STEPS = 8
-        const val VOLUME_RAMP_STEP_MS = 12L
-        const val CURSOR_INTERVAL_MS = 36L
+        const val STREAM_CHUNK_BYTES = 8_192
+        const val START_WATCHDOG_BYTES = 24_576
+        const val START_WATCHDOG_MS = 180L
+        const val CURSOR_INTERVAL_MS = 40L
+        const val PLAYBACK_GRACE_MS = 1_800L
     }
 }
