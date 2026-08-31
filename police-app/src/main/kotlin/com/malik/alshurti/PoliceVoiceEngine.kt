@@ -55,7 +55,7 @@ class PoliceVoiceEngine(
     private val cloudAvailable: Boolean
         get() = BuildConfig.GEMINI_API_KEY.trim().isNotBlank()
 
-    private val silentListener = GeminiSilentListener(
+    private val silentListener: GeminiSilentListener = GeminiSilentListener(
         context = context.applicationContext,
         callbacks = object : GeminiSilentListener.Callbacks {
             override fun onReady() {
@@ -78,7 +78,7 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val offlineListener = OfflineArabicListener(
+    private val offlineListener: OfflineArabicListener = OfflineArabicListener(
         context = context.applicationContext,
         callbacks = object : OfflineArabicListener.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
@@ -114,7 +114,7 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val localVoice = NeuralArabicVoice(
+    private val localVoice: NeuralArabicVoice = NeuralArabicVoice(
         context = context.applicationContext,
         callbacks = object : NeuralArabicVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
@@ -157,7 +157,7 @@ class PoliceVoiceEngine(
         }
     )
 
-    private val saudiVoice = SaudiHumanVoice(
+    private val saudiVoice: SaudiHumanVoice = SaudiHumanVoice(
         context = context.applicationContext,
         callbacks = object : SaudiHumanVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
@@ -204,13 +204,10 @@ class PoliceVoiceEngine(
 
         when (newMode) {
             VoiceMode.OFFLINE -> {
-                // Never start a network request in explicit offline mode.
                 offlineListener.prepare(allowDownload = false)
                 localVoice.prepare(allowDownload = false)
             }
             VoiceMode.ONLINE -> {
-                // Download local engines once. A configured Gemini key can make the first session
-                // usable immediately while those free local weights are being prepared.
                 offlineListener.prepare(allowDownload = true)
                 localVoice.prepare(allowDownload = true)
                 if (cloudAvailable) saudiVoice.prepare() else cloudTtsReady = false
@@ -324,10 +321,6 @@ class PoliceVoiceEngine(
         listener.onTtsFinished()
     }
 
-    /**
-     * Keep the legacy UI/fallback pose and the persistent Runtime3D facial channel on exactly the
-     * same speech cursor event. Runtime3DOfficeStage samples this state every rendered frame.
-     */
     private fun dispatchViseme(viseme: MouthViseme) {
         RuntimeOfficePlanBus.publishViseme(viseme)
         listener.onViseme(viseme)
