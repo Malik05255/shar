@@ -27,6 +27,10 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private val officeSoundscape = OfficeSoundscape(application.applicationContext)
     private val sceneDirector = CinematicSceneDirector()
     private val livingOffice = LivingOfficeWorld()
+    private val scenarioCouncil = DualScenarioCouncil(
+        continuityPlanner = GeminiScenarioProvider(GeminiScenarioProvider.Role.CONTINUITY),
+        realismPlanner = GeminiScenarioProvider(GeminiScenarioProvider.Role.REALISM)
+    )
 
     private val _uiState = MutableStateFlow(PoliceUiState(mode = VoiceMode.ONLINE))
     val uiState: StateFlow<PoliceUiState> = _uiState.asStateFlow()
@@ -69,6 +73,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         conversationJob?.cancel()
         sceneDirector.reset()
         livingOffice.reset()
+        scenarioCouncil.reset()
+        SceneContextRegistry.reset()
         completedPoliceTurns = 0
         ttsReady = false
         sessionStarted = false
@@ -92,7 +98,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /** User-owned retry after a recoverable listening interruption. */
     fun retryListening() {
         if (!microphonePermissionGranted || !sessionStarted) return
         standingReplyActive = false
@@ -137,8 +142,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Persistent office clock. It is independent from the microphone. During a conversation the
-     * foreground plan pauses, but the current background activity is preserved rather than reset.
+     * The first beat is always local and instant. While it is playing, two constrained AI planners
+     * may prepare the next beat in parallel. Their deadline can never freeze or delay the office.
      */
     private fun startAmbientLife(opening: Boolean) {
         ambientLifeJob?.cancel()
@@ -147,13 +152,36 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             while (isActive && sessionStarted) {
                 if (_uiState.value.phase == CallPhase.LISTENING) {
                     applyAmbientPlan(next)
-                    delay(next.durationHintMs.coerceIn(4_500L, 14_000L))
-                    next = livingOffice.nextAmbientPlan()
+                    val visibleForMs = next.durationHintMs.coerceIn(4_500L, 14_000L)
+
+                    // Start planning immediately after the current beat is visible. The council has
+                    // its own hard timeout; a null result simply means deterministic local fallback.
+                    val planned = scenarioCouncil.next(ambientPlanningContext())
+                    val remaining = (visibleForMs - 900L).coerceAtLeast(350L)
+                    delay(remaining)
+                    next = sanitizeAmbientPlan(planned) ?: livingOffice.nextAmbientPlan()
                 } else {
                     delay(350L)
                 }
             }
         }
+    }
+
+    private fun ambientPlanningContext(): SceneContext {
+        val current = SceneContextRegistry.snapshot()
+        return current.copy(
+            explicitCue = ExplicitSceneCue.NONE,
+            suppressApproach = true
+        )
+    }
+
+    private fun sanitizeAmbientPlan(plan: RuntimeScenarioPlan?): RuntimeScenarioPlan? {
+        if (plan == null) return null
+        val commands = plan.commands.filterNot {
+            it.actor == SceneActorId.POLICE_DOG &&
+                it.clip in setOf("LookAtCamera", "Talk", "Listen")
+        }
+        return plan.copy(commands = commands).takeIf { commands.isNotEmpty() }
     }
 
     private fun stopAmbientLife() {
@@ -163,8 +191,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     /**
      * Transitional mapping to the current cinematic benchmark. The richer RuntimeScenarioPlan is
-     * retained as the contract for the independent 3D office; only the foreground actions that have
-     * an exact existing cinematic equivalent are mapped here during migration.
+     * retained as the contract for the independent 3D office; only foreground actions with an
+     * exact existing cinematic equivalent are mapped during migration.
      */
     private fun applyAmbientPlan(plan: RuntimeScenarioPlan) {
         val dogCommands = plan.commands.filter { it.actor == SceneActorId.POLICE_DOG }
@@ -183,10 +211,12 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val background = when {
-            plan.commands.any { it.actor != SceneActorId.POLICE_DOG && it.clip in setOf("TalkToStaff", "ListenToStaff") } ->
-                BackgroundActivity.DESK_CONVERSATION
-            plan.commands.any { it.actor != SceneActorId.POLICE_DOG && it.channel == AnimationChannel.LOCOMOTION } ->
-                BackgroundActivity.STAFF_WALK
+            plan.commands.any {
+                it.actor != SceneActorId.POLICE_DOG && it.clip in setOf("TalkToStaff", "ListenToStaff")
+            } -> BackgroundActivity.DESK_CONVERSATION
+            plan.commands.any {
+                it.actor != SceneActorId.POLICE_DOG && it.channel == AnimationChannel.LOCOMOTION
+            } -> BackgroundActivity.STAFF_WALK
             plan.commands.any { it.actor == SceneActorId.DOOR } -> BackgroundActivity.DOOR_TRAFFIC
             action == DogAction.REVIEW_FILE -> BackgroundActivity.PAPERWORK
             else -> BackgroundActivity.CALM_WORK
@@ -330,7 +360,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onReadyToListen() {
         if (!sessionStarted) return
         setPhase(CallPhase.LISTENING)
-        // Do not turn the dog toward the camera merely because the microphone is armed.
+        // Arming the microphone does not earn camera attention.
         if (ambientLifeJob?.isActive != true) startAmbientLife(opening = false)
     }
 
@@ -340,7 +370,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         standingReplyActive = false
         setPhase(CallPhase.LISTENING)
 
-        // First visible response to the observer: attention shifts only after actual voice activity.
+        // First visible response to the observer happens only after real voice activity.
         _uiState.update {
             it.copy(
                 mood = DogMood.LISTENING,
@@ -364,8 +394,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
         if (recoverable && microphonePermissionGranted && sessionStarted) {
-            // Silence/no-match is normal in an observational office. Resume listening without
-            // changing the character into an error pose or looking at the observer.
+            // Silence/no-match is normal in an observational office.
             setPhase(CallPhase.LISTENING)
             if (ambientLifeJob?.isActive != true) startAmbientLife(opening = false)
             viewModelScope.launch {
