@@ -56,7 +56,17 @@ fun Runtime3DOfficeStage(
             ?.mapValues { (_, commands) ->
                 commands.sortedWith(
                     compareBy<SceneAnimationCommand> { it.delayMs }
-                        .thenBy { channelOrder(it.channel) }
+                        .thenBy { command ->
+                            // Motion V2's Talk clip is intentionally sparse head+chest motion even
+                            // though legacy plans label it FACE. Treat it as BODY for layering so
+                            // explicit gaze (LookAtCamera/LookAtDoor/etc.) is applied afterwards and
+                            // owns the head orientation. The high-frequency viseme still applies last.
+                            if (command.clip == "Talk") {
+                                channelOrder(AnimationChannel.BODY)
+                            } else {
+                                channelOrder(command.channel)
+                            }
+                        }
                 )
             }
             .orEmpty()
