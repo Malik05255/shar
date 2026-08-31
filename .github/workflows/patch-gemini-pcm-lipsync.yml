@@ -17,8 +17,9 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: Patch natural voice timing and PCM energy
-        shell: python
+        shell: bash
         run: |
+          python3 <<'PY'
           from pathlib import Path
 
           voice = Path('police-app/src/main/kotlin/com/malik/alshurti/voice/SaudiHumanVoice.kt')
@@ -127,7 +128,6 @@ jobs:
             }
 '''
           text = must_replace(text, old_stream, new_stream, 'stream playback')
-
           text = must_replace(
               text,
               '        val wavFile = File(appContext.cacheDir, "alshorti-fallback-${role.name.lowercase()}-$ticket.wav")\n',
@@ -146,7 +146,6 @@ jobs:
               '                    callbacks.onSpeechFrame(1f, 0f)\n                    callbacks.onSpeechFinished()\n',
               'fallback final frame'
           )
-
           helper = '''    private fun pcm16ToFloat(pcm: ByteArray): FloatArray {
         val samples = FloatArray(pcm.size / 2)
         var byteIndex = 0
@@ -162,25 +161,35 @@ jobs:
     }
 
 '''
-          text = must_replace(text, '    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {\n', helper + '    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {\n', 'pcm helper')
+          text = must_replace(
+              text,
+              '    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {\n',
+              helper + '    private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {\n',
+              'pcm helper'
+          )
           voice.write_text(text)
 
           engine = Path('police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt')
           text = engine.read_text()
-          old_cb = '''            override fun onSpeechCursor(fraction: Float) {
+          text = must_replace(
+              text,
+              '''            override fun onSpeechCursor(fraction: Float) {
                 if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechCursor(fraction)
             }
-'''
-          new_cb = '''            override fun onSpeechCursor(fraction: Float) {
+''',
+              '''            override fun onSpeechCursor(fraction: Float) {
                 if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechCursor(fraction)
             }
 
             override fun onSpeechFrame(fraction: Float, energy: Float) {
                 if (activeSpeechBackend == SpeechBackend.CLOUD) handleEnergySpeechFrame(fraction, energy)
             }
-'''
-          text = must_replace(text, old_cb, new_cb, 'cloud frame callback')
-          old_local = '''    private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
+''',
+              'cloud frame callback'
+          )
+          text = must_replace(
+              text,
+              '''    private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
         localLipEnergy = energy.coerceIn(0f, 1f)
         localLipVoiced = PcmSpeechEnergy.isVoiced(localLipEnergy, localLipVoiced)
         val viseme = if (localLipVoiced) visemeAtFraction(spokenText, fraction) else MouthViseme.REST
@@ -189,8 +198,8 @@ jobs:
             dispatchViseme(viseme)
         }
     }
-'''
-          new_local = '''    private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
+''',
+              '''    private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
         handleEnergySpeechFrame(fraction, energy)
     }
 
@@ -203,10 +212,13 @@ jobs:
             dispatchViseme(viseme)
         }
     }
-'''
-          text = must_replace(text, old_local, new_local, 'energy handler')
+''',
+              'energy handler'
+          )
           engine.write_text(text)
+          PY
       - name: Commit PCM lip sync
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
