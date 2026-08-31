@@ -1,0 +1,87 @@
+name: Validate Motion V2 Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-motion-v2-gate.yml'
+      - 'runtime3d/validate_facial_motion.py'
+      - 'runtime3d/validate_facial_motion_cubic.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-motion-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      MOTION_RUN_ID: '33427570106'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-v2-candidate
+      MOTION_GLB: police_dog.motion_v2_candidate.glb
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Download exact Motion V2 candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion-v2
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Validate structural contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/motion-v2/$MOTION_GLB"
+          test -s "$P"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          p = Path(os.environ['RUNNER_TEMP'])/'motion-v2'/os.environ['MOTION_GLB']
+          d = read_glb_json(p)
+          names = {a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+          missing = sorted(set(DOG_CLIPS) - names)
+          skins = d.get('skins') or []
+          joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in d.get('meshes') or []:
+              for primitive in mesh.get('primitives') or []:
+                  pos = (primitive.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({'bytes': p.stat().st_size, 'vertices': vertices, 'animations': len(names),
+                            'missing': missing, 'skins': len(skins), 'maxJoints': joints}, indent=2))
+          if missing or len(skins) != 1 or joints < 24 or vertices < 200000:
+              raise SystemExit('Motion V2 structural gate failed')
+          PY
+
+      - name: Validate cubic-spline facial deformation and layer safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 runtime3d/validate_facial_motion_cubic.py \
+            "$RUNNER_TEMP/motion-v2/$MOTION_GLB" \
+            --report "$RUNNER_TEMP/motion-v2/police_dog.motion_v2_candidate.facial.json"
+          test -s "$RUNNER_TEMP/motion-v2/police_dog.motion_v2_candidate.facial.json"
+          echo 'MOTION_V2_GATE=PASS'
+          echo 'PRODUCTION_GATE=CLOSED'
+
+      - name: Upload validated report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-motion-v2-validation
+          path: ${{ runner.temp }}/motion-v2/*.json
+          if-no-files-found: warn
+          retention-days: 14
