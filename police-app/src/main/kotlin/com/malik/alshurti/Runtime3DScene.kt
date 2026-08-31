@@ -1,10 +1,11 @@
 package com.malik.alshurti
 
 /**
- * Runtime 3D scene contract.
+ * Persistent runtime 3D office contract.
  *
- * Product rule: every visible object is an independent GLB/PBR actor. Scenario generation may only
- * choose commands for these actors; it must never request or bundle a new full-scene video.
+ * The office is a world, not a sequence of rendered scenes. Every object/person is an independent
+ * GLB/PBR actor and keeps its own animation state. Scenario AI may only schedule commands for these
+ * reusable actors; it never creates a new full-frame video.
  */
 enum class SceneActorId {
     POLICE_DOG,
@@ -13,8 +14,15 @@ enum class SceneActorId {
     DOOR,
     PHONE,
     FILE,
+    MONITOR,
+    KEYBOARD,
+    CHAIR,
+    PRINTER,
+    COFFEE_CUP,
     STAFF_MALE_01,
-    STAFF_FEMALE_01
+    STAFF_MALE_02,
+    STAFF_FEMALE_01,
+    VISITOR_01
 }
 
 enum class AnimationChannel {
@@ -27,10 +35,35 @@ enum class AnimationChannel {
     PROP
 }
 
+enum class OfficeZone {
+    POLICE_DESK,
+    LEFT_WORKSTATION,
+    RIGHT_WORKSTATION,
+    BACK_WORKSTATION,
+    CORRIDOR,
+    DOORWAY,
+    PRINTER_AREA
+}
+
+enum class OfficeSoundId {
+    FOOTSTEPS_SOFT,
+    PAPER_HANDLE,
+    PAGE_TURN,
+    KEYBOARD_SHORT,
+    CHAIR_SHIFT,
+    DOOR_OPEN,
+    DOOR_CLOSE,
+    PHONE_RING,
+    PRINTER_SHORT,
+    DISTANT_STAFF_SPEECH,
+    CUP_SET_DOWN
+}
+
 data class SceneActorAsset(
     val id: SceneActorId,
     val glbPath: String,
-    val persistent: Boolean = true
+    val persistent: Boolean = true,
+    val defaultZone: OfficeZone? = null
 )
 
 data class SceneAnimationCommand(
@@ -39,66 +72,77 @@ data class SceneAnimationCommand(
     val channel: AnimationChannel,
     val loop: Boolean = false,
     val interruptible: Boolean = true,
-    val blendMs: Int = 180,
-    val targetActor: SceneActorId? = null
+    val blendMs: Int = 220,
+    val targetActor: SceneActorId? = null,
+    val delayMs: Long = 0L,
+    val playbackRate: Float = 1f
+)
+
+data class SpatialSoundCommand(
+    val sound: OfficeSoundId,
+    val zone: OfficeZone,
+    val delayMs: Long = 0L,
+    val gain: Float = 0.35f,
+    val duckWhenUserSpeaks: Boolean = true,
+    val spokenLine: String? = null
 )
 
 data class RuntimeScenarioPlan(
     val commands: List<SceneAnimationCommand>,
     val durationHintMs: Long,
-    val reason: String = ""
+    val sounds: List<SpatialSoundCommand> = emptyList(),
+    val reason: String = "",
+    val keepWorldRunning: Boolean = true
 )
 
 /**
- * One canonical asset per object. Reuse these actors across unlimited scenarios.
- * Animation clips live inside the relevant GLB or in small reusable animation assets.
+ * Canonical reusable actors. Missing optional actors are simply not instantiated; a scenario never
+ * falls back to manufacturing a full-scene MP4.
  */
 object Runtime3DAssetCatalog {
     val actors = listOf(
-        SceneActorAsset(SceneActorId.POLICE_DOG, "models/police_dog.glb"),
+        SceneActorAsset(SceneActorId.POLICE_DOG, "models/police_dog.glb", defaultZone = OfficeZone.POLICE_DESK),
         SceneActorAsset(SceneActorId.OFFICE_SHELL, "models/office_shell.glb"),
-        SceneActorAsset(SceneActorId.DESK, "models/desk.glb"),
-        SceneActorAsset(SceneActorId.DOOR, "models/door.glb"),
-        SceneActorAsset(SceneActorId.PHONE, "models/phone.glb"),
-        SceneActorAsset(SceneActorId.FILE, "models/file.glb"),
-        SceneActorAsset(SceneActorId.STAFF_MALE_01, "models/staff_male_01.glb"),
-        SceneActorAsset(SceneActorId.STAFF_FEMALE_01, "models/staff_female_01.glb")
+        SceneActorAsset(SceneActorId.DESK, "models/desk.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.DOOR, "models/door.glb", defaultZone = OfficeZone.DOORWAY),
+        SceneActorAsset(SceneActorId.PHONE, "models/phone.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.FILE, "models/file.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.MONITOR, "models/monitor.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.KEYBOARD, "models/keyboard.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.CHAIR, "models/chair.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.PRINTER, "models/printer.glb", defaultZone = OfficeZone.PRINTER_AREA),
+        SceneActorAsset(SceneActorId.COFFEE_CUP, "models/coffee_cup.glb", defaultZone = OfficeZone.POLICE_DESK),
+        SceneActorAsset(SceneActorId.STAFF_MALE_01, "models/staff_male_01.glb", defaultZone = OfficeZone.LEFT_WORKSTATION),
+        SceneActorAsset(SceneActorId.STAFF_MALE_02, "models/staff_male_02.glb", defaultZone = OfficeZone.BACK_WORKSTATION),
+        SceneActorAsset(SceneActorId.STAFF_FEMALE_01, "models/staff_female_01.glb", defaultZone = OfficeZone.RIGHT_WORKSTATION),
+        SceneActorAsset(SceneActorId.VISITOR_01, "models/visitor_01.glb", persistent = false, defaultZone = OfficeZone.DOORWAY)
     )
 
     val dogCoreClips = setOf(
-        "IdleWork",
-        "Breathing",
-        "Blink",
-        "LookAtDesk",
-        "LookAtCamera",
-        "LookAtDoor",
-        "LookAtStaff",
-        "ReviewFile",
-        "UsePhone",
-        "Listen",
-        "Talk",
-        "StandUp",
-        "SitDown",
-        "Walk"
+        "IdleWork", "Breathing", "Blink", "EyeSaccade",
+        "LookAtDesk", "LookAtMonitor", "LookAtCamera", "LookAtDoor", "LookAtStaff",
+        "ReachFile", "ReviewFile", "TurnPage", "WriteNote", "SetFileDown",
+        "UsePhone", "Listen", "Talk", "StandUp", "SitDown", "Walk", "LeanBack"
     )
 
     val staffCoreClips = setOf(
-        "IdleDesk",
-        "Type",
-        "Read",
-        "TalkToStaff",
-        "Walk",
-        "CarryFile",
-        "OpenDoor",
-        "CloseDoor"
+        "IdleDesk", "Breathing", "Blink", "Type", "Read", "Write",
+        "TalkToStaff", "ListenToStaff", "GestureSmall", "HeadNod",
+        "Walk", "WalkCarryFile", "CarryFile", "StandUp", "SitDown",
+        "UsePhone", "Drink", "OpenDoor", "CloseDoor"
+    )
+
+    val propClips = mapOf(
+        SceneActorId.DOOR to setOf("OpenDoor", "CloseDoor", "Idle"),
+        SceneActorId.PHONE to setOf("Ring", "Idle"),
+        SceneActorId.FILE to setOf("Idle", "MoveToDesk", "MoveToHand"),
+        SceneActorId.CHAIR to setOf("Idle", "Shift", "Turn"),
+        SceneActorId.PRINTER to setOf("Idle", "Print"),
+        SceneActorId.COFFEE_CUP to setOf("Idle", "MoveToHand", "MoveToDesk")
     )
 }
 
-/**
- * Existing MP4 clips are migration-only fallbacks. No new scenario is allowed to add another
- * full-frame cinematic MP4. Once the independent 3D actors are available, this legacy path is
- * removed entirely.
- */
+/** Existing cinematic MP4s are migration-only fallbacks. */
 object LegacyCinematicPolicy {
     const val ALLOW_NEW_FULL_SCENE_VIDEO = false
 }
