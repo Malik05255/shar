@@ -14,6 +14,7 @@ coordinates, skin weights, armature, and actions are never replaced or decimated
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -48,11 +49,7 @@ def clear_input_links(tree: bpy.types.NodeTree, socket) -> None:
 
 
 def _normalized_mesh_proxy(source: bpy.types.Object, name: str) -> tuple[bpy.types.Object, bpy.types.Mesh]:
-    """Create a temporary geometry-identical mesh normalized to a unit bounding box.
-
-    Normalization matches the previous Python BVH transfer semantics axis-by-axis, but
-    uses foreach_get/foreach_set + NumPy so coordinate preparation is vectorized.
-    """
+    """Create a temporary geometry-identical mesh normalized to a unit bounding box."""
     mesh = source.data.copy()
     proxy = bpy.data.objects.new(name, mesh)
     bpy.context.collection.objects.link(proxy)
@@ -71,6 +68,71 @@ def _normalized_mesh_proxy(source: bpy.types.Object, name: str) -> tuple[bpy.typ
     mesh.vertices.foreach_set('co', np.ascontiguousarray(xyz.reshape(-1), dtype=np.float64))
     mesh.update()
     return proxy, mesh
+
+
+def _enum_identifiers(owner, property_name: str) -> list[str]:
+    prop = owner.bl_rna.properties.get(property_name)
+    if prop is None:
+        return []
+    try:
+        return [item.identifier for item in prop.enum_items]
+    except Exception:
+        return []
+
+
+def _configure_uv_layer_selection(
+    mod: bpy.types.DataTransferModifier,
+    source_uv_name: str,
+    destination_uv_name: str,
+) -> dict[str, object]:
+    """Configure Blender-version-safe source-layer and destination matching enums."""
+    src_ids = _enum_identifiers(mod, 'layers_uv_select_src')
+    dst_ids = _enum_identifiers(mod, 'layers_uv_select_dst')
+
+    if source_uv_name in src_ids:
+        mod.layers_uv_select_src = source_uv_name
+        src_choice = source_uv_name
+    elif 'ALL' in src_ids:
+        # Safe only because the donor contract currently requires exactly one active UV
+        # layer for this transfer. Fail if that invariant changes.
+        if len(mod.object.data.uv_layers) != 1:
+            raise RuntimeError(
+                f"Blender cannot select source UV {source_uv_name!r}; available={src_ids}; "
+                f"donorUvLayers={[uv.name for uv in mod.object.data.uv_layers]}"
+            )
+        mod.layers_uv_select_src = 'ALL'
+        src_choice = 'ALL'
+    else:
+        raise RuntimeError(
+            f"No valid Blender source UV selector for {source_uv_name!r}; available={src_ids}"
+        )
+
+    # Blender 4.0 exposes destination mapping as NAME/INDEX rather than the source layer
+    # names. Prefer NAME after ensuring a destination layer with the exact source name.
+    if 'NAME' in dst_ids:
+        mod.layers_uv_select_dst = 'NAME'
+        dst_choice = 'NAME'
+    elif destination_uv_name in dst_ids:
+        mod.layers_uv_select_dst = destination_uv_name
+        dst_choice = destination_uv_name
+    elif 'INDEX' in dst_ids:
+        mod.layers_uv_select_dst = 'INDEX'
+        dst_choice = 'INDEX'
+    else:
+        raise RuntimeError(
+            f"No valid Blender destination UV selector for {destination_uv_name!r}; available={dst_ids}"
+        )
+
+    info = {
+        'sourceUv': source_uv_name,
+        'destinationUv': destination_uv_name,
+        'sourceEnumAvailable': src_ids,
+        'destinationEnumAvailable': dst_ids,
+        'sourceSelection': src_choice,
+        'destinationSelection': dst_choice,
+    }
+    print('SF3D_UV_LAYER_ENUMS=' + json.dumps(info, indent=2), flush=True)
+    return info
 
 
 def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> dict[str, object]:
@@ -95,18 +157,21 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
         source_uv = donor_proxy_mesh.uv_layers.active
         if source_uv is None:
             raise RuntimeError("Normalized donor proxy lost its active UV map")
-        destination_uv = target_proxy_mesh.uv_layers.active
-        if destination_uv is None:
-            destination_uv = target_proxy_mesh.uv_layers.new(name='GeometryAwarePBR_UV')
+        source_uv_name = source_uv.name
 
-        # Execute nearest source polygon + interpolated loop data in Blender's C core.
+        # Match by the exact source UV name on the disposable target proxy. This avoids
+        # Blender 4.0's version-specific ACTIVE enum and makes NAME matching deterministic.
+        destination_uv = target_proxy_mesh.uv_layers.get(source_uv_name)
+        if destination_uv is None:
+            destination_uv = target_proxy_mesh.uv_layers.new(name=source_uv_name)
+        target_proxy_mesh.uv_layers.active_index = target_proxy_mesh.uv_layers.find(destination_uv.name)
+
         mod = target_proxy.modifiers.new(name='SF3D_NATIVE_UV_TRANSFER', type='DATA_TRANSFER')
         mod.object = donor_proxy
         mod.use_loop_data = True
         mod.data_types_loops = {'UV'}
         mod.loop_mapping = 'POLYINTERP_NEAREST'
-        mod.layers_uv_select_src = 'ACTIVE'
-        mod.layers_uv_select_dst = 'ACTIVE'
+        selector_qc = _configure_uv_layer_selection(mod, source_uv_name, destination_uv.name)
         mod.mix_mode = 'REPLACE'
         mod.mix_factor = 1.0
 
@@ -117,7 +182,9 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
         if 'FINISHED' not in result:
             raise RuntimeError(f"Native UV Data Transfer did not finish: {result}")
 
-        transferred_uv = target_proxy_mesh.uv_layers.active
+        transferred_uv = target_proxy_mesh.uv_layers.get(destination_uv.name)
+        if transferred_uv is None:
+            transferred_uv = target_proxy_mesh.uv_layers.active
         if transferred_uv is None:
             raise RuntimeError("Native UV Data Transfer produced no destination UV layer")
         if len(transferred_uv.data) != len(target.data.loops):
@@ -125,7 +192,6 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
                 f"UV loop cardinality changed on proxy: {len(transferred_uv.data)} != {len(target.data.loops)}"
             )
 
-        # Copy only UV loop coordinates back. No target geometry data is replaced.
         uv_buffer = np.empty(len(transferred_uv.data) * 2, dtype=np.float32)
         transferred_uv.data.foreach_get('uv', uv_buffer)
         if not bool(np.isfinite(uv_buffer).all()):
@@ -137,9 +203,10 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
         if float(max(uv_span[0], uv_span[1])) < 1e-6:
             raise RuntimeError(f"Native UV Data Transfer produced a degenerate UV map: span={uv_span.tolist()}")
 
-        real_uv = target.data.uv_layers.active
+        real_uv = target.data.uv_layers.get(destination_uv.name)
         if real_uv is None:
-            real_uv = target.data.uv_layers.new(name='GeometryAwarePBR_UV')
+            real_uv = target.data.uv_layers.new(name=destination_uv.name)
+        target.data.uv_layers.active_index = target.data.uv_layers.find(real_uv.name)
         if len(real_uv.data) != len(transferred_uv.data):
             raise RuntimeError("Real target UV loop count does not match normalized transfer proxy")
         real_uv.data.foreach_set('uv', uv_buffer)
@@ -156,8 +223,9 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
             'targetTopologyChanged': False,
             'uvMin': [float(uv_min[0]), float(uv_min[1])],
             'uvMax': [float(uv_max[0]), float(uv_max[1])],
+            'layerSelection': selector_qc,
         }
-        print('SF3D_NATIVE_UV_TRANSFER=' + __import__('json').dumps(qc, indent=2), flush=True)
+        print('SF3D_NATIVE_UV_TRANSFER=' + json.dumps(qc, indent=2), flush=True)
         return qc
     finally:
         for proxy in (target_proxy, donor_proxy):
@@ -169,13 +237,6 @@ def transfer_uvs_native(target: bpy.types.Object, donor: bpy.types.Object) -> di
 
 
 def force_cpu_decode_and_pack(image: bpy.types.Image, path: Path, label: str) -> None:
-    """Force real CPU pixel decoding, then pack the decoded source into the blend state.
-
-    Blender 4.0's Image.has_data is not a reliable readiness signal for freshly loaded
-    file-backed images in background mode, so readiness is proven by dimensions plus an
-    actual pixel access. The final exported GLB is still independently checked for image
-    and texture entries, so this does not weaken the production gate.
-    """
     if not path.is_file() or path.stat().st_size < 128:
         raise RuntimeError(f"{label} source file disappeared: {path}")
     try:
@@ -204,8 +265,6 @@ def rebind_standard_gltf_pbr(mat: bpy.types.Material, base_path: Path, normal_pa
     if bsdf is None:
         raise RuntimeError(f"Material {mat.name} has no Principled BSDF")
 
-    # Remove donor-imported image/normal nodes. Those may reference transient Blender
-    # image buffers that rendered but were omitted from the final GLB.
     for node in list(tree.nodes):
         if node.type in {'TEX_IMAGE', 'NORMAL_MAP'}:
             tree.nodes.remove(node)
