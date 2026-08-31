@@ -11,6 +11,7 @@ on:
       - 'runtime3d/blender_transfer_pbr_embedded.py'
       - 'runtime3d/blender_transfer_pbr_seamsafe.py'
       - 'runtime3d/blender_transfer_vertexcolor_semantic.py'
+      - 'runtime3d/blender_transfer_vertexcolor_entry.py'
       - 'runtime3d/validate_facial_motion_cubic.py'
 
 permissions:
@@ -127,7 +128,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pbr-motion-v2/previews"
           blender --background \
-            --python runtime3d/blender_transfer_vertexcolor_semantic.py -- \
+            --python runtime3d/blender_transfer_vertexcolor_entry.py -- \
             --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
             --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
             --output "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
