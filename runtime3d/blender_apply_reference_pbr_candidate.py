@@ -217,6 +217,9 @@ def render_previews(
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.film_transparent = False
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("REFERENCE_QC_WORLD")
+    scene.world.use_nodes = False
     scene.world.color = (0.025, 0.025, 0.03)
     scene.frame_set(0)
 
@@ -334,11 +337,9 @@ def main() -> int:
     preview_files, render_engine = render_previews(meshes, mn, mx, args.preview_dir)
 
     bpy.ops.object.select_all(action="DESELECT")
-    live_imported: list[bpy.types.Object] = []
     for obj in imported:
         if bpy.data.objects.get(obj.name) is not None:
             obj.select_set(True)
-            live_imported.append(obj)
     largest_mesh = max(meshes, key=lambda obj: len(obj.data.vertices))
     bpy.context.view_layer.objects.active = largest_mesh
 
