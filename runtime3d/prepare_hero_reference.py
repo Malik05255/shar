@@ -69,42 +69,82 @@ def client(space: str):
     return Client(space, **kwargs)
 
 
-def qwen_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
-    from gradio_client import handle_file
-    c = client("Qwen/Qwen-Image-Edit")
+def pick_endpoint(c: Any, *needles: str) -> str:
     info = c.view_api(print_info=False, return_format="dict")
     endpoints = info.get("named_endpoints") or {}
-    # Qwen's Blocks app exposes one callable edit endpoint. Prefer any endpoint
-    # whose parameter names include image + prompt; otherwise use first endpoint.
-    endpoint = None
-    spec = None
-    for name, candidate in endpoints.items():
-        text = json.dumps(candidate).lower()
-        if "prompt" in text and "image" in text:
-            endpoint, spec = name, candidate
-            break
-    if endpoint is None and endpoints:
-        endpoint, spec = next(iter(endpoints.items()))
-    if endpoint is None:
-        raise RuntimeError(f"Qwen edit exposes no callable endpoint: {list(endpoints)}")
+    for name, spec in endpoints.items():
+        text = json.dumps(spec).lower()
+        if all(n.lower() in text for n in needles):
+            return name
+    if endpoints:
+        return next(iter(endpoints))
+    raise RuntimeError("Space exposes no callable endpoints")
 
-    # Current official Space infer signature:
-    # image, prompt, seed, randomize_seed, true_guidance_scale,
-    # num_inference_steps, rewrite_prompt
+
+def qwen_fast_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
+    """8-step Lightning Qwen edit. Space reserves only 60s ZeroGPU."""
+    from gradio_client import handle_file
+    space = "akhaliq/Qwen-Image-Edit-2509"
+    c = client(space)
+    endpoint = pick_endpoint(c, "prompt", "image")
+    result = c.predict(
+        handle_file(str(reference)),
+        handle_file(str(reference)),
+        prompt,
+        20260831,
+        1.0,
+        "cartoon, anime, illustration, mascot, toy, low detail, malformed anatomy, extra limbs, desk, office, text",
+        8,
+        1.0,
+        api_name=endpoint,
+    )
+    path = local_image_path(result)
+    if not path:
+        raise RuntimeError(f"Fast Qwen returned no materialized image: {type(result).__name__}")
+    return path, {"space": space, "endpoint": endpoint, "steps": 8, "seed": 20260831}
+
+
+def flux_kontext_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
+    """Official FLUX Kontext ZeroGPU fallback."""
+    from gradio_client import handle_file
+    space = "black-forest-labs/FLUX.1-Kontext-Dev"
+    c = client(space)
+    endpoint = pick_endpoint(c, "prompt", "image")
+    result = c.predict(
+        handle_file(str(reference)),
+        prompt,
+        20260831,
+        False,
+        2.5,
+        20,
+        api_name=endpoint,
+    )
+    path = local_image_path(result)
+    if not path:
+        raise RuntimeError(f"FLUX Kontext returned no materialized image: {type(result).__name__}")
+    return path, {"space": space, "endpoint": endpoint, "steps": 20, "seed": 20260831}
+
+
+def qwen_official_edit(reference: Path, prompt: str) -> tuple[Path, dict[str, Any]]:
+    """Official Qwen fallback. It may exceed anonymous ZeroGPU duration."""
+    from gradio_client import handle_file
+    space = "Qwen/Qwen-Image-Edit"
+    c = client(space)
+    endpoint = pick_endpoint(c, "prompt", "image")
     result = c.predict(
         handle_file(str(reference)),
         prompt,
         20260831,
         False,
         4.0,
-        32,
+        24,
         False,
         api_name=endpoint,
     )
     path = local_image_path(result)
     if not path:
-        raise RuntimeError(f"Qwen edit returned no materialized image: {type(result).__name__}")
-    return path, {"space": "Qwen/Qwen-Image-Edit", "endpoint": endpoint, "steps": 32, "seed": 20260831}
+        raise RuntimeError(f"Official Qwen returned no materialized image: {type(result).__name__}")
+    return path, {"space": space, "endpoint": endpoint, "steps": 24, "seed": 20260831}
 
 
 def main() -> int:
@@ -133,11 +173,16 @@ def main() -> int:
         "Remove the entire office, desk, monitor, phone, chair, other characters, signs, text and every prop. "
         "Reconstruct the complete body below the desk naturally: full torso, four anatomically correct legs and paws, tail, ears and muzzle, all fully visible and uncropped. "
         "Use a neutral standing quadruped reference pose suitable for high-end 3D reconstruction and skeletal rigging; head facing camera, legs separated clearly, tail visible, no limb overlap. "
-        "Photorealistic individual fur strands and realistic coat pattern, physically plausible eyes/nose/claws, realistic navy fabric weave, metal badge response, clean light-gray seamless studio background, even soft neutral lighting, minimal shadow. "
-        "No desk, no scenery, no text, no extra objects, no stylization. Identity reference sheet quality, centered character, full body fills most of frame."
+        "Photorealistic individual fur strands and realistic black-and-tan German Shepherd coat pattern, physically plausible eyes/nose/claws, realistic navy fabric weave and metal badge response. "
+        "Use a clean light-gray seamless studio background, even soft neutral lighting and minimal shadow. No desk, no scenery, no text, no extra objects, no stylization. "
+        "Centered full-body character occupying most of the frame, reference-sheet quality."
     )
 
-    providers = [("qwen-image-edit-zero", qwen_edit)]
+    providers = [
+        ("qwen-image-edit-2509-fast-zero", qwen_fast_edit),
+        ("flux-kontext-official-zero", flux_kontext_edit),
+        ("qwen-image-edit-official-zero", qwen_official_edit),
+    ]
     for name, fn in providers:
         attempt = {"provider": name, "startedAt": now()}
         report["attempts"].append(attempt)
@@ -160,6 +205,7 @@ def main() -> int:
         print("::error::No free image-edit provider produced the hero reference. Paid fallback disabled.")
         return 2
     print(f"FREE_HERO_REFERENCE={output}")
+    print(f"FREE_HERO_REFERENCE_PROVIDER={report['winner']}")
     print("Production gate remains CLOSED.")
     return 0
 
