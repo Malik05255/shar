@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a free textured GLB with the official Stability AI Stable Fast 3D ZeroGPU Space."""
+"""Generate a free textured GLB from a Stable Fast 3D ZeroGPU Space.
+
+Candidate-only. The caller may choose an independent compatible Space when the
+official Stability AI demo is unhealthy. No paid API endpoint is ever used.
+"""
 from __future__ import annotations
 
 import argparse
@@ -45,7 +49,7 @@ def collect_glbs(value: Any, found: list[Path]) -> None:
 
 
 def transparent_reference(source: Path, output: Path) -> dict[str, Any]:
-    """Use the project's accepted deterministic subject mask; no GPU is spent on rembg."""
+    """Use the project's deterministic subject mask; no GPU is spent on rembg."""
     import numpy as np
     from PIL import Image, ImageFilter
     from reference_pbr_maps import background_plane, center_component
@@ -60,6 +64,8 @@ def transparent_reference(source: Path, output: Path) -> dict[str, Any]:
     component = center_component(np.asarray(mask) > 127)
     alpha = Image.fromarray((component * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.8))
     ys, xs = np.where(component)
+    if len(xs) == 0 or len(ys) == 0:
+        raise RuntimeError("Subject mask is empty")
     box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
     rgba = image.convert("RGBA")
     rgba.putalpha(alpha)
@@ -93,7 +99,14 @@ def validate(path: Path) -> dict[str, Any]:
             f"SF3D payload incomplete meshes={len(meshes)} vertices={vertices} materials={len(materials)} "
             f"textures={len(textures)} images={len(images)} channels={sorted(channels)}"
         )
-    return {"meshes": len(meshes), "vertices": vertices, "materials": len(materials), "textures": len(textures), "images": len(images), "pbrChannels": sorted(channels)}
+    return {
+        "meshes": len(meshes),
+        "vertices": vertices,
+        "materials": len(materials),
+        "textures": len(textures),
+        "images": len(images),
+        "pbrChannels": sorted(channels),
+    }
 
 
 def main() -> int:
@@ -101,6 +114,7 @@ def main() -> int:
     ap.add_argument("--reference", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--report", type=Path, required=True)
+    ap.add_argument("--space", default="stabilityai/stable-fast-3d")
     args = ap.parse_args()
     if not args.reference.is_file() or args.reference.stat().st_size < 10_000:
         raise SystemExit("Approved hero reference is missing/small")
@@ -110,11 +124,14 @@ def main() -> int:
     kwargs: dict[str, Any] = {"verbose": False}
     if token:
         kwargs["hf_token"] = token
-    client = Client("stabilityai/stable-fast-3d", **kwargs)
+    client = Client(args.space, **kwargs)
 
     prepared = args.output.parent / "sf3d-reference-transparent.png"
     alpha_meta = transparent_reference(args.reference, prepared)
 
+    # Prime the two hidden Gradio State components in the SAME Client session.
+    # The live API intentionally exposes only image + slider inputs for run_button;
+    # run_btn and background_state are internal state and must not be passed manually.
     prep_name, prep_info = endpoint(client, "requires_bg_remove")
     prep_kwargs: dict[str, Any] = {}
     for p in prep_info.get("parameters") or []:
@@ -127,10 +144,7 @@ def main() -> int:
         elif not p.get("parameter_has_default"):
             prep_kwargs[name] = None
     prep_result = client.predict(api_name=prep_name, **prep_kwargs)
-    prep_values = list(prep_result) if isinstance(prep_result, (tuple, list)) else [prep_result]
-    background_state = prep_values[2] if len(prep_values) > 2 else None
-    if isinstance(background_state, dict) and "value" in background_state:
-        background_state = background_state.get("value")
+    print(f"SF3D_PREPROCESS_PASS space={args.space} resultType={type(prep_result).__name__}", flush=True)
 
     run_name, run_info = endpoint(client, "run_button")
     call: dict[str, Any] = {}
@@ -141,12 +155,8 @@ def main() -> int:
             continue
         exposed.append(name)
         low = name.lower()
-        if low in {"run_btn", "run_button", "button"}:
-            call[name] = "Run"
-        elif low in {"input_image", "image", "input_img"}:
+        if low in {"input_image", "image", "input_img"}:
             call[name] = handle_file(str(prepared))
-        elif low in {"background_state", "background_remove_state"}:
-            call[name] = background_state
         elif low in {"foreground_ratio", "fr"}:
             call[name] = 0.85
         elif low == "remesh_option":
@@ -158,6 +168,7 @@ def main() -> int:
         elif not p.get("parameter_has_default"):
             call[name] = None
 
+    print(f"SF3D_RUN_CONTRACT space={args.space} exposed={exposed}", flush=True)
     started = time.monotonic()
     result = client.predict(api_name=run_name, **call)
     elapsed = round(time.monotonic() - started, 2)
@@ -165,14 +176,15 @@ def main() -> int:
     collect_glbs(result, found)
     found = list(dict.fromkeys(found))
     if not found:
-        raise RuntimeError(f"SF3D returned no GLB; exposed={exposed} resultType={type(result).__name__}")
+        raise RuntimeError(f"SF3D returned no GLB; space={args.space} exposed={exposed} resultType={type(result).__name__}")
     source = max(found, key=lambda p: p.stat().st_size)
     structural = validate(source)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, args.output)
     report = {
-        "provider": "stabilityai/stable-fast-3d",
+        "provider": "stable-fast-3d-zero-gpu",
+        "space": args.space,
         "freeOnly": True,
         "paidFallbackAllowed": False,
         "tripoApiUsed": False,
@@ -186,7 +198,7 @@ def main() -> int:
         **structural,
         "productionReady": False,
         "productionGate": "CLOSED",
-        "nextStage": "transfer/bake this geometry-aware appearance onto the existing animated high-resolution hero",
+        "nextStage": "visual multi-angle donor QC, then geometry-aware appearance transfer onto the existing animated high-resolution hero",
     }
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
