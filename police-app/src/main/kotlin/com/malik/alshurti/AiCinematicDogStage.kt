@@ -43,6 +43,8 @@ fun AiCinematicDogStage(
     var stickyJob by remember { mutableStateOf<Job?>(null) }
     var continuationAction by remember { mutableStateOf<DogAction?>(null) }
     var continuationNonce by remember { mutableStateOf(0L) }
+    var speakingTurnNonce by remember { mutableStateOf(0L) }
+    var previousPhase by remember { mutableStateOf(phase) }
     var speakingVisualStage by remember { mutableIntStateOf(0) }
 
     // A coherent, unique ambient deck. Blocks are shuffled per app-screen session but paired
@@ -116,10 +118,14 @@ fun AiCinematicDogStage(
 
     var ambientAction by remember { mutableStateOf<DogAction?>(null) }
     LaunchedEffect(phase) {
+        if (phase == CallPhase.SPEAKING && previousPhase != CallPhase.SPEAKING) {
+            speakingTurnNonce += 1L
+            speakingVisualStage = 0
+        }
+        previousPhase = phase
         if (phase == CallPhase.LISTENING && ambientAction == null) {
             ambientAction = nextUnusedAmbient()
         }
-        if (phase == CallPhase.SPEAKING) speakingVisualStage = 0
     }
 
     val baseAction: DogAction? = when {
@@ -161,13 +167,27 @@ fun AiCinematicDogStage(
     val playbackSource = remember(requestedAction, remoteSource) {
         CinematicMediaCache.localOrRemote(context, remoteSource)
     }
-    val playbackSeed = remember(requestedAction, remoteSource, continuationNonce) {
+    val playbackSeed = remember(
+        requestedAction,
+        remoteSource,
+        continuationNonce,
+        speakingTurnNonce,
+        officeScene.revision
+    ) {
         System.nanoTime() xor
             (requestedAction.ordinal.toLong() shl 33) xor
             remoteSource.hashCode().toLong() xor
-            continuationNonce
+            continuationNonce xor
+            (speakingTurnNonce shl 11) xor
+            officeScene.revision.toLong()
     }
-    val randomizeStart = phase == CallPhase.SPEAKING && continuationNonce > 0L
+    val randomizeStart = when (requestedAction) {
+        DogAction.TALK_SEATED,
+        DogAction.TALK_STANDING,
+        DogAction.SEATED_IDLE,
+        DogAction.REVIEW_FILE -> true
+        else -> false
+    }
 
     fun advanceFrom(completed: DogAction) {
         continuationNonce += 1L
