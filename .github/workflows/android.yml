@@ -132,6 +132,11 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Api-Revision: 2026-05-20' \
             --data "$PAYLOAD")
+          if [[ "$HTTP_CODE" == "429" ]]; then
+            echo "::warning::Gemini TTS smoke test is temporarily rate-limited (HTTP 429); code build will continue."
+            rm -f "$RESPONSE" "$WAV"
+            exit 0
+          fi
           if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
             echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
             exit 1
