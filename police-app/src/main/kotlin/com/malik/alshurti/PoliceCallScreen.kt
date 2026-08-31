@@ -26,11 +26,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
- * Pure cinematic call surface.
+ * Pure cinematic observation surface.
  *
- * Product rule: the call screen contains no written UI at all. Conversation state is communicated
- * by the officer's performance, voice and office soundscape. Android's own permission / package
- * installer surfaces remain system-owned and may contain text outside this composable.
+ * No written UI and no synthetic/game-like office overlay. Every visible movement must come from
+ * the cinematic source itself or the real runtime 3D scene. Android permission/installer surfaces
+ * remain system-owned and may contain text outside this composable.
  */
 @Composable
 fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
@@ -54,11 +54,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF07111C),
-                        Color(0xFF0B1823),
-                        Color(0xFF07111C)
-                    )
+                    listOf(Color(0xFF07111C), Color(0xFF0B1823), Color(0xFF07111C))
                 )
             )
     ) {
@@ -78,12 +74,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 )
         ) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
-                val viewportAspect = if (maxHeight.value > 0f) {
-                    maxWidth.value / maxHeight.value
-                } else {
-                    CINEMATIC_ASPECT
-                }
-
+                val viewportAspect = if (maxHeight.value > 0f) maxWidth.value / maxHeight.value else CINEMATIC_ASPECT
                 val cinematicModifier = if (viewportAspect < CINEMATIC_ASPECT) {
                     Modifier
                         .align(Alignment.Center)
@@ -96,21 +87,13 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                         .aspectRatio(CINEMATIC_ASPECT)
                 }
 
-                Box(modifier = cinematicModifier) {
-                    RealPoliceDogStage(
-                        mood = state.mood,
-                        phase = state.phase,
-                        viseme = state.viseme,
-                        officeScene = state.officeScene,
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    OfficeLiveOverlay(
-                        scene = state.officeScene,
-                        phase = state.phase,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+                RealPoliceDogStage(
+                    mood = state.mood,
+                    phase = state.phase,
+                    viseme = state.viseme,
+                    officeScene = state.officeScene,
+                    modifier = cinematicModifier
+                )
             }
         }
     }
