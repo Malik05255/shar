@@ -53,7 +53,6 @@ def build_foreground(source: Path, output: Path) -> dict[str, Any]:
 
     crop = np.asarray(image)[box[1]:box[3], box[0]:box[2]].astype(np.float32)
     alpha = component[box[1]:box[3], box[0]:box[2]].astype(np.float32)[..., None]
-    # TRELLIS.2's own preprocess multiplies RGB by alpha and drops alpha before image_to_3d.
     processed = np.clip(crop * alpha, 0, 255).astype(np.uint8)
     out = Image.fromarray(processed, "RGB")
     if max(out.size) > 1024:
@@ -94,6 +93,19 @@ def collect_paths(value: Any, suffix: str, found: list[Path]) -> None:
     elif isinstance(value, (tuple, list)):
         for nested in value:
             collect_paths(nested, suffix, found)
+
+
+def unwrap_state(value: Any) -> Any:
+    """Accept Gradio State handles across Space/client versions without guessing their payload type."""
+    if isinstance(value, (tuple, list)):
+        if not value:
+            raise RuntimeError("TRELLIS.2 generation returned an empty state sequence")
+        return value[0]
+    if value is None:
+        raise RuntimeError("TRELLIS.2 generation returned a null state")
+    if isinstance(value, str) and not value.strip():
+        raise RuntimeError("TRELLIS.2 generation returned an empty state handle")
+    return value
 
 
 def validate_glb(path: Path) -> dict[str, Any]:
@@ -171,12 +183,8 @@ def main() -> int:
     t0 = time.monotonic()
     generated = client.predict(api_name=generate_name, **generate_call)
     generation_elapsed = round(time.monotonic() - t0, 2)
-
-    if not isinstance(generated, (tuple, list)) or len(generated) < 1:
-        raise RuntimeError(f"TRELLIS.2 generation returned no state: {type(generated).__name__}")
-    state = generated[0]
-    if not isinstance(state, dict) or not state:
-        raise RuntimeError(f"TRELLIS.2 generation state is invalid: {type(state).__name__}")
+    state = unwrap_state(generated)
+    print(f"TRELLIS2_STATE_TYPE={type(state).__name__}")
 
     extract_name, extract_info = endpoint(client, "extract_glb")
     extract_values = {
@@ -208,6 +216,7 @@ def main() -> int:
         "tripoApiUsed": False,
         "generationEndpoint": generate_name,
         "extractEndpoint": extract_name,
+        "generationStateType": type(state).__name__,
         "resolution": 512,
         "textureSize": 1024,
         "decimationTarget": 500000,
