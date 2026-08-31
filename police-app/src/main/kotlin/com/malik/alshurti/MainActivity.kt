@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
@@ -22,21 +23,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             val updateState = appUpdateManager.state.collectAsStateWithLifecycle().value
 
+            // A confirmed newer stable release is mandatory: start the delta transfer immediately.
+            // Idle/Checking never render a window, so normal launches remain visually untouched.
+            LaunchedEffect(updateState) {
+                if (updateState is AppUpdateState.Available) {
+                    appUpdateManager.startUpdate()
+                }
+            }
+
             MaterialTheme {
                 Box(Modifier.fillMaxSize()) {
                     PoliceCallScreen()
                     AppUpdatePrompt(
                         state = updateState,
-                        onUpdateNow = appUpdateManager::startUpdate,
-                        onRetry = appUpdateManager::retry,
-                        onDismiss = appUpdateManager::dismissForThisSession
+                        onRetry = appUpdateManager::retry
                     )
                 }
             }
         }
 
-        // Every real app launch checks GitHub Releases once. Network/check failures stay silent so
-        // the child can always use the core call experience even when GitHub is unavailable.
         appUpdateManager.checkForUpdates()
     }
 
