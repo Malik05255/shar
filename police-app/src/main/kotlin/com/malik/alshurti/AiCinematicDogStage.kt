@@ -108,9 +108,14 @@ fun AiCinematicDogStage(
         officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
         else -> null
     }
+    val unusedExplicitEventAction = explicitEventAction?.takeIf { action ->
+        val source = RemoteCinematicAssets.sourceFor(action)
+        source != null && source !in usedAmbientSources
+    }
 
     // Silent observation ignores repetitive ViewModel ambient action changes and advances only
-    // through the unique deck. Explicit physical events may temporarily override it.
+    // through the unique deck. Explicit physical events may override it only if their exact source
+    // has not already appeared during this session.
     var ambientAction by remember { mutableStateOf<DogAction?>(null) }
     LaunchedEffect(phase) {
         if (phase == CallPhase.LISTENING && ambientAction == null) {
@@ -122,7 +127,7 @@ fun AiCinematicDogStage(
         phase == CallPhase.SPEAKING && officeScene.dogAction == DogAction.TALK_STANDING -> DogAction.TALK_STANDING
         phase == CallPhase.SPEAKING -> DogAction.TALK_SEATED
         phase == CallPhase.THINKING -> DogAction.SEATED_IDLE
-        phase == CallPhase.LISTENING && explicitEventAction != null -> explicitEventAction
+        phase == CallPhase.LISTENING && unusedExplicitEventAction != null -> unusedExplicitEventAction
         phase == CallPhase.LISTENING -> ambientAction
         officeScene.dogAction != DogAction.SEATED_IDLE -> officeScene.dogAction
         stickyAction != null -> stickyAction
@@ -130,7 +135,9 @@ fun AiCinematicDogStage(
     }
     val requestedAction = continuationAction ?: baseAction
 
-    val remoteSource = requestedAction?.let { remember(it) { RemoteCinematicAssets.sourceFor(it) } }
+    val remoteSource = remember(requestedAction) {
+        requestedAction?.let { RemoteCinematicAssets.sourceFor(it) }
+    }
     if (requestedAction == null || remoteSource == null) {
         PhotorealPoliceDogFallback(
             phase = phase,
