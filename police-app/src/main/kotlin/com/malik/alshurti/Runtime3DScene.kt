@@ -122,7 +122,8 @@ object Runtime3DAssetCatalog {
         "IdleWork", "Breathing", "Blink", "EyeSaccade",
         "LookAtDesk", "LookAtMonitor", "LookAtCamera", "LookAtDoor", "LookAtStaff",
         "ReachFile", "ReviewFile", "TurnPage", "WriteNote", "SetFileDown",
-        "UsePhone", "Listen", "Talk", "StandUp", "SitDown", "Walk", "LeanBack"
+        "UsePhone", "Listen", "Talk", "StandUp", "SitDown", "Walk", "LeanBack",
+        "VisemeRest", "VisemeOpen", "VisemeWide", "VisemeRound", "VisemeClosed"
     )
 
     val staffCoreClips = setOf(
