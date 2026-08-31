@@ -2,13 +2,19 @@ package com.malik.alshurti.neural
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
 
 class NeuralArabicVoice(
     context: Context,
@@ -25,10 +31,6 @@ class NeuralArabicVoice(
 
     private val appContext = context.applicationContext
     private val modelManager = SupertonicModelManager(appContext)
-
-    // Synthesis and playback are deliberately separated. While the child hears chunk N,
-    // Supertonic can already synthesize chunk N+1. This optimizes time-to-first-audio,
-    // which matters more in a phone-call experience than full-response completion time.
     private val synthesisExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "alshorti-neural-synthesis").apply {
             priority = Thread.NORM_PRIORITY + 1
@@ -42,15 +44,21 @@ class NeuralArabicVoice(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val speechAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+        .setAudioAttributes(speechAttributes)
+        .setWillPauseWhenDucked(false)
+        .build()
 
-    @Volatile
-    private var core: SupertonicCore? = null
-
-    @Volatile
-    private var audioTrack: AudioTrack? = null
-
-    @Volatile
-    private var preparing = false
+    @Volatile private var core: SupertonicCore? = null
+    @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var mediaPlayer: MediaPlayer? = null
+    @Volatile private var preparing = false
+    @Volatile private var focusHeld = false
 
     fun isModelInstalled(): Boolean = modelManager.isInstalled()
 
@@ -102,7 +110,7 @@ class NeuralArabicVoice(
         }
 
         val ticket = generation.incrementAndGet()
-        stopTrack()
+        stopPlayback()
         val chunks = splitForConversation(normalized)
         val speechStarted = AtomicBoolean(false)
 
@@ -111,16 +119,11 @@ class NeuralArabicVoice(
                 var charOffset = 0
                 chunks.forEachIndexed { index, chunk ->
                     if (ticket != generation.get()) return@execute
-
-                    // Six diffusion steps is the conversational quality preset. The first
-                    // chunk is intentionally short, so the user hears natural speech sooner
-                    // without lowering voice quality to a robotic fast preset.
                     val result = engine.synthesize(chunk, 6, 1.04f)
                     if (ticket != generation.get() || result.audio.isEmpty()) return@forEachIndexed
 
                     val chunkStart = charOffset.toFloat() / normalized.length.toFloat()
                     charOffset += chunk.length
-                    // Count skipped spaces/punctuation between our synthesized chunks.
                     while (charOffset < normalized.length && normalized[charOffset].isWhitespace()) {
                         charOffset++
                     }
@@ -130,27 +133,31 @@ class NeuralArabicVoice(
                         (charOffset.toFloat() / normalized.length.toFloat()).coerceIn(chunkStart, 1f)
                     }
 
-                    val isFirst = index == 0
-                    val isLast = index == chunks.lastIndex
                     playbackExecutor.execute {
-                        playChunk(
-                            ticket = ticket,
-                            result = result,
-                            overallStart = chunkStart,
-                            overallEnd = chunkEnd,
-                            isFirst = isFirst,
-                            isLast = isLast,
-                            speechStarted = speechStarted
-                        )
+                        runCatching {
+                            playChunk(
+                                ticket = ticket,
+                                result = result,
+                                overallStart = chunkStart,
+                                overallEnd = chunkEnd,
+                                isFirst = index == 0,
+                                isLast = index == chunks.lastIndex,
+                                speechStarted = speechStarted
+                            )
+                        }.onFailure { error ->
+                            if (ticket == generation.get()) {
+                                mainHandler.post {
+                                    callbacks.onError(error.message ?: "تعذر تشغيل صوت الشرطي على الجهاز.")
+                                }
+                            }
+                        }
                     }
                 }
             } catch (t: Throwable) {
                 if (ticket == generation.get()) {
                     if (speechStarted.get()) {
                         playbackExecutor.execute {
-                            if (ticket == generation.get()) {
-                                mainHandler.post(callbacks::onSpeechFinished)
-                            }
+                            if (ticket == generation.get()) mainHandler.post(callbacks::onSpeechFinished)
                         }
                     } else {
                         mainHandler.post {
@@ -164,12 +171,12 @@ class NeuralArabicVoice(
 
     fun interrupt() {
         generation.incrementAndGet()
-        stopTrack()
+        stopPlayback()
     }
 
     fun release() {
         generation.incrementAndGet()
-        stopTrack()
+        stopPlayback()
         synthesisExecutor.shutdownNow()
         playbackExecutor.shutdownNow()
         runCatching { core?.close() }
@@ -186,87 +193,217 @@ class NeuralArabicVoice(
         speechStarted: AtomicBoolean
     ) {
         if (ticket != generation.get()) return
+        runCatching {
+            playChunkWithAudioTrack(ticket, result, overallStart, overallEnd, isFirst, isLast, speechStarted)
+        }.recoverCatching {
+            if (ticket != generation.get()) return
+            playChunkWithMediaPlayer(ticket, result, overallStart, overallEnd, isFirst, isLast, speechStarted)
+        }.getOrThrow()
+    }
+
+    private fun playChunkWithAudioTrack(
+        ticket: Long,
+        result: SupertonicCore.Result,
+        overallStart: Float,
+        overallEnd: Float,
+        isFirst: Boolean,
+        isLast: Boolean,
+        speechStarted: AtomicBoolean
+    ) {
         val durationMs = (result.audio.size * 1000L / result.sampleRate).coerceAtLeast(1L)
-        val energyCalibration = PcmSpeechEnergy.calibrate(result.audio, result.sampleRate)
         val format = AudioFormat.Builder()
             .setSampleRate(result.sampleRate)
             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
             .build()
-        val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
-
         val track = AudioTrack.Builder()
-            .setAudioAttributes(attributes)
+            .setAudioAttributes(speechAttributes)
             .setAudioFormat(format)
             .setTransferMode(AudioTrack.MODE_STATIC)
             .setBufferSizeInBytes(result.audio.size * Float.SIZE_BYTES)
             .build()
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            track.release()
+            throw IllegalStateException("تعذر تهيئة مسار الصوت المحلي.")
+        }
         audioTrack = track
 
-        val written = track.write(result.audio, 0, result.audio.size, AudioTrack.WRITE_BLOCKING)
-        if (written <= 0 || ticket != generation.get()) {
-            runCatching { track.release() }
+        try {
+            val written = track.write(result.audio, 0, result.audio.size, AudioTrack.WRITE_BLOCKING)
+            if (written <= 0 || ticket != generation.get()) return
+            requestAudioFocus()
+            track.setVolume(1f)
+            track.play()
+
+            if (durationMs > AUDIO_START_WATCHDOG_MS * 2) {
+                Thread.sleep(AUDIO_START_WATCHDOG_MS)
+                if (ticket == generation.get() && track.playbackHeadPosition == 0) {
+                    throw IllegalStateException("AudioTrack لم يبدأ فعليًا على هذا الجهاز.")
+                }
+            }
+
+            if (isFirst && speechStarted.compareAndSet(false, true)) {
+                mainHandler.post { callbacks.onSpeechStarted(durationMs) }
+            }
+            publishLipFrames(ticket, result, overallStart, overallEnd, durationMs) {
+                track.playbackHeadPosition.toLong().coerceAtLeast(0L) / result.audio.size.toDouble()
+            }
+            if (ticket == generation.get() && isLast) finishSpeech()
+        } finally {
             if (audioTrack === track) audioTrack = null
-            return
+            runCatching { track.pause() }
+            runCatching { track.flush() }
+            runCatching { track.stop() }
+            runCatching { track.release() }
+            abandonAudioFocus()
         }
+    }
 
-        if (isFirst && speechStarted.compareAndSet(false, true)) {
-            mainHandler.post { callbacks.onSpeechStarted(durationMs) }
+    private fun playChunkWithMediaPlayer(
+        ticket: Long,
+        result: SupertonicCore.Result,
+        overallStart: Float,
+        overallEnd: Float,
+        isFirst: Boolean,
+        isLast: Boolean,
+        speechStarted: AtomicBoolean
+    ) {
+        val durationMs = (result.audio.size * 1000L / result.sampleRate).coerceAtLeast(1L)
+        val wavFile = File(appContext.cacheDir, "alshorti-supertonic-$ticket-${System.nanoTime()}.wav")
+        wavFile.writeBytes(floatPcmToWav(result.audio, result.sampleRate))
+        val player = MediaPlayer()
+        mediaPlayer = player
+
+        try {
+            player.setAudioAttributes(speechAttributes)
+            player.setDataSource(wavFile.absolutePath)
+            player.prepare()
+            if (ticket != generation.get()) return
+            requestAudioFocus()
+            player.setVolume(1f, 1f)
+            player.start()
+            Thread.sleep(MEDIA_START_WATCHDOG_MS)
+            if (ticket == generation.get() && !player.isPlaying && player.currentPosition <= 0) {
+                throw IllegalStateException("MediaPlayer لم يبدأ تشغيل الصوت المحلي.")
+            }
+
+            if (isFirst && speechStarted.compareAndSet(false, true)) {
+                mainHandler.post { callbacks.onSpeechStarted(durationMs) }
+            }
+            publishLipFrames(ticket, result, overallStart, overallEnd, durationMs) {
+                player.currentPosition.toDouble() / durationMs.toDouble()
+            }
+            if (ticket == generation.get() && isLast) finishSpeech()
+        } finally {
+            if (mediaPlayer === player) mediaPlayer = null
+            runCatching { player.stop() }
+            runCatching { player.reset() }
+            runCatching { player.release() }
+            runCatching { wavFile.delete() }
+            abandonAudioFocus()
         }
-        track.play()
+    }
 
+    private fun publishLipFrames(
+        ticket: Long,
+        result: SupertonicCore.Result,
+        overallStart: Float,
+        overallEnd: Float,
+        durationMs: Long,
+        playbackFraction: () -> Double
+    ) {
+        val energyCalibration = PcmSpeechEnergy.calibrate(result.audio, result.sampleRate)
         val startedAt = System.nanoTime()
         var smoothedEnergy = 0f
         while (ticket == generation.get()) {
             val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L
-            val localFraction = (elapsedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-            val globalFraction = overallStart + (overallEnd - overallStart) * localFraction
+            val localFraction = playbackFraction().toFloat().coerceIn(0f, 1f)
+            val fallbackFraction = (elapsedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+            val effectiveFraction = maxOf(localFraction, fallbackFraction)
+            val globalFraction = overallStart + (overallEnd - overallStart) * effectiveFraction
             val rawEnergy = PcmSpeechEnergy.normalizedAt(
                 result.audio,
                 result.sampleRate,
-                localFraction,
+                effectiveFraction,
                 energyCalibration
             )
             smoothedEnergy = PcmSpeechEnergy.smooth(smoothedEnergy, rawEnergy)
             val callbackFraction = globalFraction.coerceIn(0f, 1f)
             val callbackEnergy = smoothedEnergy
             mainHandler.post { callbacks.onSpeechFrame(callbackFraction, callbackEnergy) }
-            if (elapsedMs >= durationMs) break
+            if (effectiveFraction >= 0.999f || elapsedMs >= durationMs + PLAYBACK_GRACE_MS) break
             try {
-                Thread.sleep(58L)
+                Thread.sleep(LIP_FRAME_MS)
             } catch (_: InterruptedException) {
                 break
             }
         }
+    }
 
-        val completed = ticket == generation.get()
-        runCatching { track.stop() }
-        runCatching { track.flush() }
-        runCatching { track.release() }
-        if (audioTrack === track) audioTrack = null
-
-        if (completed && isLast) {
-            mainHandler.post {
-                callbacks.onSpeechFrame(1f, 0f)
-                callbacks.onSpeechFinished()
-            }
+    private fun finishSpeech() {
+        mainHandler.post {
+            callbacks.onSpeechFrame(1f, 0f)
+            callbacks.onSpeechFinished()
         }
+    }
+
+    private fun requestAudioFocus() {
+        focusHeld = runCatching {
+            audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }.getOrDefault(false)
+    }
+
+    private fun abandonAudioFocus() {
+        if (!focusHeld) return
+        focusHeld = false
+        runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
+    }
+
+    private fun floatPcmToWav(samples: FloatArray, sampleRate: Int): ByteArray {
+        val pcm = ByteArray(samples.size * 2)
+        samples.forEachIndexed { index, sample ->
+            val value = (sample.coerceIn(-1f, 1f) * Short.MAX_VALUE).roundToInt()
+            pcm[index * 2] = (value and 0xff).toByte()
+            pcm[index * 2 + 1] = ((value ushr 8) and 0xff).toByte()
+        }
+        val out = ByteArrayOutputStream(pcm.size + 44)
+        fun ascii(value: String) = out.write(value.toByteArray(Charsets.US_ASCII))
+        fun le16(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+        }
+        fun le32(value: Int) {
+            out.write(value and 0xff)
+            out.write((value ushr 8) and 0xff)
+            out.write((value ushr 16) and 0xff)
+            out.write((value ushr 24) and 0xff)
+        }
+        ascii("RIFF")
+        le32(pcm.size + 36)
+        ascii("WAVE")
+        ascii("fmt ")
+        le32(16)
+        le16(1)
+        le16(1)
+        le32(sampleRate)
+        le32(sampleRate * 2)
+        le16(2)
+        le16(16)
+        ascii("data")
+        le32(pcm.size)
+        out.write(pcm)
+        return out.toByteArray()
     }
 
     private fun splitForConversation(text: String): List<String> {
         val chunks = mutableListOf<String>()
         var remaining = text.trim()
         var target = FIRST_CHUNK_CHARS
-
         while (remaining.isNotEmpty()) {
             if (remaining.length <= target) {
                 chunks += remaining
                 break
             }
-
             val searchLimit = target.coerceAtMost(remaining.length - 1)
             val preferred = (searchLimit downTo (target / 2).coerceAtLeast(1)).firstOrNull { index ->
                 remaining[index] in listOf('،', ',', '؛', ';', '؟', '?', '.', '!', ':')
@@ -280,22 +417,35 @@ class NeuralArabicVoice(
             remaining = remaining.substring((cut + 1).coerceAtMost(remaining.length)).trimStart()
             target = NEXT_CHUNK_CHARS
         }
-
         return chunks.ifEmpty { listOf(text) }
     }
 
     @Synchronized
-    private fun stopTrack() {
-        val track = audioTrack ?: return
+    private fun stopPlayback() {
+        val track = audioTrack
         audioTrack = null
-        runCatching { track.pause() }
-        runCatching { track.flush() }
-        runCatching { track.stop() }
-        runCatching { track.release() }
+        if (track != null) {
+            runCatching { track.pause() }
+            runCatching { track.flush() }
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
+        val player = mediaPlayer
+        mediaPlayer = null
+        if (player != null) {
+            runCatching { player.stop() }
+            runCatching { player.reset() }
+            runCatching { player.release() }
+        }
+        abandonAudioFocus()
     }
 
     private companion object {
         const val FIRST_CHUNK_CHARS = 48
         const val NEXT_CHUNK_CHARS = 88
+        const val AUDIO_START_WATCHDOG_MS = 120L
+        const val MEDIA_START_WATCHDOG_MS = 90L
+        const val LIP_FRAME_MS = 58L
+        const val PLAYBACK_GRACE_MS = 700L
     }
 }
