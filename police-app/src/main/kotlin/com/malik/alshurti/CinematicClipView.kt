@@ -65,6 +65,8 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
             player.setSurface(surface)
             player.setDataSource(context, Uri.parse(active.source))
             player.isLooping = false
+            // Picture and dialogue are deliberately decoupled. Recorded Foley and the selected
+            // speech engine own audio; old baked clip audio is never allowed to double the scene.
             player.setVolume(0f, 0f)
 
             player.setOnVideoSizeChangedListener { _, width, height ->
@@ -76,9 +78,12 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
             player.setOnPreparedListener { prepared ->
                 runCatching {
                     val durationMs = prepared.duration.toLong().coerceAtLeast(0L)
-                    if (active.randomizeStart && durationMs > 2_200L) {
+                    if (active.randomizeStart && durationMs > 2_800L) {
+                        // Reusable talk/idle footage can safely start across most of the take. Keep
+                        // at least the final 1.8 s so MediaPlayer still has time to establish motion
+                        // before handing off to the next beat.
                         val maxStartMs = minOf(
-                            (durationMs * 0.28f).toLong(),
+                            (durationMs * 0.62f).toLong(),
                             (durationMs - 1_800L).coerceAtLeast(0L)
                         )
                         val raw = (active.seed xor (active.source.hashCode().toLong() shl 17)).absoluteValue
@@ -104,8 +109,6 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
 
             player.setOnCompletionListener { completed ->
                 runCatching { completed.setOnSeekCompleteListener(null) }
-                // MediaPlayer callbacks arrive on the UI looper. Post once more so Compose can
-                // update the source before this final decoded frame becomes visibly stationary.
                 post { completionCallback?.invoke() }
             }
 
