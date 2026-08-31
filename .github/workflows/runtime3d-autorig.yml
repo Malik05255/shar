@@ -79,13 +79,14 @@ jobs:
               raise SystemExit('Source geometry floor failed')
           PY
 
-      - name: Install Blender
+      - name: Install Blender and glTF Python dependency
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy
           blender --version | head -n 2
+          blender --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
 
       - name: Run Blender automatic bone-heat rigging
         shell: bash
