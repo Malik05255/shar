@@ -8,10 +8,7 @@ on:
     paths:
       - '.github/workflows/runtime3d-sf3d-transfer.yml'
       - 'runtime3d/blender_transfer_pbr_candidate.py'
-      - 'runtime3d/blender_transfer_pbr_embedded.py'
-      - 'runtime3d/blender_transfer_pbr_seamsafe.py'
-      - 'runtime3d/blender_transfer_vertexcolor_semantic.py'
-      - 'runtime3d/blender_transfer_vertexcolor_entry.py'
+      - 'runtime3d/blender_author_target_pbr.py'
       - 'runtime3d/validate_facial_motion_cubic.py'
 
 permissions:
@@ -34,7 +31,7 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v4
 
-      - name: Enforce free topology-preserving candidate policy
+      - name: Enforce target-owned free PBR policy
         shell: bash
         run: |
           set -euo pipefail
@@ -44,10 +41,9 @@ jobs:
           echo 'REMESH=false'
           echo 'PRESERVE_SKIN=true'
           echo 'PRESERVE_26_CLIPS=true'
-          echo 'SKIN_SEMANTIC_REGIONS=true'
           echo 'DONOR_UV_VISIBLE_AT_RUNTIME=false'
-          echo 'SEMANTIC_VERTEX_COLOR=true'
-          echo 'CORNER_COLOR_DOMAIN=true'
+          echo 'TARGET_OWNED_PBR=true'
+          echo 'TARGET_BOX_UV=true'
           echo 'PRODUCTION_ACTIVATION=false'
           python3 - <<'PY'
           import json
@@ -66,7 +62,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.MOTION_RUN_ID }}
 
-      - name: Download exact SF3D textured donor
+      - name: Download free reference donor
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.DONOR_ARTIFACT }}
@@ -75,7 +71,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.DONOR_RUN_ID }}
 
-      - name: Verify immutable Motion V2 and donor inputs
+      - name: Verify immutable Motion V2 input
         shell: bash
         run: |
           set -euo pipefail
@@ -87,31 +83,21 @@ jobs:
           motion=Path(os.environ['RUNNER_TEMP'])/'motion'/os.environ['MOTION_GLB']
           donor=Path(os.environ['RUNNER_TEMP'])/'donor'/os.environ['DONOR_GLB']
           if not motion.is_file() or not donor.is_file(): raise SystemExit('Source artifact missing')
-          md=read_glb_json(motion); dd=read_glb_json(donor)
+          md=read_glb_json(motion)
           names={a.get('name') for a in (md.get('animations') or []) if a.get('name')}
-          missing=sorted(set(DOG_CLIPS)-names)
           skins=md.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
           acc=md.get('accessors') or []; vertices=0
           for mesh in md.get('meshes') or []:
               for prim in mesh.get('primitives') or []:
                   pos=(prim.get('attributes') or {}).get('POSITION')
                   if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
-          mats=dd.get('materials') or []; tex=dd.get('textures') or []; imgs=dd.get('images') or []
-          base_ok=False
-          for mat in mats:
-              pbr=mat.get('pbrMetallicRoughness') or {}
-              base_ok = base_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
-          print(json.dumps({'motionBytes':motion.stat().st_size,'vertices':vertices,'motionAnimations':len(names),
-                            'missing':missing,'motionSkins':len(skins),'maxJoints':joints,
-                            'donorBytes':donor.stat().st_size,'donorMaterials':len(mats),
-                            'donorTextures':len(tex),'donorImages':len(imgs),'donorBaseColor':base_ok},indent=2))
-          if missing or len(names) != 26 or len(skins)!=1 or joints < 32 or vertices < 1_000_000:
+          missing=sorted(set(DOG_CLIPS)-names)
+          print(json.dumps({'vertices':vertices,'animations':len(names),'missing':missing,'skins':len(skins),'joints':joints},indent=2))
+          if missing or len(names)!=26 or len(skins)!=1 or joints < 32 or vertices < 1_000_000:
               raise SystemExit('Motion V2 structural quality contract failed')
-          if len(tex) < 1 or len(imgs) < 1 or not base_ok:
-              raise SystemExit('Donor BaseColor payload missing')
           PY
 
-      - name: Install Blender and headless GL runtime
+      - name: Install Blender and numpy
         shell: bash
         run: |
           set -euo pipefail
@@ -119,7 +105,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
           blender --version | head -n 2
 
-      - name: Bake donor detail into rig-semantic corner colors
+      - name: Author target-owned fur uniform leather PBR
         shell: bash
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -128,7 +114,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pbr-motion-v2/previews"
           blender --background \
-            --python runtime3d/blender_transfer_vertexcolor_entry.py -- \
+            --python runtime3d/blender_author_target_pbr.py -- \
             --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
             --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
             --output "$RUNNER_TEMP/pbr-motion-v2/police_dog.motion_v2_pbr_candidate.glb" \
@@ -142,26 +128,21 @@ jobs:
           import json, os
           from pathlib import Path
           qc=json.loads((Path(os.environ['RUNNER_TEMP'])/'pbr-motion-v2'/'police_dog.motion_v2_pbr_candidate.qc.json').read_text())
-          color=qc.get('uvTransfer') or {}
-          expected='semantic-region donor luminance -> target corner vertex color'
-          if color.get('algorithm') != expected:
-              raise SystemExit(f'Semantic color algorithm marker missing: {color.get("algorithm")}')
-          if int(color.get('colorLoopsWritten',0)) != int(color.get('targetLoops',-1)):
-              raise SystemExit('Not all target loops received semantic color')
-          if color.get('colorAttribute') != 'HeroSemanticColor' or color.get('colorDomain') != 'CORNER':
-              raise SystemExit('Target-owned CORNER color attribute missing')
-          classes=color.get('semanticClassLoops') or {}
-          required={'fur','muzzle','eye','uniform','glove','boot'}
+          uv=qc.get('uvTransfer') or {}
+          if uv.get('algorithm') != 'target-rig semantic materials + target box UV':
+              raise SystemExit(f'Target PBR algorithm marker missing: {uv.get("algorithm")}')
+          if uv.get('donorUvUsedAtRuntime') is not False or uv.get('geometryChanged') is not False:
+              raise SystemExit('Target-owned PBR policy failed')
+          if int(uv.get('loopsWritten',0)) != int(uv.get('targetLoops',-1)):
+              raise SystemExit('Not all target UV loops were authored')
+          classes=uv.get('semanticPolygons') or {}
+          required={'fur','muzzle','eye','uniform','belt','glove','boot'}
           missing=sorted(k for k in required if int(classes.get(k,0)) <= 0)
-          if missing:
-              raise SystemExit(f'Semantic visual classes missing: {missing}; {classes}')
-          corr=color.get('correspondence') or {}
-          if int(corr.get('loopsWritten',0)) != int(corr.get('targetLoops',-1)):
-              raise SystemExit('Donor correspondence was incomplete before color freeze')
-          print('SEMANTIC_VERTEX_COLOR_GATE=PASS')
+          if missing: raise SystemExit(f'Semantic PBR classes missing: {missing}; {classes}')
+          print('TARGET_OWNED_PBR_AUTHORING_GATE=PASS')
           PY
 
-      - name: Validate vertex-color PBR skin topology and all 26 clips
+      - name: Validate target PBR skin topology and all 26 clips
         shell: bash
         run: |
           set -euo pipefail
@@ -177,44 +158,36 @@ jobs:
           names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
           missing=sorted(set(DOG_CLIPS)-names)
           skins=d.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
-          mats=d.get('materials') or []
-          color_prims=0; total_prims=0; vertices=0
-          accessors=d.get('accessors') or []
-          for mesh in d.get('meshes') or []:
-              for prim in mesh.get('primitives') or []:
-                  total_prims += 1
-                  attrs=prim.get('attributes') or {}
-                  if isinstance(attrs.get('COLOR_0'),int): color_prims += 1
-                  pos=attrs.get('POSITION')
-                  if isinstance(pos,int) and 0 <= pos < len(accessors): vertices += int(accessors[pos].get('count') or 0)
-          metallic=[]; roughness=[]; base_textures=[]
+          mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []
+          base_ok=0; normal_ok=0; metallic=[]; roughness=[]
           for mat in mats:
               pbr=mat.get('pbrMetallicRoughness') or {}
+              if isinstance((pbr.get('baseColorTexture') or {}).get('index'),int): base_ok += 1
+              if isinstance((mat.get('normalTexture') or {}).get('index'),int): normal_ok += 1
               metallic.append(float(pbr.get('metallicFactor',1.0)))
               roughness.append(float(pbr.get('roughnessFactor',1.0)))
-              base_textures.append(isinstance((pbr.get('baseColorTexture') or {}).get('index'),int))
+          acc=d.get('accessors') or []; vertices=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
           vb=qc.get('targetVerticesBeforeAfter') or []; pb=qc.get('targetPolygonsBeforeAfter') or []
-          print(json.dumps({'bytes':out.stat().st_size,'exportedVertices':vertices,
-                            'animations':len(names),'missing':missing,'skins':len(skins),'maxJoints':joints,
-                            'materials':len(mats),'primitives':total_prims,'colorPrimitives':color_prims,
-                            'metallic':metallic,'roughness':roughness,'baseColorTextures':base_textures,
-                            'verticesBeforeAfter':vb,'polygonsBeforeAfter':pb,'previews':qc.get('previewFiles')},indent=2))
-          if len(vb)!=2 or vb[0]!=vb[1]: raise SystemExit('Target vertex topology changed in Blender')
-          if len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Target polygon topology changed in Blender')
+          summary={'bytes':out.stat().st_size,'exportedVertices':vertices,'animations':len(names),'missing':missing,
+                   'skins':len(skins),'joints':joints,'materials':len(mats),'textures':len(tex),'images':len(imgs),
+                   'baseMaterials':base_ok,'normalMaterials':normal_ok,'metallic':metallic,'roughness':roughness,
+                   'verticesBeforeAfter':vb,'polygonsBeforeAfter':pb}
+          print(json.dumps(summary,indent=2))
+          if len(vb)!=2 or vb[0]!=vb[1] or len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Blender topology changed')
           if missing or len(names)!=26 or len(skins)!=1 or joints < 32: raise SystemExit('Skin/animation preservation failed')
-          if vertices < 1_000_000: raise SystemExit('Full-detail exported geometry floor failed')
-          if not mats or total_prims <= 0 or color_prims <= 0: raise SystemExit('glTF COLOR_0 semantic appearance missing')
-          if any(abs(x) > 1e-6 for x in metallic): raise SystemExit('Hero material is metallic')
-          if any(x < 0.60 for x in roughness): raise SystemExit('Hero material is too glossy')
-          if any(base_textures): raise SystemExit('Broken donor UV texture is still visible at runtime')
-          print('MOTION_V2_VERTEX_PBR_STRUCTURAL_GATE=PASS')
+          if vertices < 1_000_000: raise SystemExit('Full-detail geometry floor failed')
+          if len(mats) < 7 or base_ok < 7 or normal_ok < 7 or len(tex) < 14 or len(imgs) < 14:
+              raise SystemExit('Seven target BaseColor+Normal PBR materials were not embedded')
+          if any(abs(x) > 1e-6 for x in metallic): raise SystemExit('Unexpected metallic hero material')
+          print('MOTION_V2_TARGET_PBR_STRUCTURAL_GATE=PASS')
           PY
 
       - name: Defer sparse facial gate to exact raw Motion V2 transplant
-        shell: bash
         run: |
-          set -euo pipefail
-          echo 'BLENDER_INTERMEDIATE_MAY_REBAKE_ANIMATION_CHANNELS=true'
           echo 'FINAL_SPARSE_TRANSPLANT_REQUIRED=true'
           echo 'FINAL_FACIAL_GATE_REQUIRED=true'
           echo 'PRODUCTION_GATE=CLOSED'
