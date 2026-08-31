@@ -1,18 +1,17 @@
 package com.malik.alshurti
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.malik.alshurti.voice.GeminiSilentListener
 import com.malik.alshurti.voice.SaudiHumanVoice
 
 /**
  * Half-duplex voice coordinator.
  *
- * Input deliberately uses AudioRecord through GeminiSilentListener instead of Android's
- * SpeechRecognizer. That removes OEM recording beeps/restart tones and keeps the microphone quiet
- * while the character waits for the child to speak.
- *
- * Product rule: opening the office does not make the dog address the observer. The first greeting
- * is suppressed until real voice activity is detected; the office remains a passive living world.
+ * Input uses AudioRecord through GeminiSilentListener instead of Android SpeechRecognizer, so OEM
+ * start/stop recording tones are not part of the conversation path. Transient Gemini TTS failures
+ * are retried automatically because the production screen intentionally has no diagnostic text.
  */
 class PoliceVoiceEngine(
     private val context: Context,
@@ -32,10 +31,13 @@ class PoliceVoiceEngine(
         fun onViseme(viseme: MouthViseme)
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var mode: VoiceMode = VoiceMode.ONLINE
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
     private var observerHasSpoken = false
+    private var ttsRetryCount = 0
+    private var released = false
 
     private val silentListener = GeminiSilentListener(
         context = context.applicationContext,
@@ -72,6 +74,7 @@ class PoliceVoiceEngine(
             }
 
             override fun onSpeechStarted(durationMs: Long) {
+                ttsRetryCount = 0
                 lastViseme = MouthViseme.OPEN
                 listener.onViseme(lastViseme)
                 listener.onTtsStarted()
@@ -86,6 +89,7 @@ class PoliceVoiceEngine(
             }
 
             override fun onSpeechFinished() {
+                ttsRetryCount = 0
                 lastViseme = MouthViseme.REST
                 listener.onViseme(MouthViseme.REST)
                 listener.onTtsFinished()
@@ -94,7 +98,17 @@ class PoliceVoiceEngine(
             override fun onError(message: String) {
                 lastViseme = MouthViseme.REST
                 listener.onViseme(MouthViseme.REST)
-                listener.onTtsError(message)
+                if (shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()) {
+                    val retryNumber = ++ttsRetryCount
+                    val retryText = spokenText
+                    mainHandler.postDelayed({
+                        if (!released && retryText == spokenText && mode == VoiceMode.ONLINE) {
+                            saudiVoice.speak(retryText)
+                        }
+                    }, RETRY_BASE_DELAY_MS * retryNumber)
+                } else {
+                    listener.onTtsError(message)
+                }
             }
         }
     )
@@ -103,10 +117,12 @@ class PoliceVoiceEngine(
         mode = newMode
         stopListening()
         observerHasSpoken = false
+        ttsRetryCount = 0
         if (newMode == VoiceMode.OFFLINE) {
             listener.onTtsError("الصوت السعودي البشري يحتاج اتصالاً بالإنترنت.")
             return
         }
+        // prepare() is local-only; it never performs a network TTS warm-up.
         saudiVoice.prepare()
     }
 
@@ -123,6 +139,8 @@ class PoliceVoiceEngine(
     }
 
     fun interruptSpeech() {
+        ttsRetryCount = 0
+        mainHandler.removeCallbacksAndMessages(null)
         saudiVoice.interrupt()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
@@ -130,10 +148,8 @@ class PoliceVoiceEngine(
 
     fun speak(text: String) {
         spokenText = text.trim()
+        ttsRetryCount = 0
 
-        // The ViewModel historically asks for a greeting as soon as TTS becomes ready. Do not let
-        // that legacy call turn the office into a staged welcome. Stay silently listening until the
-        // observer actually speaks; the first real reply will then use normal TTS.
         if (!observerHasSpoken && isPassiveOpeningGreeting(spokenText)) {
             spokenText = ""
             startListening()
@@ -149,11 +165,23 @@ class PoliceVoiceEngine(
     }
 
     fun release() {
+        released = true
+        ttsRetryCount = 0
+        mainHandler.removeCallbacksAndMessages(null)
         stopListening()
         silentListener.release()
         saudiVoice.release()
         lastViseme = MouthViseme.REST
         listener.onViseme(MouthViseme.REST)
+    }
+
+    private fun shouldRetryVoice(message: String): Boolean {
+        val normalized = message.lowercase()
+        return normalized.contains("429") ||
+            normalized.contains("حد استخدام") ||
+            normalized.contains("مؤقت") ||
+            normalized.contains("temporarily") ||
+            normalized.contains("timeout")
     }
 
     private fun isPassiveOpeningGreeting(text: String): Boolean {
@@ -178,5 +206,10 @@ class PoliceVoiceEngine(
             'ا', 'أ', 'إ', 'آ', 'ع', 'ه', 'ح', 'خ', 'ق', 'ك' -> MouthViseme.OPEN
             else -> MouthViseme.OPEN
         }
+    }
+
+    private companion object {
+        const val MAX_TTS_RETRIES = 2
+        const val RETRY_BASE_DELAY_MS = 1_200L
     }
 }
