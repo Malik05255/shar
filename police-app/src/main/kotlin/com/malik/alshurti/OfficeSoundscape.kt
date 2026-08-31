@@ -6,13 +6,7 @@ import android.media.SoundPool
 import android.os.SystemClock
 import java.util.EnumMap
 
-/**
- * Event-only recorded Foley for the living office.
- *
- * There is deliberately no ambience bed, oscillator, HVAC loop or synthesized ring. The four
- * enabled sounds are local OGG recordings that passed the repository's recorded-Foley gate. Cues
- * without an approved physical recording remain silent.
- */
+/** Event-only recorded Foley. No generated tones, hum, or synthetic ambience. */
 class OfficeSoundscape(context: Context) {
     private val appContext = context.applicationContext
     private val lock = Any()
@@ -34,6 +28,7 @@ class OfficeSoundscape(context: Context) {
     private var phase: CallPhase = CallPhase.STARTING
     private var started = false
     private var released = false
+    private var startupCuePending = true
 
     init {
         soundPool.setOnLoadCompleteListener { _, sampleId, status ->
@@ -42,11 +37,14 @@ class OfficeSoundscape(context: Context) {
                 loadedSoundIds += sampleId
                 val cue = soundIds.entries.firstOrNull { it.value == sampleId }?.key
                     ?: return@synchronized
-                val queuedAt = pendingCueAtMs.remove(cue) ?: return@synchronized
                 val now = SystemClock.elapsedRealtime()
-                // Never play a physical effect late after its visible event has already passed.
-                if (now - queuedAt <= MAX_PENDING_SYNC_MS) {
+                val queuedAt = pendingCueAtMs.remove(cue)
+                if (queuedAt != null && now - queuedAt <= MAX_PENDING_SYNC_MS) {
                     playLoadedLocked(cue, sampleId, now)
+                }
+                if (cue == OfficeCue.PAPER_RUSTLE && startupCuePending) {
+                    startupCuePending = false
+                    playLoadedLocked(cue, sampleId, now + OfficeFoleyPolicy.cooldownMs(cue))
                 }
             }
         }
@@ -109,7 +107,7 @@ class OfficeSoundscape(context: Context) {
     }
 
     private companion object {
-        const val MAX_PENDING_SYNC_MS = 750L
+        const val MAX_PENDING_SYNC_MS = 1_100L
         const val PLAY_PRIORITY = 1
     }
 }
