@@ -108,8 +108,11 @@ jobs:
           report={}
           for name,(lo,hi) in expected.items():
               p=root/name
-              if not p.is_file() or p.stat().st_size < 5000:
-                  raise SystemExit(f'missing/small cue: {name}')
+              # Vorbis can compress sparse physical transients below 5KB. Treat a tiny-but-valid
+              # container as suspicious only below 1KB; decoded duration/format/loudness below are
+              # the authoritative non-silence and corruption gates.
+              if not p.is_file() or p.stat().st_size < 1000:
+                  raise SystemExit(f'missing/corrupt cue: {name}')
               probe=subprocess.check_output([
                   'ffprobe','-v','error','-select_streams','a:0','-show_entries',
                   'stream=sample_rate,channels:format=duration,size','-of','json',str(p)
