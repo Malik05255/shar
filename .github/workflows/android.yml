@@ -149,7 +149,6 @@ jobs:
             "response_format": {
               "type": "audio",
               "mime_type": "audio/wav",
-              "delivery": "inline",
               "sample_rate": 24000
             },
             "generation_config": {"speech_config": [{"voice": voice}]}
