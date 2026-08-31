@@ -157,6 +157,7 @@ dependencies {
 
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
     implementation("io.github.sceneview:sceneview:4.33.0")
+    implementation("org.apache.commons:commons-compress:1.28.0")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
