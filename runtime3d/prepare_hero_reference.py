@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Prepare a photorealistic full-body K9 officer reference using free HF Spaces.
 
-Two-stage free pipeline:
-1) derive a clean realistic German-Shepherd anatomy/identity base from the old office image;
-2) convert that base into the production-style anthropomorphic K9 officer needed by
-   the runtime animation contract: biped stance, full navy uniform, usable arms/hands.
+Three-stage free pipeline:
+1) clean realistic German-Shepherd anatomy/identity base;
+2) transform into a photorealistic anthropomorphic K9 police officer;
+3) normalize into an uncropped portrait A-pose reference for biped rigging.
 
 No paid provider, paid overage, or automatic billing fallback is allowed.
 """
@@ -28,7 +28,7 @@ def now() -> str:
 def download(url: str, path: Path) -> None:
     if not url.startswith("https://"):
         raise RuntimeError("reference URL must be HTTPS")
-    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-hero-reference/2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-hero-reference/3.0"})
     with urllib.request.urlopen(req, timeout=90) as response, path.open("wb") as f:
         shutil.copyfileobj(response, f)
     if path.stat().st_size < 10_000:
@@ -135,6 +135,31 @@ def validate_image(path: Path, stage: str) -> dict[str, Any]:
         return {"bytes": path.stat().st_size, "width": width, "height": height, "format": im.format}
 
 
+def make_portrait_canvas(source: Path, destination: Path) -> dict[str, int]:
+    """Place the accepted officer upper body on a tall neutral canvas for outpainting."""
+    from PIL import Image
+    with Image.open(source).convert("RGB") as im:
+        w, h = im.size
+        # Keep the central subject, discard empty landscape margins.
+        left = int(w * 0.24)
+        right = int(w * 0.76)
+        crop = im.crop((left, 0, right, h))
+        target_w = 860
+        scale = target_w / crop.size[0]
+        resized = crop.resize((target_w, int(crop.size[1] * scale)), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (1024, 1536), (210, 210, 210))
+        x = (1024 - resized.size[0]) // 2
+        y = 35
+        # If necessary keep room below for complete legs/feet.
+        if resized.size[1] > 930:
+            scale2 = 930 / resized.size[1]
+            resized = resized.resize((int(resized.size[0] * scale2), 930), Image.Resampling.LANCZOS)
+            x = (1024 - resized.size[0]) // 2
+        canvas.paste(resized, (x, y))
+        canvas.save(destination, "PNG")
+    return {"width": 1024, "height": 1536}
+
+
 def run_stage(
     stage: str,
     source: Path,
@@ -170,6 +195,8 @@ def main() -> int:
 
     original = args.output_dir / "approved-master-reference.png"
     anatomy = args.output_dir / "police_dog.stage1.anatomy.png"
+    officer = args.output_dir / "police_dog.stage2.officer.png"
+    portrait_canvas = args.output_dir / "police_dog.stage3.outpaint_canvas.png"
     output = args.output_dir / "police_dog.hero_reference.fullbody.png"
     report_path = args.output_dir / "hero-reference-report.json"
     report: dict[str, Any] = {
@@ -189,21 +216,30 @@ def main() -> int:
     )
     officer_prompt = (
         "Keep this exact realistic German Shepherd head, ears, muzzle, eyes, coat colors and fur identity. Transform the body into a believable CINEMATIC PHOTOREALISTIC anthropomorphic K9 police officer designed for a real-time 3D character. "
-        "The character stands upright on two digitigrade canine legs in a neutral A-pose, with two anatomically plausible furred arms ending in articulated canine-like hands/paws capable of holding a phone, pen and file. Do not make it cartoonish or mascot-like. "
-        "Dress the full torso and arms in a fitted dark navy professional police uniform matching the original reference: realistic fabric weave, collar, shoulder patches, chest badge, nameplate, belt and subtle K9 insignia; no readable fake text. "
-        "Head remains a fully realistic German Shepherd with individual fur strands and natural canine facial anatomy. Full body visible from ears to feet, tail visible, arms slightly separated from torso, hands visible, legs separated, symmetric neutral stance for biped skeletal rigging and facial rigging. "
-        "Clean seamless neutral light-gray studio background, even soft front/side lighting, minimal floor shadow, no office, no props, no text, no extra objects. High-end VFX character reference, realistic materials and proportions."
+        "Stand upright on two digitigrade canine legs, with two anatomically plausible furred arms and articulated canine-like hands/paws. Dress the full torso and arms in a fitted dark navy professional police uniform with realistic fabric, collar, shoulder patches, chest badge, blank nameplate, belt and subtle K9 insignia. "
+        "Head remains fully realistic German Shepherd. No cartoon, mascot or illustration. Keep the subject isolated on a neutral light-gray studio background. Do not add scenery."
+    )
+    rig_prompt = (
+        "Use the existing K9 officer as the exact identity and costume reference. COMPLETE AND NORMALIZE the character into a full-body rigging reference. "
+        "Remove the tablet/device and any held prop. Both hands must be empty and fully visible. Put the character in a neutral symmetric A-pose: upright biped torso, arms about 30 degrees away from the body, elbows nearly straight, palms/paws relaxed and visible, head facing directly forward. "
+        "Extend and reconstruct the entire lower body so BOTH digitigrade canine legs and feet are completely visible with clear separation; show the tail behind and to one side. Keep realistic German Shepherd head/fur and the same fitted navy police uniform, trousers, belt, blank patches/nameplate and metal badge. "
+        "Do not crop ears, hands, tail or feet. Leave clear gray margin around the complete silhouette. Remove all fake readable text, screens and props. Photorealistic VFX character turnaround quality, neutral seamless gray studio background, even lighting, no dramatic shadow, no cartoon or mascot styling."
     )
 
     try:
         stage1_provider, stage1_gate = run_stage("anatomy-base", original, anatomy_prompt, anatomy, report)
-        stage2_provider, stage2_gate = run_stage("k9-officer-biped", anatomy, officer_prompt, output, report)
+        stage2_provider, stage2_gate = run_stage("k9-officer-biped", anatomy, officer_prompt, officer, report)
+        canvas_meta = make_portrait_canvas(officer, portrait_canvas)
+        report["outpaintCanvas"] = canvas_meta
+        stage3_provider, stage3_gate = run_stage("rig-reference-fullbody", portrait_canvas, rig_prompt, output, report)
         report.update({
             "stage1Provider": stage1_provider,
             "stage2Provider": stage2_provider,
+            "stage3Provider": stage3_provider,
             "anatomyBase": anatomy.name,
+            "officerBase": officer.name,
             "winnerOutput": output.name,
-            "finalGate": stage2_gate,
+            "finalGate": stage3_gate,
         })
     except Exception as exc:
         report["fatal"] = str(exc)[:2000]
@@ -217,6 +253,7 @@ def main() -> int:
     print(f"FREE_HERO_REFERENCE={output}")
     print(f"STAGE1_PROVIDER={stage1_provider}")
     print(f"STAGE2_PROVIDER={stage2_provider}")
+    print(f"STAGE3_PROVIDER={stage3_provider}")
     print("Production gate remains CLOSED pending visual inspection and 3D validation.")
     return 0
 
