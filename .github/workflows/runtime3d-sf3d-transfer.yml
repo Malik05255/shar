@@ -119,6 +119,7 @@ jobs:
         with:
           path: runtime3d/.toolcache/blender-4.0.2
           key: blender-linux-x64-4.0.2-official-v1
+          save-always: true
 
       - name: Prepare official portable Blender runtime
         shell: bash
@@ -151,10 +152,24 @@ jobs:
           "$ROOT/blender" --version | head -n 2
           "$ROOT/blender" --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
 
+      - name: Ensure minimal headless EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libEGL.so.1'; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libegl1 libgl1-mesa-dri
+          fi
+          ldconfig -p | grep 'libEGL.so.1'
+          test -r "$(ldconfig -p | awk '/libEGL\.so\.1/{print $NF; exit}')"
+          echo 'HEADLESS_EGL_RUNTIME=READY'
+
       - name: Transfer SF3D appearance without topology changes
         shell: bash
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
         run: |
           set -euo pipefail
           test -s "$SF3D_BASECOLOR_PATH"
