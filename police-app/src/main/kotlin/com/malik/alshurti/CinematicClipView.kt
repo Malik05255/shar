@@ -7,20 +7,18 @@ import android.media.MediaPlayer
 import android.net.Uri
 import android.view.Surface
 import android.view.TextureView
-import androidx.annotation.RawRes
 import kotlin.math.absoluteValue
 import kotlin.math.max
 
 /**
- * Texture-backed, muted cinematic clip player.
+ * Texture-backed muted cinematic player for exact-quality local-cache or CDN sources.
  *
- * Clips are always one-shot. On completion MediaPlayer is left attached to the TextureView so the
- * final rendered frame stays visible until the next action. No clip seeks back to frame zero and no
- * MediaPlayer loop is allowed.
+ * Clips remain one-shot. Completion holds the final decoded frame; there is no loop, seek-back,
+ * adaptive quality tier or transcode in this player.
  */
 class CinematicClipView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private data class ClipConfig(
-        @param:RawRes val resId: Int,
+        val source: String,
         val randomizeStart: Boolean,
         val seed: Long
     )
@@ -38,12 +36,8 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         alpha = 0f
     }
 
-    fun bind(
-        @RawRes resId: Int,
-        randomizeStart: Boolean,
-        seed: Long
-    ) {
-        val next = ClipConfig(resId, randomizeStart, seed)
+    fun bind(source: String, randomizeStart: Boolean, seed: Long) {
+        val next = ClipConfig(source, randomizeStart, seed)
         if (config == next && mediaPlayer != null) return
         config = next
         if (isAvailable) startConfiguredClip()
@@ -62,10 +56,7 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
 
             val player = MediaPlayer().also { mediaPlayer = it }
             player.setSurface(surface)
-            player.setDataSource(
-                context,
-                Uri.parse("android.resource://${context.packageName}/${active.resId}")
-            )
+            player.setDataSource(context, Uri.parse(active.source))
             player.isLooping = false
             player.setVolume(0f, 0f)
 
@@ -83,11 +74,9 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
                             (durationMs * 0.25f).toLong(),
                             (durationMs - 1_800L).coerceAtLeast(0L)
                         )
-                        val raw = (active.seed xor (active.resId.toLong() shl 17)).absoluteValue
+                        val raw = (active.seed xor (active.source.hashCode().toLong() shl 17)).absoluteValue
                         val offset = if (maxStartMs > 0L) raw % (maxStartMs + 1L) else 0L
-                        prepared.setOnSeekCompleteListener { seeked ->
-                            runCatching { seeked.start() }
-                        }
+                        prepared.setOnSeekCompleteListener { seeked -> runCatching { seeked.start() } }
                         prepared.seekTo(offset, MediaPlayer.SEEK_CLOSEST_SYNC)
                     } else {
                         prepared.start()
@@ -107,8 +96,6 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
             }
 
             player.setOnCompletionListener { completed ->
-                // Intentionally do nothing. Keeping the prepared player and surface alive preserves
-                // its last frame and guarantees there is no hidden seek/restart after completion.
                 runCatching { completed.setOnSeekCompleteListener(null) }
             }
 
@@ -134,10 +121,9 @@ class CinematicClipView(context: Context) : TextureView(context), TextureView.Su
         val correctionX = uniformScale / sourceScaleX
         val correctionY = uniformScale / sourceScaleY
 
-        val matrix = Matrix().apply {
+        setTransform(Matrix().apply {
             setScale(correctionX, correctionY, width / 2f, height / 2f)
-        }
-        setTransform(matrix)
+        })
     }
 
     fun releasePlayback() {
