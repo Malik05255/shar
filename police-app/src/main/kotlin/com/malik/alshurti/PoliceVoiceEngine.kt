@@ -205,9 +205,6 @@ class PoliceVoiceEngine(
     )
 
     fun setMode(newMode: VoiceMode) {
-        // The cinematic UI intentionally has no mode selector. Legacy callers may still request
-        // ONLINE on every launch; resolve that request to strict OFFLINE when both local packs are
-        // already installed so no cloud voice/listener is even prepared in steady state.
         val resolvedMode = if (newMode == VoiceMode.ONLINE) recommendedStartupMode() else newMode
         mode = resolvedMode
         stopListening()
@@ -262,12 +259,6 @@ class PoliceVoiceEngine(
         spokenText = text.trim()
         ttsRetryCount = 0
         fallbackAttempted = false
-
-        if (!observerHasSpoken && isPassiveOpeningGreeting(spokenText)) {
-            spokenText = ""
-            startListening()
-            return
-        }
 
         stopListening()
         if (spokenText.isBlank()) {
@@ -341,8 +332,6 @@ class PoliceVoiceEngine(
     }
 
     private fun handleSpeechCursor(fraction: Float) {
-        // Cloud voice does not expose raw PCM here, so retain text-timed visemes only for that
-        // optional fallback. The steady-state local Supertonic path uses real PCM energy above.
         val viseme = visemeAtFraction(spokenText, fraction)
         if (viseme != lastViseme) {
             lastViseme = viseme
@@ -398,12 +387,6 @@ class PoliceVoiceEngine(
             normalized.contains("مؤقت") ||
             normalized.contains("temporarily") ||
             normalized.contains("timeout")
-    }
-
-    private fun isPassiveOpeningGreeting(text: String): Boolean {
-        val normalized = text.replace(Regex("\\s+"), " ").trim()
-        return normalized == "هلا يا بطل، معك الشرطي. وش عندك؟" ||
-            normalized == "هلا يا بطل، معك الشرطي، وش عندك؟"
     }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
