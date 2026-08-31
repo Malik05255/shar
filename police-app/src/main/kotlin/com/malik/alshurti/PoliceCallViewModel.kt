@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,8 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     private val officeSoundscape = OfficeSoundscape(application.applicationContext)
     private val sceneDirector = CinematicSceneDirector()
     private val livingOffice = LivingOfficeWorld()
+    private val infiniteOffice = InfiniteOfficeScenarioGenerator()
+    private val worldScheduler = OfficeWorldScheduler()
     private val scenarioCouncil = DualScenarioCouncil(
         continuityPlanner = GeminiScenarioProvider(GeminiScenarioProvider.Role.CONTINUITY),
         realismPlanner = GeminiScenarioProvider(GeminiScenarioProvider.Role.REALISM)
@@ -73,7 +76,9 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         conversationJob?.cancel()
         sceneDirector.reset()
         livingOffice.reset()
+        infiniteOffice.reset()
         scenarioCouncil.reset()
+        RuntimeOfficePlanBus.clear()
         SceneContextRegistry.reset()
         completedPoliceTurns = 0
         ttsReady = false
@@ -103,7 +108,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         standingReplyActive = false
         setPhase(CallPhase.LISTENING)
         voiceEngine.startListening()
-        if (ambientLifeJob?.isActive != true) startAmbientLife(opening = false)
+        if (ambientLifeJob?.isActive != true) startAmbientLife()
     }
 
     fun interruptAndListen() {
@@ -137,31 +142,37 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
-        startAmbientLife(opening = true)
+        startAmbientLife()
         voiceEngine.startListening()
     }
 
     /**
-     * The first beat is always local and instant. While it is playing, two constrained AI planners
-     * may prepare the next beat in parallel. Their deadline can never freeze or delay the office.
+     * The office clock is local and deterministic. AI plans for the NEXT beat in parallel with the
+     * current beat; the clock never waits for network inference. If AI is late, it is cancelled and
+     * the infinite local compositor supplies the next beat immediately.
      */
-    private fun startAmbientLife(opening: Boolean) {
+    private fun startAmbientLife() {
         ambientLifeJob?.cancel()
         ambientLifeJob = viewModelScope.launch {
-            var next = if (opening) livingOffice.openingPlan() else livingOffice.nextAmbientPlan()
+            var next = infiniteOffice.next(observerEngaged = false)
             while (isActive && sessionStarted) {
                 if (_uiState.value.phase == CallPhase.LISTENING) {
                     applyAmbientPlan(next)
-                    val visibleForMs = next.durationHintMs.coerceIn(4_500L, 14_000L)
+                    val visibleForMs = next.durationHintMs.coerceIn(6_000L, 15_500L)
+                    val planning = async { scenarioCouncil.next(ambientPlanningContext()) }
 
-                    // Start planning immediately after the current beat is visible. The council has
-                    // its own hard timeout; a null result simply means deterministic local fallback.
-                    val planned = scenarioCouncil.next(ambientPlanningContext())
-                    val remaining = (visibleForMs - 900L).coerceAtLeast(350L)
-                    delay(remaining)
-                    next = sanitizeAmbientPlan(planned) ?: livingOffice.nextAmbientPlan()
+                    // World time advances independently from planning latency.
+                    delay(visibleForMs)
+                    val planned = if (planning.isCompleted) {
+                        runCatching { planning.await() }.getOrNull()
+                    } else {
+                        planning.cancel()
+                        null
+                    }
+                    next = sanitizeAmbientPlan(planned)
+                        ?: infiniteOffice.next(observerEngaged = false)
                 } else {
-                    delay(350L)
+                    delay(250L)
                 }
             }
         }
@@ -190,12 +201,15 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * Transitional mapping to the current cinematic benchmark. The richer RuntimeScenarioPlan is
-     * retained as the contract for the independent 3D office; only foreground actions with an
-     * exact existing cinematic equivalent are mapped during migration.
+     * Runtime 3D receives the full choreography first. DogAction mapping below is legacy-only so an
+     * old installation can still display the cinematic benchmark while the production GLB pack is
+     * not yet enabled.
      */
     private fun applyAmbientPlan(plan: RuntimeScenarioPlan) {
-        val dogCommands = plan.commands.filter { it.actor == SceneActorId.POLICE_DOG }
+        val scheduled = scheduleForRuntime(plan, observerEngaged = false)
+        RuntimeOfficePlanBus.publish(scheduled)
+
+        val dogCommands = scheduled.commands.filter { it.actor == SceneActorId.POLICE_DOG }
         val clips = dogCommands.map { it.clip }.toSet()
 
         val action = when {
@@ -211,23 +225,23 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val background = when {
-            plan.commands.any {
+            scheduled.commands.any {
                 it.actor != SceneActorId.POLICE_DOG && it.clip in setOf("TalkToStaff", "ListenToStaff")
             } -> BackgroundActivity.DESK_CONVERSATION
-            plan.commands.any {
+            scheduled.commands.any {
                 it.actor != SceneActorId.POLICE_DOG && it.channel == AnimationChannel.LOCOMOTION
             } -> BackgroundActivity.STAFF_WALK
-            plan.commands.any { it.actor == SceneActorId.DOOR } -> BackgroundActivity.DOOR_TRAFFIC
+            scheduled.commands.any { it.actor == SceneActorId.DOOR } -> BackgroundActivity.DOOR_TRAFFIC
             action == DogAction.REVIEW_FILE -> BackgroundActivity.PAPERWORK
             else -> BackgroundActivity.CALM_WORK
         }
 
         val cue = when {
-            plan.sounds.any { it.sound == OfficeSoundId.PHONE_RING } -> OfficeCue.PHONE_RING
-            plan.sounds.any { it.sound == OfficeSoundId.DOOR_OPEN } -> OfficeCue.DOOR_OPEN
-            plan.sounds.any { it.sound == OfficeSoundId.DOOR_CLOSE } -> OfficeCue.DOOR_CLOSE
-            plan.sounds.any { it.sound == OfficeSoundId.FOOTSTEPS_SOFT } -> OfficeCue.FOOTSTEPS
-            plan.sounds.any { it.sound in setOf(OfficeSoundId.PAGE_TURN, OfficeSoundId.PAPER_HANDLE) } -> OfficeCue.PAPER_RUSTLE
+            scheduled.sounds.any { it.sound == OfficeSoundId.PHONE_RING } -> OfficeCue.PHONE_RING
+            scheduled.sounds.any { it.sound == OfficeSoundId.DOOR_OPEN } -> OfficeCue.DOOR_OPEN
+            scheduled.sounds.any { it.sound == OfficeSoundId.DOOR_CLOSE } -> OfficeCue.DOOR_CLOSE
+            scheduled.sounds.any { it.sound == OfficeSoundId.FOOTSTEPS_SOFT } -> OfficeCue.FOOTSTEPS
+            scheduled.sounds.any { it.sound in setOf(OfficeSoundId.PAGE_TURN, OfficeSoundId.PAPER_HANDLE) } -> OfficeCue.PAPER_RUSTLE
             else -> OfficeCue.NONE
         }
 
@@ -247,8 +261,73 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 )
             )
         }
-        playPhysicalSounds(plan)
+        playPhysicalSounds(scheduled)
     }
+
+    private fun scheduleForRuntime(
+        plan: RuntimeScenarioPlan,
+        observerEngaged: Boolean
+    ): RuntimeScenarioPlan = worldScheduler.schedule(
+        plan = plan,
+        snapshot = OfficeWorldScheduler.Snapshot(
+            actors = Runtime3DAssetCatalog.actors.associate { asset ->
+                asset.id to OfficeWorldScheduler.ActorRuntimeState(
+                    zone = asset.defaultZone,
+                    standing = when (asset.id) {
+                        SceneActorId.POLICE_DOG -> standingReplyActive
+                        SceneActorId.VISITOR_01 -> true
+                        SceneActorId.STAFF_MALE_01,
+                        SceneActorId.STAFF_MALE_02,
+                        SceneActorId.STAFF_FEMALE_01 -> false
+                        else -> true
+                    },
+                    locomoting = false,
+                    currentClip = null
+                )
+            },
+            observerEngaged = observerEngaged
+        )
+    )
+
+    private fun publishObserverPlan(plan: RuntimeScenarioPlan) {
+        RuntimeOfficePlanBus.publish(scheduleForRuntime(plan, observerEngaged = true))
+    }
+
+    private fun speakingPlan(standing: Boolean): RuntimeScenarioPlan = RuntimeScenarioPlan(
+        durationHintMs = 30_000L,
+        reason = if (standing) "observer-reply-standing" else "observer-reply-seated",
+        keepWorldRunning = true,
+        commands = listOf(
+            SceneAnimationCommand(
+                SceneActorId.POLICE_DOG,
+                if (standing) "Talk" else "Talk",
+                AnimationChannel.FACE,
+                loop = true,
+                playbackRate = 1.0f
+            ),
+            SceneAnimationCommand(
+                SceneActorId.POLICE_DOG,
+                "LookAtCamera",
+                AnimationChannel.GAZE,
+                loop = true,
+                blendMs = 120
+            ),
+            SceneAnimationCommand(
+                SceneActorId.STAFF_FEMALE_01,
+                "Type",
+                AnimationChannel.HANDS,
+                loop = true,
+                playbackRate = 0.91f
+            ),
+            SceneAnimationCommand(
+                SceneActorId.STAFF_MALE_02,
+                "Read",
+                AnimationChannel.HANDS,
+                loop = true,
+                playbackRate = 0.94f
+            )
+        )
+    )
 
     private fun playPhysicalSounds(plan: RuntimeScenarioPlan) {
         // No ambience bed and no artificial hum. Only quiet sounds with a physical source are used.
@@ -301,6 +380,16 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                 )
 
                 if (shouldStandForReply) {
+                    publishObserverPlan(
+                        RuntimeScenarioPlan(
+                            durationHintMs = STAND_UP_MS,
+                            reason = "stand-before-reply",
+                            commands = listOf(
+                                SceneAnimationCommand(SceneActorId.POLICE_DOG, "StandUp", AnimationChannel.BODY),
+                                SceneAnimationCommand(SceneActorId.POLICE_DOG, "LookAtCamera", AnimationChannel.GAZE, loop = true)
+                            )
+                        )
+                    )
                     _uiState.update {
                         it.copy(
                             replyText = reply.text,
@@ -339,6 +428,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
                         )
                     }
                 }
+                publishObserverPlan(speakingPlan(standingReplyActive))
                 setPhase(CallPhase.SPEAKING)
                 voiceEngine.speak(reply.text)
             } catch (cancelled: CancellationException) {
@@ -361,7 +451,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         if (!sessionStarted) return
         setPhase(CallPhase.LISTENING)
         // Arming the microphone does not earn camera attention.
-        if (ambientLifeJob?.isActive != true) startAmbientLife(opening = false)
+        if (ambientLifeJob?.isActive != true) startAmbientLife()
     }
 
     override fun onSpeechStarted() {
@@ -369,6 +459,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         stopAmbientLife()
         standingReplyActive = false
         setPhase(CallPhase.LISTENING)
+        publishObserverPlan(livingOffice.onObserverSpeechStarted())
 
         // First visible response to the observer happens only after real voice activity.
         _uiState.update {
@@ -396,7 +487,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         if (recoverable && microphonePermissionGranted && sessionStarted) {
             // Silence/no-match is normal in an observational office.
             setPhase(CallPhase.LISTENING)
-            if (ambientLifeJob?.isActive != true) startAmbientLife(opening = false)
+            if (ambientLifeJob?.isActive != true) startAmbientLife()
             viewModelScope.launch {
                 delay(450L)
                 voiceEngine.startListening()
@@ -419,6 +510,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onTtsStarted() {
         setPhase(CallPhase.SPEAKING)
+        publishObserverPlan(speakingPlan(standingReplyActive))
         _uiState.update {
             it.copy(
                 mood = if (it.mood in setOf(DogMood.SMILE, DogMood.SERIOUS)) it.mood else DogMood.TALKING,
@@ -446,6 +538,16 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             conversationJob?.cancel()
             conversationJob = viewModelScope.launch {
                 setPhase(CallPhase.THINKING)
+                publishObserverPlan(
+                    RuntimeScenarioPlan(
+                        durationHintMs = SIT_DOWN_MS,
+                        reason = "sit-after-reply",
+                        commands = listOf(
+                            SceneAnimationCommand(SceneActorId.POLICE_DOG, "SitDown", AnimationChannel.BODY),
+                            SceneAnimationCommand(SceneActorId.STAFF_FEMALE_01, "Type", AnimationChannel.HANDS, loop = true)
+                        )
+                    )
+                )
                 _uiState.update {
                     it.copy(
                         mood = DogMood.CALM,
@@ -485,7 +587,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             applyAmbientPlan(returnPlan)
             delay(900L)
             voiceEngine.startListening()
-            startAmbientLife(opening = false)
+            startAmbientLife()
         }
     }
 
@@ -497,6 +599,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         ambientLifeJob?.cancel()
         conversationJob?.cancel()
+        RuntimeOfficePlanBus.clear()
         officeSoundscape.release()
         voiceEngine.release()
         super.onCleared()
