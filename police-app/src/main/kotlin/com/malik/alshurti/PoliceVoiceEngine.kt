@@ -66,9 +66,6 @@ class PoliceVoiceEngine(
         context = context.applicationContext,
         callbacks = object : SaudiHumanVoice.Callbacks {
             override fun onPreparing(percent: Int, message: String) {
-                // Before the observer speaks, this callback only represents local readiness. Once a
-                // real reply is underway, keep the cinematic SPEAKING state instead of bouncing the
-                // scene back to STARTING while network synthesis finishes.
                 if (!observerHasSpoken) listener.onTtsPreparing(percent, message)
             }
 
@@ -100,7 +97,7 @@ class PoliceVoiceEngine(
 
             override fun onError(message: String) {
                 lastViseme = MouthViseme.REST
-                listener.onVisimeCompat(MouthViseme.REST)
+                listener.onViseme(MouthViseme.REST)
                 if (shouldRetryVoice(message) && ttsRetryCount < MAX_TTS_RETRIES && spokenText.isNotBlank()) {
                     val retryNumber = ++ttsRetryCount
                     val retryText = spokenText
@@ -209,9 +206,6 @@ class PoliceVoiceEngine(
             else -> MouthViseme.OPEN
         }
     }
-
-    /** Keep source compatibility if the listener implementation is compiled against onViseme. */
-    private fun Listener.onVisimeCompat(viseme: MouthViseme) = onViseme(viseme)
 
     private companion object {
         const val MAX_TTS_RETRIES = 2
