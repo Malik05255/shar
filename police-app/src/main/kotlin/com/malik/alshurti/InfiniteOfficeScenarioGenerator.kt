@@ -3,21 +3,29 @@ package com.malik.alshurti
 import kotlin.random.Random
 
 /**
- * Deterministic local source of unbounded office life.
+ * Stateful local source of unbounded office life.
  *
- * This does not render or generate media. It composes reusable actor actions, targets, timings and
- * physically sourced sounds into a very large state space. AI planners may replace a future beat,
- * but this generator guarantees that the office clock never waits for a network/model response.
+ * Variation is not plain random sampling: recent dog tasks, staff beats and micro-events are kept
+ * on separate cooldown queues so the viewer cannot observe the same semantic beat again a few
+ * seconds later. At least every third beat contains one of the approved recorded physical sounds.
  */
 class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
     private var random = Random(seed)
     private val recentSignatures = ArrayDeque<String>()
+    private val recentDogTasks = ArrayDeque<DogTask>()
+    private val recentStaffEvents = ArrayDeque<StaffEvent>()
+    private val recentMicroEvents = ArrayDeque<MicroEvent>()
     private var sequence = 0L
+    private var beatsSinceApprovedSound = 0
 
     fun reset(seed: Long = System.nanoTime()) {
         random = Random(seed)
         recentSignatures.clear()
+        recentDogTasks.clear()
+        recentStaffEvents.clear()
+        recentMicroEvents.clear()
         sequence = 0L
+        beatsSinceApprovedSound = 0
     }
 
     fun next(observerEngaged: Boolean = false): RuntimeScenarioPlan {
@@ -25,24 +33,28 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
             val plan = compose(observerEngaged)
             val signature = signature(plan)
             if (signature !in recentSignatures) {
-                remember(signature)
+                rememberSignature(signature)
                 return plan
             }
         }
         val fallback = compose(observerEngaged, forceVariant = sequence++)
-        remember(signature(fallback))
+        rememberSignature(signature(fallback))
         return fallback
     }
 
     private fun compose(observerEngaged: Boolean, forceVariant: Long? = null): RuntimeScenarioPlan {
         sequence += 1
         val variant = forceVariant ?: sequence
-        val duration = random.nextLong(7_500L, 15_500L)
-        val dogTask = DogTask.entries.random(random)
-        val staffEvent = StaffEvent.entries.random(random)
-        val microEvent = if (random.nextFloat() < 0.68f) {
-            MicroEvent.entries.filterNot { it == MicroEvent.NONE }.random(random)
-        } else MicroEvent.NONE
+        val duration = random.nextLong(8_200L, 17_500L)
+
+        val dogTask = chooseAvoiding(DogTask.entries.toList(), recentDogTasks)
+        rememberRecent(recentDogTasks, dogTask, DOG_TASK_COOLDOWN)
+
+        val staffEvent = chooseAvoiding(StaffEvent.entries.toList(), recentStaffEvents)
+        rememberRecent(recentStaffEvents, staffEvent, STAFF_EVENT_COOLDOWN)
+
+        val microEvent = chooseMicroEvent()
+        rememberRecent(recentMicroEvents, microEvent, MICRO_EVENT_COOLDOWN)
 
         val commands = mutableListOf<SceneAnimationCommand>()
         val sounds = mutableListOf<SpatialSoundCommand>()
@@ -51,12 +63,17 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
         commands += staffEvent.commands(random)
         sounds += staffEvent.sounds(random)
 
-        val microDelay = random.nextLong(1_100L, (duration - 1_000L).coerceAtLeast(1_300L))
+        val microDelay = random.nextLong(1_300L, (duration - 1_100L).coerceAtLeast(1_600L))
         commands += microEvent.commands(random, microDelay)
         sounds += microEvent.sounds(random, microDelay)
 
+        // If a staff beat already contains one of our approved recordings, it also resets the
+        // audible-life clock. Unsupported placeholders (keyboard/printer/footsteps) do not count.
+        val hasApprovedSound = sounds.any { it.sound in approvedRecordedSounds }
+        beatsSinceApprovedSound = if (hasApprovedSound) 0 else beatsSinceApprovedSound + 1
+
         // Natural asynchronous micro-motion: never synchronize the whole office on one beat.
-        if (random.nextBoolean()) {
+        if (random.nextFloat() < 0.72f) {
             commands += SceneAnimationCommand(
                 actor = staffActors.random(random),
                 clip = listOf("Blink", "HeadNod", "GestureSmall").random(random),
@@ -70,9 +87,29 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
             commands = commands,
             sounds = sounds,
             durationHintMs = duration,
-            reason = "infinite-office-$variant-${dogTask.name.lowercase()}-${staffEvent.name.lowercase()}",
+            reason = "infinite-office-$variant-${dogTask.name.lowercase()}-${staffEvent.name.lowercase()}-${microEvent.name.lowercase()}",
             keepWorldRunning = true
         )
+    }
+
+    private fun chooseMicroEvent(): MicroEvent {
+        val pool = if (beatsSinceApprovedSound >= MAX_SILENT_BEATS) {
+            // Both choices have approved local OGG and a matching visible action.
+            listOf(MicroEvent.DOOR, MicroEvent.PAGE)
+        } else {
+            // Weight useful physical events more heavily than silent decorative events.
+            listOf(
+                MicroEvent.DOOR,
+                MicroEvent.DOOR,
+                MicroEvent.PAGE,
+                MicroEvent.PAGE,
+                MicroEvent.GLANCE,
+                MicroEvent.CUP,
+                MicroEvent.CHAIR,
+                MicroEvent.NONE
+            )
+        }
+        return chooseAvoiding(pool, recentMicroEvents)
     }
 
     private enum class DogTask {
@@ -100,7 +137,7 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
                 add(SceneAnimationCommand(SceneActorId.POLICE_DOG, "Breathing", AnimationChannel.BODY, loop = true, playbackRate = randomRate(random, 0.89f, 0.99f)))
                 add(SceneAnimationCommand(SceneActorId.POLICE_DOG, gaze, AnimationChannel.GAZE, loop = true, blendMs = 170))
                 if (!observerEngaged || this@DogTask == QUIET_DESK) {
-                    add(SceneAnimationCommand(SceneActorId.POLICE_DOG, hand, AnimationChannel.HANDS, loop = hand !in setOf("UsePhone"), delayMs = random.nextLong(150L, 850L), playbackRate = randomRate(random, 0.88f, 1.04f)))
+                    add(SceneAnimationCommand(SceneActorId.POLICE_DOG, hand, AnimationChannel.HANDS, loop = hand != "UsePhone", delayMs = random.nextLong(150L, 850L), playbackRate = randomRate(random, 0.88f, 1.04f)))
                 }
             }
         }
@@ -122,7 +159,7 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
                 SceneAnimationCommand(SceneActorId.STAFF_MALE_02, "IdleDesk", AnimationChannel.BODY, loop = true)
             )
             TWO_PERSON_TALK -> {
-                val speaker = listOf(SceneActorId.STAFF_FEMALE_01, SceneActorId.STAFF_MALE_01, SceneActorId.STAFF_MALE_02).random(random)
+                val speaker = staffActors.random(random)
                 val listener = staffActors.filterNot { it == speaker }.random(random)
                 listOf(
                     SceneAnimationCommand(speaker, "TalkToStaff", AnimationChannel.BODY, loop = true, targetActor = listener),
@@ -141,7 +178,7 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
                 )
             }
             PRINTER_TRIP -> {
-                val actor = listOf(SceneActorId.STAFF_MALE_01, SceneActorId.STAFF_MALE_02, SceneActorId.STAFF_FEMALE_01).random(random)
+                val actor = staffActors.random(random)
                 listOf(
                     SceneAnimationCommand(actor, "Walk", AnimationChannel.LOCOMOTION, targetActor = SceneActorId.PRINTER),
                     SceneAnimationCommand(SceneActorId.PRINTER, "Print", AnimationChannel.PROP, delayMs = 2_200L),
@@ -174,9 +211,7 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
         }
 
         fun sounds(random: Random): List<SpatialSoundCommand> = when (this) {
-            DESK_WORK -> if (random.nextBoolean()) listOf(
-                SpatialSoundCommand(OfficeSoundId.KEYBOARD_SHORT, OfficeZone.RIGHT_WORKSTATION, delayMs = random.nextLong(900L, 3_000L), gain = 0.09f)
-            ) else emptyList()
+            DESK_WORK -> emptyList()
             TWO_PERSON_TALK -> listOf(
                 SpatialSoundCommand(OfficeSoundId.DISTANT_STAFF_SPEECH, OfficeZone.BACK_WORKSTATION, delayMs = 500L, gain = 0.08f, spokenLine = backgroundLines.random(random))
             )
@@ -213,15 +248,9 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
                 SceneAnimationCommand(SceneActorId.DOOR, "OpenDoor", AnimationChannel.PROP, delayMs = delay),
                 SceneAnimationCommand(SceneActorId.DOOR, "CloseDoor", AnimationChannel.PROP, delayMs = delay + random.nextLong(1_300L, 2_900L))
             )
-            CUP -> listOf(
-                SceneAnimationCommand(staffActors.random(random), "Drink", AnimationChannel.HANDS, delayMs = delay)
-            )
-            CHAIR -> listOf(
-                SceneAnimationCommand(SceneActorId.CHAIR, "Shift", AnimationChannel.PROP, delayMs = delay)
-            )
-            PAGE -> listOf(
-                SceneAnimationCommand(SceneActorId.POLICE_DOG, "TurnPage", AnimationChannel.HANDS, delayMs = delay)
-            )
+            CUP -> listOf(SceneAnimationCommand(staffActors.random(random), "Drink", AnimationChannel.HANDS, delayMs = delay))
+            CHAIR -> listOf(SceneAnimationCommand(SceneActorId.CHAIR, "Shift", AnimationChannel.PROP, delayMs = delay))
+            PAGE -> listOf(SceneAnimationCommand(SceneActorId.POLICE_DOG, "TurnPage", AnimationChannel.HANDS, delayMs = delay))
             GLANCE -> listOf(
                 SceneAnimationCommand(SceneActorId.POLICE_DOG, listOf("LookAtDoor", "LookAtStaff", "LookAtMonitor").random(random), AnimationChannel.GAZE, delayMs = delay, blendMs = 140)
             )
@@ -239,25 +268,54 @@ class InfiniteOfficeScenarioGenerator(seed: Long = System.nanoTime()) {
         }
     }
 
-    private fun signature(plan: RuntimeScenarioPlan): String = plan.commands
-        .map { "${it.actor}:${it.clip}:${it.channel}:${it.targetActor}" }
-        .sorted()
-        .joinToString("|")
+    private fun signature(plan: RuntimeScenarioPlan): String {
+        val animationSignature = plan.commands
+            .map { "${it.actor}:${it.clip}:${it.channel}:${it.targetActor}" }
+            .sorted()
+            .joinToString("|")
+        val soundSignature = plan.sounds
+            .map { "${it.sound}:${it.zone}" }
+            .sorted()
+            .joinToString("|")
+        return "$animationSignature#$soundSignature"
+    }
 
-    private fun remember(signature: String) {
+    private fun rememberSignature(signature: String) {
         recentSignatures.addLast(signature)
         while (recentSignatures.size > RECENT_SIGNATURE_LIMIT) recentSignatures.removeFirst()
+    }
+
+    private fun <T> chooseAvoiding(pool: List<T>, recent: Collection<T>): T {
+        val candidates = pool.filterNot { it in recent }.distinct()
+        return (if (candidates.isNotEmpty()) candidates else pool.distinct()).random(random)
+    }
+
+    private fun <T> rememberRecent(queue: ArrayDeque<T>, value: T, maxSize: Int) {
+        queue.addLast(value)
+        while (queue.size > maxSize) queue.removeFirst()
     }
 
     private fun randomRate(min: Float, max: Float): Float = randomRate(random, min, max)
 
     companion object {
-        private const val RECENT_SIGNATURE_LIMIT = 18
-        private const val MAX_RETRIES = 16
+        private const val RECENT_SIGNATURE_LIMIT = 32
+        private const val MAX_RETRIES = 20
+        private const val DOG_TASK_COOLDOWN = 2
+        private const val STAFF_EVENT_COOLDOWN = 3
+        private const val MICRO_EVENT_COOLDOWN = 2
+        private const val MAX_SILENT_BEATS = 1
+
         private val staffActors = listOf(
             SceneActorId.STAFF_MALE_01,
             SceneActorId.STAFF_MALE_02,
             SceneActorId.STAFF_FEMALE_01
+        )
+        private val approvedRecordedSounds = setOf(
+            OfficeSoundId.PHONE_RING,
+            OfficeSoundId.DOOR_OPEN,
+            OfficeSoundId.DOOR_CLOSE,
+            OfficeSoundId.PAGE_TURN,
+            OfficeSoundId.PAPER_HANDLE
         )
         private val backgroundLines = listOf(
             "تمام، وصلني.",
