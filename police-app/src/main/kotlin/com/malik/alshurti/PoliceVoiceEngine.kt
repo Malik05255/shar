@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.malik.alshurti.neural.NeuralArabicVoice
+import com.malik.alshurti.neural.PcmSpeechEnergy
 import com.malik.alshurti.voice.GeminiSilentListener
 import com.malik.alshurti.voice.OfflineArabicListener
 import com.malik.alshurti.voice.SaudiHumanVoice
@@ -42,6 +43,8 @@ class PoliceVoiceEngine(
     private var mode: VoiceMode = VoiceMode.ONLINE
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
+    private var localLipEnergy = 0f
+    private var localLipVoiced = false
     private var observerHasSpoken = false
     private var ttsRetryCount = 0
     private var fallbackAttempted = false
@@ -132,8 +135,8 @@ class PoliceVoiceEngine(
                 if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechStarted()
             }
 
-            override fun onSpeechCursor(fraction: Float) {
-                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechCursor(fraction)
+            override fun onSpeechFrame(fraction: Float, energy: Float) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleLocalSpeechFrame(fraction, energy)
             }
 
             override fun onSpeechFinished() {
@@ -301,12 +304,32 @@ class PoliceVoiceEngine(
 
     private fun handleSpeechStarted() {
         ttsRetryCount = 0
-        lastViseme = MouthViseme.OPEN
-        dispatchViseme(lastViseme)
+        localLipEnergy = 0f
+        localLipVoiced = false
+        if (lastViseme != MouthViseme.REST) {
+            lastViseme = MouthViseme.REST
+            dispatchViseme(MouthViseme.REST)
+        }
         listener.onTtsStarted()
     }
 
+    private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
+        localLipEnergy = energy.coerceIn(0f, 1f)
+        localLipVoiced = PcmSpeechEnergy.isVoiced(localLipEnergy, localLipVoiced)
+        val viseme = if (localLipVoiced) {
+            visemeAtFraction(spokenText, fraction)
+        } else {
+            MouthViseme.REST
+        }
+        if (viseme != lastViseme) {
+            lastViseme = viseme
+            dispatchViseme(viseme)
+        }
+    }
+
     private fun handleSpeechCursor(fraction: Float) {
+        // Cloud voice does not expose raw PCM here, so retain text-timed visemes only for that
+        // optional fallback. The steady-state local Supertonic path uses real PCM energy above.
         val viseme = visemeAtFraction(spokenText, fraction)
         if (viseme != lastViseme) {
             lastViseme = viseme
@@ -327,6 +350,8 @@ class PoliceVoiceEngine(
     }
 
     private fun resetMouth() {
+        localLipEnergy = 0f
+        localLipVoiced = false
         lastViseme = MouthViseme.REST
         dispatchViseme(MouthViseme.REST)
     }
