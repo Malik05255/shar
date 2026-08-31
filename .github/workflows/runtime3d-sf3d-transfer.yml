@@ -9,6 +9,7 @@ on:
       - '.github/workflows/runtime3d-sf3d-transfer.yml'
       - 'runtime3d/blender_transfer_sf3d_candidate.py'
       - 'runtime3d/blender_transfer_pbr_candidate.py'
+      - 'runtime3d/extract_glb_pbr_images.py'
 
 permissions:
   contents: read
@@ -87,8 +88,28 @@ jobs:
                             'donorMaterials':len(dd.get('materials') or []),'donorTextures':len(dd.get('textures') or []),
                             'donorImages':len(dd.get('images') or [])},indent=2))
           if missing or len(skins)!=1 or joints < 32: raise SystemExit('Motion source quality contract failed')
-          if not (dd.get('materials') and dd.get('textures') and dd.get('images')): raise SystemExit('Donor material payload missing')
+          if not (dd.get('materials') and len(dd.get('textures') or []) >= 2 and len(dd.get('images') or []) >= 2):
+              raise SystemExit('Donor BaseColor+Normal payload missing')
           PY
+
+      - name: Extract durable PBR images directly from donor GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sf3d-source-images"
+          python3 runtime3d/extract_glb_pbr_images.py \
+            --input "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output-dir "$RUNNER_TEMP/sf3d-source-images" \
+            --metadata "$RUNNER_TEMP/sf3d-source-images/extraction.json"
+          test -s "$RUNNER_TEMP/sf3d-source-images/extraction.json"
+          BASE=$(find "$RUNNER_TEMP/sf3d-source-images" -maxdepth 1 -type f -name 'basecolor.*' | head -n1)
+          NORMAL=$(find "$RUNNER_TEMP/sf3d-source-images" -maxdepth 1 -type f -name 'normal.*' | head -n1)
+          test -n "$BASE" && test -s "$BASE"
+          test -n "$NORMAL" && test -s "$NORMAL"
+          echo "SF3D_BASECOLOR_PATH=$BASE" >> "$GITHUB_ENV"
+          echo "SF3D_NORMAL_PATH=$NORMAL" >> "$GITHUB_ENV"
+          echo "BASECOLOR_BYTES=$(stat -c%s "$BASE")"
+          echo "NORMAL_BYTES=$(stat -c%s "$NORMAL")"
 
       - name: Install free Blender transfer runtime
         shell: bash
@@ -105,6 +126,8 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           set -euo pipefail
+          test -s "$SF3D_BASECOLOR_PATH"
+          test -s "$SF3D_NORMAL_PATH"
           mkdir -p "$RUNNER_TEMP/sf3d-motion/previews"
           blender --background \
             --python runtime3d/blender_transfer_sf3d_candidate.py -- \
@@ -118,7 +141,7 @@ jobs:
           COUNT=$(find "$RUNNER_TEMP/sf3d-motion/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
           [[ "$COUNT" -eq 4 ]] || { echo "::error::Expected 4 QC renders, got $COUNT"; exit 1; }
 
-      - name: Validate exact skin animation and material contract
+      - name: Validate exact skin animation and embedded PBR contract
         shell: bash
         run: |
           set -euo pipefail
@@ -140,8 +163,14 @@ jobs:
               for prim in mesh.get('primitives') or []:
                   pos=(prim.get('attributes') or {}).get('POSITION')
                   if isinstance(pos,int) and 0 <= pos < len(acc): vertices += int(acc[pos].get('count') or 0)
+          pbr_ok=False; normal_ok=False
+          for mat in mats:
+              pbr=(mat.get('pbrMetallicRoughness') or {})
+              pbr_ok = pbr_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'), int)
+              normal_ok = normal_ok or isinstance((mat.get('normalTexture') or {}).get('index'), int)
           print(json.dumps({'bytes':out.stat().st_size,'vertices':vertices,'animations':len(names),'missing':missing,
                             'skins':len(skins),'maxJoints':joints,'materials':len(mats),'textures':len(tex),'images':len(imgs),
+                            'baseColorTexture':pbr_ok,'normalTexture':normal_ok,
                             'verticesBeforeAfter':qc.get('targetVerticesBeforeAfter'),
                             'polygonsBeforeAfter':qc.get('targetPolygonsBeforeAfter'),
                             'uvTransfer':qc.get('uvTransfer'),'previews':qc.get('previewFiles')},indent=2))
@@ -149,7 +178,8 @@ jobs:
           if len(vb)!=2 or vb[0]!=vb[1]: raise SystemExit('Target vertex topology changed')
           if len(pb)!=2 or pb[0]!=pb[1]: raise SystemExit('Target polygon topology changed')
           if missing or len(skins)!=1 or joints < 32: raise SystemExit('Skin/animation preservation failed')
-          if not mats or not tex or not imgs: raise SystemExit('Transferred material payload missing')
+          if not mats or len(tex) < 2 or len(imgs) < 2 or not pbr_ok or not normal_ok:
+              raise SystemExit('Embedded BaseColor+Normal material payload missing')
           if len(qc.get('actionsBefore') or []) != len(qc.get('actionsAfter') or []): raise SystemExit('Blender action count changed')
           previews=qc.get('previewFiles') or []
           if len(previews) != 4: raise SystemExit(f'Expected 4 visual QC renders, got {len(previews)}')
