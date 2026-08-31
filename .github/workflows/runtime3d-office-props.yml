@@ -42,7 +42,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender libegl1 libgl1-mesa-dri
+          # Blender's glTF exporter imports numpy internally. Keep it explicit so clean GitHub
+          # runners do not depend on an incidental system package.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
           blender --version | head -n 2
 
       - name: Author office shell and reusable props
