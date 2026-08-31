@@ -1,58 +1,65 @@
 package com.malik.alshurti
 
 /**
- * Non-negotiable visual-quality contract for the living 3D office.
+ * Non-negotiable visual-quality contract.
  *
- * Runtime 3D is an implementation choice, not a downgrade. The visual benchmark is the existing
- * photoreal cinematic MP4 master: the production renderer is not considered ready until the dog,
- * lighting, materials, framing and human motion read at the same cinematic quality on a phone.
+ * We are allowed to change delivery/storage architecture, but not the visible result. The existing
+ * cinematic MP4 master is the minimum benchmark: dog identity, fur, uniform, office lighting,
+ * materials, lens/framing, depth, human motion and background detail must not be visibly reduced.
  */
 object CinematicQualityContract {
     const val TARGET_ASPECT_RATIO = 16f / 9f
     const val TARGET_FRAME_RATE = 30
+    const val DELIVERY_MUST_MATCH_CINEMATIC_MASTER = true
 
-    // Hero character is never reduced to a sprite/billboard/2D cutout in production.
-    const val HERO_MUST_BE_RIGGED_3D = true
-    const val HERO_PBR_REQUIRED = true
-    const val HERO_MIN_TEXTURE_EDGE = 2048
+    // Authoring/source remains independent high-quality 3D actors. Delivery to the phone may be a
+    // cloud-rendered cinematic stream so the APK does not have to contain the rendered footage.
+    const val SOURCE_HERO_MUST_BE_RIGGED_3D = true
+    const val SOURCE_HERO_PBR_REQUIRED = true
+    const val SOURCE_HERO_MIN_TEXTURE_EDGE = 2048
+    const val CLOUD_PRERENDERED_DELIVERY_ALLOWED = true
 
-    // Background may use invisible optimization only; silhouettes/lighting cannot visibly pop.
-    const val BACKGROUND_LOD_ALLOWED = true
-    const val HERO_LOD_REDUCTION_ALLOWED = false
-    const val VISIBLE_LOD_POP_ALLOWED = false
+    // Never trade visible quality for APK size. Storage/network optimization happens after render.
+    const val ALLOW_VISIBLE_QUALITY_REDUCTION_FOR_SIZE = false
+    const val ALLOW_HERO_TEXTURE_DOWNSCALE_FOR_SIZE = false
+    const val ALLOW_SIMPLIFIED_HERO_MODEL_FOR_SIZE = false
 
-    // Full-scene MP4s remain a reference/fallback during migration, never the scenario system.
+    // Full-scene cinematic output is allowed as a DELIVERY format, but scenarios are still authored
+    // from reusable 3D actors. New content can be published remotely without an APK update.
     const val MP4_IS_VISUAL_BENCHMARK = true
-    const val NEW_SCENARIO_REQUIRES_NEW_MP4 = false
+    const val NEW_SCENARIO_REQUIRES_APP_UPDATE = false
+    const val NEW_SCENARIO_MUST_BE_BUNDLED_IN_APK = false
 
     val requiredRenderFeatures = setOf(
         "PBR",
         "IBL",
         "soft-dynamic-shadows",
-        "baked-global-illumination",
+        "global-illumination",
         "reflection-probes",
         "filmic-tone-mapping",
         "anti-aliasing",
         "depth-aware-camera",
         "animation-blending",
-        "skeletal-facial-motion"
+        "skeletal-facial-motion",
+        "cinematic-motion-blur-when-appropriate",
+        "consistent-color-grade"
     )
 
     val forbiddenProductionShortcuts = setOf(
         "hero-2d-sprite",
         "fake-zoom-as-body-motion",
-        "full-scene-video-per-scenario",
+        "visible-low-poly-hero",
+        "lower-resolution-hero-for-apk-size",
         "hard-animation-cuts",
         "synchronized-background-loop",
         "constant-camera-stare",
-        "synthetic-continuous-hum"
+        "synthetic-continuous-hum",
+        "visible-quality-drop-between-segments"
     )
 }
 
 /**
- * Cinematic motion rules. These are deliberately stricter than a game animation system because
- * the target is observational realism: the viewer should feel they are watching an occupied
- * security office rather than interacting with an avatar waiting for input.
+ * Cinematic motion rules. The target is observational realism, not game-avatar responsiveness.
  */
 object CinematicHumanMotionContract {
     const val EYES_LEAD_HEAD_MS = 90L
