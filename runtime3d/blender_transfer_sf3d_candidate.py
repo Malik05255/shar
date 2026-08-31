@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """Transfer a free Stable Fast 3D donor appearance onto the exact animated hero.
 
-This wraps the existing topology-preserving transfer implementation and only adds
-Blender-4.0-compatible QC rendering plus a conservative non-plastic material tune.
-It never changes target topology, armature, skin weights or authored animation clips.
+This wrapper keeps the topology/rig/animation preservation logic in the shared transfer
+module, but replaces Blender's fragile temporary GLB image references with BaseColor and
+Normal files extracted directly from the donor GLB. The final shader graph uses standard
+glTF-compatible nodes so both textures must be embedded in the exported GLB.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-# Blender executes --python scripts without guaranteeing that the script directory
-# is on sys.path. Resolve the sibling transfer module explicitly and fail closed if
-# repository layout changes.
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -26,27 +25,127 @@ import blender_transfer_pbr_candidate as base
 _original_copy_materials = base.copy_materials
 
 
+def required_texture_path(env_name: str) -> Path:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        raise RuntimeError(f"Required extracted texture env is missing: {env_name}")
+    path = Path(raw).resolve()
+    if not path.is_file() or path.stat().st_size < 128:
+        raise RuntimeError(f"Required extracted texture is missing/empty: {path}")
+    return path
+
+
+def clear_input_links(tree: bpy.types.NodeTree, socket) -> None:
+    for link in list(socket.links):
+        tree.links.remove(link)
+
+
+def rebind_standard_gltf_pbr(mat: bpy.types.Material, base_path: Path, normal_path: Path) -> None:
+    if not mat.use_nodes:
+        mat.use_nodes = True
+    tree = mat.node_tree
+    bsdf = next((n for n in tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if bsdf is None:
+        raise RuntimeError(f"Material {mat.name} has no Principled BSDF")
+
+    # Remove donor-imported image/normal nodes. Those may reference transient Blender
+    # image buffers that rendered but were omitted from the final GLB.
+    for node in list(tree.nodes):
+        if node.type in {'TEX_IMAGE', 'NORMAL_MAP'}:
+            tree.nodes.remove(node)
+
+    base_img = bpy.data.images.load(str(base_path), check_existing=False)
+    normal_img = bpy.data.images.load(str(normal_path), check_existing=False)
+    try:
+        base_img.colorspace_settings.name = 'sRGB'
+    except Exception:
+        pass
+    try:
+        normal_img.colorspace_settings.name = 'Non-Color'
+    except Exception:
+        pass
+    base_img.name = 'SF3D_BaseColor_Embedded'
+    normal_img.name = 'SF3D_Normal_Embedded'
+
+    # Force decoding now. A zero-sized/unloaded image is rejected before render/export.
+    base_img.reload(); normal_img.reload()
+    if not base_img.has_data or min(base_img.size) <= 0:
+        raise RuntimeError(f"BaseColor image failed to decode: {base_path}")
+    if not normal_img.has_data or min(normal_img.size) <= 0:
+        raise RuntimeError(f"Normal image failed to decode: {normal_path}")
+
+    base_node = tree.nodes.new('ShaderNodeTexImage')
+    base_node.name = 'SF3D_BASECOLOR_FILE'
+    base_node.label = 'SF3D BaseColor — extracted from donor GLB'
+    base_node.image = base_img
+    base_node.interpolation = 'Linear'
+
+    normal_node = tree.nodes.new('ShaderNodeTexImage')
+    normal_node.name = 'SF3D_NORMAL_FILE'
+    normal_node.label = 'SF3D Normal — extracted from donor GLB'
+    normal_node.image = normal_img
+    normal_node.interpolation = 'Linear'
+
+    normal_map = tree.nodes.new('ShaderNodeNormalMap')
+    normal_map.name = 'SF3D_NORMAL_MAP'
+    normal_map.space = 'TANGENT'
+    normal_map.inputs['Strength'].default_value = 1.0
+
+    clear_input_links(tree, bsdf.inputs['Base Color'])
+    clear_input_links(tree, bsdf.inputs['Normal'])
+    tree.links.new(base_node.outputs['Color'], bsdf.inputs['Base Color'])
+    tree.links.new(normal_node.outputs['Color'], normal_map.inputs['Color'])
+    tree.links.new(normal_map.outputs['Normal'], bsdf.inputs['Normal'])
+
+    rough = bsdf.inputs.get('Roughness')
+    if rough is not None and float(rough.default_value) < 0.62:
+        rough.default_value = 0.62
+    metallic = bsdf.inputs.get('Metallic')
+    if metallic is not None:
+        metallic.default_value = 0.0
+    spec = bsdf.inputs.get('Specular IOR Level') or bsdf.inputs.get('Specular')
+    if spec is not None and float(spec.default_value) > 0.38:
+        spec.default_value = 0.38
+
+    print(
+        f"SF3D_PBR_REBOUND material={mat.name!r} "
+        f"base={base_path.name}:{base_img.size[0]}x{base_img.size[1]} "
+        f"normal={normal_path.name}:{normal_img.size[0]}x{normal_img.size[1]}",
+        flush=True,
+    )
+
+
 def copy_materials_with_physical_defaults(target: bpy.types.Object, donor: bpy.types.Object) -> int:
     count = _original_copy_materials(target, donor)
-    # SF3D's single-image donor can render overly glossy under strong QC lights.
-    # Keep its image textures/normal map intact, but use a fabric/fur-appropriate
-    # dielectric baseline. This is a material-parameter tune only, not a texture fake.
+    base_path = required_texture_path('SF3D_BASECOLOR_PATH')
+    normal_path = required_texture_path('SF3D_NORMAL_PATH')
     for mat in target.data.materials:
+        if mat is not None:
+            rebind_standard_gltf_pbr(mat, base_path, normal_path)
+    return count
+
+
+def ensure_file_backed_images_ready(materials: list[bpy.types.Material]) -> tuple[int, int]:
+    images = set()
+    texture_nodes = 0
+    for mat in materials:
         if not mat or not mat.use_nodes:
             continue
         for node in mat.node_tree.nodes:
-            if node.type != 'BSDF_PRINCIPLED':
+            if node.type != 'TEX_IMAGE' or getattr(node, 'image', None) is None:
                 continue
-            rough = node.inputs.get('Roughness')
-            if rough is not None and float(rough.default_value) < 0.62:
-                rough.default_value = 0.62
-            metallic = node.inputs.get('Metallic')
-            if metallic is not None:
-                metallic.default_value = 0.0
-            spec = node.inputs.get('Specular IOR Level') or node.inputs.get('Specular')
-            if spec is not None and float(spec.default_value) > 0.38:
-                spec.default_value = 0.38
-    return count
+            image = node.image
+            texture_nodes += 1
+            images.add(image)
+            if not image.has_data or min(image.size) <= 0:
+                raise RuntimeError(f"Texture node {node.name} has no decoded image data")
+            resolved = Path(bpy.path.abspath(image.filepath)).resolve() if image.filepath else None
+            if resolved is None or not resolved.is_file() or resolved.stat().st_size < 128:
+                raise RuntimeError(f"Texture node {node.name} is not backed by a durable file: {resolved}")
+    if texture_nodes < 2 or len(images) < 2:
+        raise RuntimeError(f"Expected BaseColor+Normal file textures, got nodes={texture_nodes} images={len(images)}")
+    print(f"SF3D_TEXTURE_FILES_READY nodes={texture_nodes} images={len(images)}", flush=True)
+    return texture_nodes, len(images)
 
 
 def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
@@ -58,7 +157,6 @@ def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
     if scene.world is None:
         scene.world = bpy.data.worlds.new('QC_WORLD')
     scene.world.color = (0.025, 0.025, 0.025)
-    # Ubuntu 24.04 currently ships Blender 4.0.x where this identifier is BLENDER_EEVEE.
     try:
         scene.render.engine = 'BLENDER_EEVEE_NEXT'
     except (TypeError, ValueError):
@@ -117,6 +215,7 @@ def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
 
 
 base.copy_materials = copy_materials_with_physical_defaults
+base.ensure_images_packed = ensure_file_backed_images_ready
 base.setup_preview = setup_preview_compat
 
 if __name__ == '__main__':
