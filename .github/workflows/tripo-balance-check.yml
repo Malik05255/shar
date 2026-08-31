@@ -1,0 +1,40 @@
+name: Check Tripo API Wallet
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/tripo-balance-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  balance:
+    runs-on: ubuntu-latest
+    env:
+      TRIPO_API_KEY: ${{ secrets.TRIPO_API_KEY }}
+    steps:
+      - name: Query API wallet balance
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${TRIPO_API_KEY:-}" ]]; then
+            echo '::error::TRIPO_API_KEY is not configured'
+            exit 1
+          fi
+          response=$(curl --fail-with-body --silent --show-error \
+            'https://api.tripo3d.ai/v2/openapi/user/balance' \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${TRIPO_API_KEY}")
+          RESPONSE="$response" python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ['RESPONSE'])
+          if payload.get('code') != 0:
+              raise SystemExit(f"Tripo balance query failed: {payload}")
+          data = payload.get('data') or {}
+          print(f"TRIPO_API_BALANCE={data.get('balance')}")
+          print(f"TRIPO_API_FROZEN={data.get('frozen')}")
+          PY
