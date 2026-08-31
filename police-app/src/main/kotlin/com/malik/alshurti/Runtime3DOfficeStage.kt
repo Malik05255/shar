@@ -22,12 +22,11 @@ import kotlin.math.min
  *
  * Models are loaded once per pack and remain in the scene. RuntimeScenarioPlan only changes
  * animation targets; there is no concept of a movie ending, seeking, replaying, or holding a final
- * video frame. Multiple clips can be applied in one render frame when the authored glTF clips touch
- * disjoint bones (for example breathing + gaze + hands), which Filament supports naturally.
+ * video frame. Facial visemes and small autonomous life (blink / eye saccade) run as separate
+ * high-frequency layers so a scenario beat is never visually identical frame-for-frame.
  *
- * Content contract: each independent GLB is authored in the SAME office coordinate system and
- * preserves its original PBR scale/position. We deliberately do not scaleToUnits individual actors
- * because that would destroy cinematic spatial relationships.
+ * Content contract: animation clips used on different channels should be authored to touch only the
+ * bones they own whenever they are meant to layer (for example muzzle viseme vs eyelid blink).
  */
 @Composable
 fun Runtime3DOfficeStage(
@@ -35,6 +34,7 @@ fun Runtime3DOfficeStage(
     modifier: Modifier = Modifier
 ) {
     val frame by RuntimeOfficePlanBus.frames.collectAsState()
+    val viseme by RuntimeOfficePlanBus.viseme.collectAsState()
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val bindings = remember(pack.version) { mutableMapOf<SceneActorId, RuntimeAnimatorBinding>() }
@@ -64,7 +64,8 @@ fun Runtime3DOfficeStage(
                 frameTimeNanos = frameTimeNanos,
                 planFrame = frame,
                 commandsByActor = commandsByActor,
-                bindings = bindings
+                bindings = bindings,
+                policeViseme = viseme
             )
         }
     ) {
@@ -111,7 +112,8 @@ private fun applyRuntimeFrame(
     frameTimeNanos: Long,
     planFrame: RuntimeOfficePlanBus.Frame?,
     commandsByActor: Map<SceneActorId, List<SceneAnimationCommand>>,
-    bindings: Map<SceneActorId, RuntimeAnimatorBinding>
+    bindings: Map<SceneActorId, RuntimeAnimatorBinding>,
+    policeViseme: MouthViseme
 ) {
     val planElapsedSeconds = if (planFrame == null) 0f else {
         max(0L, frameTimeNanos - planFrame.publishedAtNanos) / 1_000_000_000f
@@ -148,9 +150,85 @@ private fun applyRuntimeFrame(
             }
         }
 
+        val hasExplicitGaze = commands.any {
+            it.channel == AnimationChannel.GAZE && planElapsedSeconds >= it.delayMs / 1_000f
+        }
+        if (applyAutonomicMicroMotion(actor, binding, absoluteSeconds, hasExplicitGaze)) {
+            applied = true
+        }
+
+        if (actor == SceneActorId.POLICE_DOG && applyPoliceViseme(binding, policeViseme)) {
+            applied = true
+        }
+
         if (applied) binding.animator.updateBoneMatrices()
     }
 }
+
+/**
+ * Deterministic per-actor offsets avoid synchronized blinking. These are not scenario loops: the
+ * scenario decides actions while this layer only supplies biological micro motion.
+ */
+private fun applyAutonomicMicroMotion(
+    actor: SceneActorId,
+    binding: RuntimeAnimatorBinding,
+    absoluteSeconds: Float,
+    hasExplicitGaze: Boolean
+): Boolean {
+    if (!actor.isRuntimeCharacter()) return false
+    var applied = false
+
+    val blinkIndex = binding.animationIndexes["Blink"]
+    if (blinkIndex != null) {
+        val period = 3.9f + (actor.ordinal % 5) * 0.53f
+        val phase = (absoluteSeconds + actor.ordinal * 0.73f) % period
+        val window = 0.18f
+        if (phase < window) {
+            val duration = binding.animator.getAnimationDuration(blinkIndex)
+            val time = if (duration > 0f) (phase / window) * duration else 0f
+            binding.animator.applyAnimation(blinkIndex, time)
+            applied = true
+        }
+    }
+
+    if (!hasExplicitGaze) {
+        val saccadeIndex = binding.animationIndexes["EyeSaccade"]
+        if (saccadeIndex != null) {
+            val period = 6.7f + (actor.ordinal % 4) * 0.61f
+            val phase = (absoluteSeconds + actor.ordinal * 1.17f) % period
+            val window = 0.42f
+            if (phase < window) {
+                val duration = binding.animator.getAnimationDuration(saccadeIndex)
+                val time = if (duration > 0f) (phase / window) * duration else 0f
+                binding.animator.applyAnimation(saccadeIndex, time)
+                applied = true
+            }
+        }
+    }
+    return applied
+}
+
+private fun applyPoliceViseme(binding: RuntimeAnimatorBinding, viseme: MouthViseme): Boolean {
+    val clip = when (viseme) {
+        MouthViseme.REST -> "VisemeRest"
+        MouthViseme.OPEN -> "VisemeOpen"
+        MouthViseme.WIDE -> "VisemeWide"
+        MouthViseme.ROUND -> "VisemeRound"
+        MouthViseme.CLOSED -> "VisemeClosed"
+    }
+    val index = binding.animationIndexes[clip] ?: return false
+    // Viseme clips are authored as facial pose clips; sampling at t=0 preserves the requested pose.
+    binding.animator.applyAnimation(index, 0f)
+    return true
+}
+
+private fun SceneActorId.isRuntimeCharacter(): Boolean = this in setOf(
+    SceneActorId.POLICE_DOG,
+    SceneActorId.STAFF_MALE_01,
+    SceneActorId.STAFF_MALE_02,
+    SceneActorId.STAFF_FEMALE_01,
+    SceneActorId.VISITOR_01
+)
 
 private fun defaultIdleClip(actor: SceneActorId): String? = when (actor) {
     SceneActorId.POLICE_DOG -> "IdleWork"
