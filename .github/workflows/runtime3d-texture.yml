@@ -137,6 +137,11 @@ jobs:
             --output "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.glb" \
             --qc "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.qc.json" \
             --preview-dir "$RUNNER_TEMP/reference-pbr/previews"
+          test -s "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.glb"
+          test -s "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.qc.json"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.front.png"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.three_quarter.png"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.side.png"
 
       - name: Validate materials textures skin geometry and all runtime clips
         shell: bash
@@ -164,15 +169,27 @@ jobs:
           materials = doc.get('materials') or []
           textures = doc.get('textures') or []
           images = doc.get('images') or []
+          if not materials:
+              raise SystemExit('No exported material')
+          mat = materials[0]
+          pbr = mat.get('pbrMetallicRoughness') or {}
+          material_channels = {
+              'baseColorTexture': pbr.get('baseColorTexture') is not None,
+              'metallicRoughnessTexture': pbr.get('metallicRoughnessTexture') is not None,
+              'normalTexture': mat.get('normalTexture') is not None,
+          }
           summary = {
               'bytes': glb.stat().st_size,
               'materials': len(materials),
               'textures': len(textures),
               'images': len(images),
+              'materialChannels': material_channels,
               'animationCount': len(names),
               'missingAnimations': missing,
               'skins': len(skins),
               'maxJoints': max_joints,
+              'meshCount': qc.get('meshCount'),
+              'meshNames': qc.get('meshNames'),
               'geometryPreserved': qc.get('geometryPreserved'),
               'verticesBeforeAfter': qc.get('targetVerticesBeforeAfter'),
               'polygonsBeforeAfter': qc.get('targetPolygonsBeforeAfter'),
@@ -181,12 +198,16 @@ jobs:
               'renderEngine': qc.get('renderEngine')
           }
           print(json.dumps(summary, indent=2))
-          if len(materials) < 1 or len(textures) < 3 or len(images) < 3:
-              raise SystemExit('Expected BaseColor + Roughness + Normal texture payload')
+          if not all(material_channels.values()):
+              raise SystemExit(f'Missing expected glTF material channel: {material_channels}')
+          if len(textures) < 2 or len(images) < 2:
+              raise SystemExit('Exported texture payload unexpectedly incomplete')
           if missing:
               raise SystemExit(f'Runtime animation names lost: {missing}')
           if len(skins) < 1 or max_joints < 24:
               raise SystemExit('Skin/joint contract failed')
+          if (qc.get('meshCount') or 0) < 1:
+              raise SystemExit('QC reports no target meshes')
           if qc.get('geometryPreserved') is not True or qc.get('decimationApplied') is not False or qc.get('remeshApplied') is not False:
               raise SystemExit('Topology preservation policy failed')
           vb = qc.get('targetVerticesBeforeAfter') or []
@@ -195,6 +216,11 @@ jobs:
               raise SystemExit('Target vertex count changed')
           if len(pb) != 2 or pb[0] != pb[1]:
               raise SystemExit('Target polygon count changed')
+          for name, item in (qc.get('topologyBeforeAfter') or {}).items():
+              if item.get('vertices', [0, 1])[0] != item.get('vertices', [0, 1])[1]:
+                  raise SystemExit(f'Vertex count changed for mesh {name}')
+              if item.get('polygons', [0, 1])[0] != item.get('polygons', [0, 1])[1]:
+                  raise SystemExit(f'Polygon count changed for mesh {name}')
           for preview in qc.get('previewFiles') or []:
               p = root / 'previews' / preview
               if not p.is_file() or p.stat().st_size < 10_000:
@@ -212,7 +238,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Runtime3D-police-dog-reference-pbr-motion-candidate
-          path: ${{ runner.temp }}/reference-pbr/*
+          path: ${{ runner.temp }}/reference-pbr
           if-no-files-found: error
           retention-days: 14
 
