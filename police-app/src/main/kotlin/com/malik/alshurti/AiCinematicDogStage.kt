@@ -20,9 +20,9 @@ import kotlinx.coroutines.launch
 /**
  * State-specific cinematic performance player.
  *
- * Large body actions never fake motion with bitmap transforms. Idle and talking states use
- * specially prepared seamless living cycles so blinking/breathing/ears/mouth do not disappear
- * after the first few seconds.
+ * Every generated clip is one-shot. The final rendered frame stays on screen until another action
+ * arrives; no idle/talk clip is looped or ping-ponged. This avoids the visible "same scene again"
+ * effect while keeping real motion for each conversation/action transition.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -80,10 +80,10 @@ fun AiCinematicDogStage(
 
     val candidateClipNames = remember(requestedAction) {
         when (requestedAction) {
-            DogAction.SEATED_IDLE -> listOf("dog_idle_living", "dog_idle_loop")
-            DogAction.TALK_SEATED -> listOf("dog_talk_seated_living", "dog_talk_seated")
+            DogAction.SEATED_IDLE -> listOf("dog_idle_loop")
+            DogAction.TALK_SEATED -> listOf("dog_talk_seated")
             DogAction.STAND_UP -> listOf("dog_stand_up")
-            DogAction.TALK_STANDING -> listOf("dog_talk_standing_living", "dog_talk_standing")
+            DogAction.TALK_STANDING -> listOf("dog_talk_standing")
             DogAction.WALK_AROUND_DESK -> listOf("dog_walk_around_desk")
             DogAction.APPROACH_CAMERA -> listOf("dog_approach_camera")
             DogAction.RETURN_FROM_CAMERA -> listOf("dog_return_from_camera")
@@ -114,12 +114,7 @@ fun AiCinematicDogStage(
         return
     }
 
-    val (clipName, clipResId) = resolvedClip
-    val continuous = clipName.endsWith("_living")
-
-    // Living clips are already long seamless cycles; begin at their continuity frame. One-shot
-    // body actions also always start at frame zero so feet/chair/desk continuity is deterministic.
-    val randomizeStart = false
+    val (_, clipResId) = resolvedClip
     val playbackSeed = remember(requestedAction, clipResId) {
         System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor clipResId.toLong()
     }
@@ -137,18 +132,16 @@ fun AiCinematicDogStage(
                 CinematicClipView(ctx).apply {
                     bind(
                         resId = clipResId,
-                        randomizeStart = randomizeStart,
-                        seed = playbackSeed,
-                        continuous = continuous
+                        randomizeStart = false,
+                        seed = playbackSeed
                     )
                 }
             },
             update = { view ->
                 view.bind(
                     resId = clipResId,
-                    randomizeStart = randomizeStart,
-                    seed = playbackSeed,
-                    continuous = continuous
+                    randomizeStart = false,
+                    seed = playbackSeed
                 )
             }
         )
