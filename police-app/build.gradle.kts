@@ -30,16 +30,9 @@ fun buildSetting(name: String, defaultValue: String = ""): String =
 fun quotedBuildConfig(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-val azureSpeechKey = buildSetting("AZURE_SPEECH_KEY")
-val azureSpeechRegion = buildSetting("AZURE_SPEECH_REGION")
-val azurePoliceVoice = buildSetting(
-    "ALSHORTI_AZURE_POLICE_VOICE",
-    "ar-SA-HamedNeural"
-)
-val azureStaffVoice = buildSetting(
-    "ALSHORTI_AZURE_STAFF_VOICE",
-    "ar-SA-ZariyahNeural"
-)
+val geminiApiKey = buildSetting("GEMINI_API_KEY")
+val geminiPoliceVoice = buildSetting("ALSHORTI_GEMINI_POLICE_VOICE", "Gacrux")
+val geminiStaffVoice = buildSetting("ALSHORTI_GEMINI_STAFF_VOICE", "Sulafat")
 
 android {
     namespace = "com.malik.alshurti"
@@ -54,12 +47,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Test builds can inject Azure Speech directly. Production should proxy this secret
-        // server-side so the subscription key is never distributed inside the APK.
-        buildConfigField("String", "AZURE_SPEECH_KEY", quotedBuildConfig(azureSpeechKey))
-        buildConfigField("String", "AZURE_SPEECH_REGION", quotedBuildConfig(azureSpeechRegion))
-        buildConfigField("String", "AZURE_POLICE_VOICE", quotedBuildConfig(azurePoliceVoice))
-        buildConfigField("String", "AZURE_STAFF_VOICE", quotedBuildConfig(azureStaffVoice))
+        // Test builds can inject Gemini directly. Production should proxy this secret server-side
+        // so the API key is never distributed inside a public APK.
+        buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
+        buildConfigField("String", "GEMINI_POLICE_VOICE", quotedBuildConfig(geminiPoliceVoice))
+        buildConfigField("String", "GEMINI_STAFF_VOICE", quotedBuildConfig(geminiStaffVoice))
     }
 
     signingConfigs {
