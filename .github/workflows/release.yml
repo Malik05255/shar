@@ -34,7 +34,7 @@ jobs:
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
 
-      - name: Check signing and Saudi voice prerequisites
+      - name: Check signing and natural voice prerequisites
         id: prerequisites
         shell: bash
         env:
@@ -42,8 +42,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
-          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           missing=()
@@ -51,8 +50,7 @@ jobs:
           [[ -z "$KEYSTORE_PASSWORD" ]] && missing+=("ALSHORTI_KEYSTORE_PASSWORD")
           [[ -z "$KEY_ALIAS" ]] && missing+=("ALSHORTI_KEY_ALIAS")
           [[ -z "$KEY_PASSWORD" ]] && missing+=("ALSHORTI_KEY_PASSWORD")
-          [[ -z "$AZURE_SPEECH_KEY" ]] && missing+=("AZURE_SPEECH_KEY")
-          [[ -z "$AZURE_SPEECH_REGION" ]] && missing+=("AZURE_SPEECH_REGION")
+          [[ -z "$GEMINI_API_KEY" ]] && missing+=("GEMINI_API_KEY")
 
           if (( ${#missing[@]} > 0 )); then
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -138,36 +136,55 @@ jobs:
             -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
             -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
 
-      - name: Verify Azure Saudi voice end-to-end
+      - name: Verify Gemini Saudi-directed voice end-to-end
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         shell: bash
         env:
-          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
-          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
-          ALSHORTI_AZURE_POLICE_VOICE: ${{ secrets.ALSHORTI_AZURE_POLICE_VOICE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
         run: |
           set -euo pipefail
-          VOICE="${ALSHORTI_AZURE_POLICE_VOICE:-ar-SA-HamedNeural}"
-          OUT="$RUNNER_TEMP/alshorti-azure-release-smoke.mp3"
-          SSML="<speak version='1.0' xml:lang='ar-SA'><voice xml:lang='ar-SA' name='${VOICE}'><prosody rate='-3%' pitch='-1%'>هلا يا بطل، معك الشرطي.</prosody></voice></speak>"
+          VOICE="${ALSHORTI_GEMINI_POLICE_VOICE:-Gacrux}"
+          RESPONSE="$RUNNER_TEMP/gemini-release-response.json"
+          WAV="$RUNNER_TEMP/alshorti-gemini-release-smoke.wav"
+          PAYLOAD=$(python3 - <<PY
+          import json
+          voice = "${VOICE}"
+          prompt = """Generate speech audio only. Do not speak these directions. Voice direction: Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent, mature calm presence, warm with children, not a broadcaster. Speak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\nهلا يا بطل، معك الشرطي. وش عندك؟"""
+          print(json.dumps({
+            "model": "gemini-3.1-flash-tts-preview",
+            "input": prompt,
+            "response_format": {"type": "audio"},
+            "generation_config": {"speech_config": [{"voice": voice}]}
+          }, ensure_ascii=False))
+          PY
+          )
           HTTP_CODE=$(curl --silent --show-error --location \
-            --output "$OUT" --write-out '%{http_code}' \
-            --connect-timeout 15 --max-time 45 \
-            -X POST "https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1" \
-            -H "Ocp-Apim-Subscription-Key: ${AZURE_SPEECH_KEY}" \
-            -H 'Content-Type: application/ssml+xml' \
-            -H 'X-Microsoft-OutputFormat: audio-24khz-96kbitrate-mono-mp3' \
-            -H 'User-Agent: AlShorti-Release-CI' \
-            --data-binary "$SSML")
+            --output "$RESPONSE" --write-out '%{http_code}' \
+            --connect-timeout 15 --max-time 60 \
+            -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" \
+            -H "x-goog-api-key: ${GEMINI_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            --data "$PAYLOAD")
           if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
-            rm -f "$OUT"
-            echo "::error::Azure Saudi TTS smoke test failed with HTTP ${HTTP_CODE}."
+            echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
             exit 1
           fi
-          test -s "$OUT"
-          [[ $(stat -c%s "$OUT") -gt 2048 ]]
-          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate -of default=nw=1 "$OUT"
-          rm -f "$OUT"
+          python3 - <<PY
+          import base64, json, wave
+          data=json.load(open("$RESPONSE"))
+          audio=data.get("output_audio") or data.get("outputAudio") or {}
+          encoded=audio.get("data","")
+          if not encoded:
+              raise SystemExit("Gemini response did not include output_audio.data")
+          pcm=base64.b64decode(encoded)
+          if len(pcm) < 3000:
+              raise SystemExit("Gemini returned an unexpectedly short audio buffer")
+          with wave.open("$WAV","wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(pcm)
+          PY
+          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$WAV"
+          rm -f "$RESPONSE" "$WAV"
 
       - name: Build signed release APK
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
@@ -175,10 +192,9 @@ jobs:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
-          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
-          ALSHORTI_AZURE_POLICE_VOICE: ${{ secrets.ALSHORTI_AZURE_POLICE_VOICE }}
-          ALSHORTI_AZURE_STAFF_VOICE: ${{ secrets.ALSHORTI_AZURE_STAFF_VOICE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+          ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleRelease
 
       - name: Verify and prepare release files
