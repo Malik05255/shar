@@ -40,6 +40,34 @@ def clear_input_links(tree: bpy.types.NodeTree, socket) -> None:
         tree.links.remove(link)
 
 
+def force_cpu_decode_and_pack(image: bpy.types.Image, path: Path, label: str) -> None:
+    """Force real CPU pixel decoding, then pack the decoded source into the blend state.
+
+    Blender 4.0's Image.has_data is not a reliable readiness signal for freshly loaded
+    file-backed images in background mode, so readiness is proven by dimensions plus an
+    actual pixel access. The final exported GLB is still independently checked for image
+    and texture entries, so this does not weaken the production gate.
+    """
+    if not path.is_file() or path.stat().st_size < 128:
+        raise RuntimeError(f"{label} source file disappeared: {path}")
+    try:
+        width, height = int(image.size[0]), int(image.size[1])
+        first_pixel = float(image.pixels[0])
+    except Exception as exc:
+        raise RuntimeError(f"{label} image failed CPU pixel decode: {path}: {exc}") from exc
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"{label} image has invalid decoded dimensions {width}x{height}: {path}")
+    try:
+        image.pack()
+    except Exception as exc:
+        raise RuntimeError(f"{label} image could not be packed after decode: {path}: {exc}") from exc
+    print(
+        f"SF3D_IMAGE_DECODED label={label} file={path.name} size={width}x{height} "
+        f"bytes={path.stat().st_size} firstPixel={first_pixel:.6f}",
+        flush=True,
+    )
+
+
 def rebind_standard_gltf_pbr(mat: bpy.types.Material, base_path: Path, normal_path: Path) -> None:
     if not mat.use_nodes:
         mat.use_nodes = True
@@ -67,12 +95,8 @@ def rebind_standard_gltf_pbr(mat: bpy.types.Material, base_path: Path, normal_pa
     base_img.name = 'SF3D_BaseColor_Embedded'
     normal_img.name = 'SF3D_Normal_Embedded'
 
-    # Force decoding now. A zero-sized/unloaded image is rejected before render/export.
-    base_img.reload(); normal_img.reload()
-    if not base_img.has_data or min(base_img.size) <= 0:
-        raise RuntimeError(f"BaseColor image failed to decode: {base_path}")
-    if not normal_img.has_data or min(normal_img.size) <= 0:
-        raise RuntimeError(f"Normal image failed to decode: {normal_path}")
+    force_cpu_decode_and_pack(base_img, base_path, 'BaseColor')
+    force_cpu_decode_and_pack(normal_img, normal_path, 'Normal')
 
     base_node = tree.nodes.new('ShaderNodeTexImage')
     base_node.name = 'SF3D_BASECOLOR_FILE'
@@ -137,11 +161,16 @@ def ensure_file_backed_images_ready(materials: list[bpy.types.Material]) -> tupl
             image = node.image
             texture_nodes += 1
             images.add(image)
-            if not image.has_data or min(image.size) <= 0:
-                raise RuntimeError(f"Texture node {node.name} has no decoded image data")
             resolved = Path(bpy.path.abspath(image.filepath)).resolve() if image.filepath else None
             if resolved is None or not resolved.is_file() or resolved.stat().st_size < 128:
                 raise RuntimeError(f"Texture node {node.name} is not backed by a durable file: {resolved}")
+            try:
+                width, height = int(image.size[0]), int(image.size[1])
+                _ = float(image.pixels[0])
+            except Exception as exc:
+                raise RuntimeError(f"Texture node {node.name} cannot decode its durable source: {exc}") from exc
+            if width <= 0 or height <= 0:
+                raise RuntimeError(f"Texture node {node.name} has invalid dimensions {width}x{height}")
     if texture_nodes < 2 or len(images) < 2:
         raise RuntimeError(f"Expected BaseColor+Normal file textures, got nodes={texture_nodes} images={len(images)}")
     print(f"SF3D_TEXTURE_FILES_READY nodes={texture_nodes} images={len(images)}", flush=True)
