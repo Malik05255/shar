@@ -7,6 +7,16 @@ It never changes target topology, armature, skin weights or authored animation c
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Blender executes --python scripts without guaranteeing that the script directory
+# is on sys.path. Resolve the sibling transfer module explicitly and fail closed if
+# repository layout changes.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 import bpy
 from mathutils import Vector
 
@@ -51,7 +61,7 @@ def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
     # Ubuntu 24.04 currently ships Blender 4.0.x where this identifier is BLENDER_EEVEE.
     try:
         scene.render.engine = 'BLENDER_EEVEE_NEXT'
-    except TypeError:
+    except (TypeError, ValueError):
         scene.render.engine = 'BLENDER_EEVEE'
     except Exception:
         scene.render.engine = 'BLENDER_EEVEE'
@@ -89,8 +99,6 @@ def setup_preview_compat(target_mesh: bpy.types.Object, preview_dir):
         lo.location = center + direction * radius
         point(lo, center)
 
-    # Imported glTF is converted to Blender Z-up. The existing hero's front/back
-    # convention is preserved; names are less important than having all four views.
     views = [
         ('front', Vector((0.0, -radius * 2.4, radius * 0.12))),
         ('three_quarter', Vector((radius * 1.4, -radius * 2.0, radius * 0.18))),
