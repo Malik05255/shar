@@ -15,6 +15,32 @@ This policy is mandatory for the cinematic office project.
 9. **Every external service must be classified before use:** unlimited/free local, recurring free quota, one-time trial, preview-only, or paid.
 10. **If a free service prevents export/download, it is reference-only and cannot be the production source.**
 
+## Free provider pool and rotation
+
+When no unlimited zero-cost route is available for a stage, the project uses a **legitimate multi-provider free pool** instead of paying by default.
+
+Priority order:
+
+1. Unlimited local/open-source tools.
+2. Recurring free cloud quotas with export/API support.
+3. High free-credit providers.
+4. Smaller recurring free-credit providers.
+5. One-time free trials.
+6. Paid providers remain disabled unless the project owner explicitly authorizes one specific paid operation.
+
+Rotation rules:
+
+- Keep 5–10 legitimate independent providers available for each expensive stage whenever practical.
+- Use provider A only while its normal free allowance remains available; when exhausted or rate-limited, record the reason and move to provider B, then C, and so on.
+- Never create duplicate accounts, fake identities, or otherwise evade a provider's quota or terms. Rotation is across different legitimate services, not around one service's limits.
+- A provider is eligible for production work only if the free tier allows lawful export/download of the required artifact and its license is compatible with the project.
+- Provider rotation must not weaken the acceptance gate. A result from a later provider is rejected if it is visibly worse, even when it is free.
+- Preserve every accepted intermediate artifact locally so a provider's quota is never wasted regenerating work already completed.
+- Before each cloud generation, check whether the same stage can be completed locally/open-source without visible quality loss.
+- Prefer spending limited credits on the hardest/highest-value operations: hero reconstruction, texture/PBR enhancement, difficult rigging, or motion cleanup. Do not waste scarce credits on office props that Blender/Poly Haven can supply for free.
+- If several providers have free allowance simultaneously, use them to generate comparison candidates and select the best result rather than accepting the first technically valid model.
+- The orchestrator must fail closed when all free providers are exhausted: it must stop and report exhaustion, never fall through to paid billing automatically.
+
 ## Preferred zero-cost stack
 
 ### 3D generation / reconstruction
