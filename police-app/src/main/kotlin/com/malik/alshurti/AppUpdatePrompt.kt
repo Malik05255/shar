@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -20,9 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 /**
- * Update UX intentionally contains no written copy. The main product is an audio/cinematic
- * experience; update state is expressed through familiar icons and a progress bar. Android's
- * package installer remains responsible for its own system confirmation UI.
+ * Forced update surface.
+ *
+ * Idle/Checking render absolutely nothing, so no window flashes during normal launches. Once a
+ * strictly newer stable release has been confirmed, the dialog cannot be dismissed. Android's own
+ * package installer remains the final trusted confirmation surface.
  */
 @Composable
 fun AppUpdatePrompt(
@@ -37,18 +38,13 @@ fun AppUpdatePrompt(
 
         is AppUpdateState.Available -> {
             AlertDialog(
-                onDismissRequest = onDismiss,
+                onDismissRequest = {},
                 icon = { Icon(Icons.Default.Download, contentDescription = null) },
                 title = null,
                 text = null,
                 confirmButton = {
                     IconButton(onClick = onUpdateNow) {
                         Icon(Icons.Default.Download, contentDescription = null)
-                    }
-                },
-                dismissButton = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = null)
                     }
                 }
             )
@@ -102,7 +98,7 @@ fun AppUpdatePrompt(
 
         is AppUpdateState.Error -> {
             AlertDialog(
-                onDismissRequest = onDismiss,
+                onDismissRequest = {},
                 icon = { Icon(Icons.Default.Warning, contentDescription = null) },
                 title = null,
                 text = null,
@@ -111,11 +107,6 @@ fun AppUpdatePrompt(
                         IconButton(onClick = onRetry) {
                             Icon(Icons.Default.Refresh, contentDescription = null)
                         }
-                    }
-                },
-                dismissButton = {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = null)
                     }
                 }
             )
