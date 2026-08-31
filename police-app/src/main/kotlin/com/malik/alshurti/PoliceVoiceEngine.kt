@@ -10,6 +10,9 @@ import com.malik.alshurti.voice.SaudiHumanVoice
  * Input deliberately uses AudioRecord through GeminiSilentListener instead of Android's
  * SpeechRecognizer. That removes OEM recording beeps/restart tones and keeps the microphone quiet
  * while the character waits for the child to speak.
+ *
+ * Product rule: opening the office does not make the dog address the observer. The first greeting
+ * is suppressed until real voice activity is detected; the office remains a passive living world.
  */
 class PoliceVoiceEngine(
     private val context: Context,
@@ -32,6 +35,7 @@ class PoliceVoiceEngine(
     private var mode: VoiceMode = VoiceMode.ONLINE
     private var spokenText = ""
     private var lastViseme = MouthViseme.REST
+    private var observerHasSpoken = false
 
     private val silentListener = GeminiSilentListener(
         context = context.applicationContext,
@@ -41,10 +45,12 @@ class PoliceVoiceEngine(
             }
 
             override fun onSpeechStarted() {
+                observerHasSpoken = true
                 listener.onSpeechStarted()
             }
 
             override fun onFinalText(text: String) {
+                if (text.isNotBlank()) observerHasSpoken = true
                 listener.onFinalText(text)
             }
 
@@ -96,6 +102,7 @@ class PoliceVoiceEngine(
     fun setMode(newMode: VoiceMode) {
         mode = newMode
         stopListening()
+        observerHasSpoken = false
         if (newMode == VoiceMode.OFFLINE) {
             listener.onTtsError("الصوت السعودي البشري يحتاج اتصالاً بالإنترنت.")
             return
@@ -122,8 +129,18 @@ class PoliceVoiceEngine(
     }
 
     fun speak(text: String) {
-        stopListening()
         spokenText = text.trim()
+
+        // The ViewModel historically asks for a greeting as soon as TTS becomes ready. Do not let
+        // that legacy call turn the office into a staged welcome. Stay silently listening until the
+        // observer actually speaks; the first real reply will then use normal TTS.
+        if (!observerHasSpoken && isPassiveOpeningGreeting(spokenText)) {
+            spokenText = ""
+            startListening()
+            return
+        }
+
+        stopListening()
         if (spokenText.isBlank()) {
             listener.onTtsFinished()
             return
@@ -139,6 +156,12 @@ class PoliceVoiceEngine(
         listener.onViseme(MouthViseme.REST)
     }
 
+    private fun isPassiveOpeningGreeting(text: String): Boolean {
+        val normalized = text.replace(Regex("\\s+"), " ").trim()
+        return normalized == "هلا يا بطل، معك الشرطي. وش عندك؟" ||
+            normalized == "هلا يا بطل، معك الشرطي، وش عندك؟"
+    }
+
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
         if (text.isBlank()) return MouthViseme.REST
         val position = ((text.length - 1) * fraction.coerceIn(0f, 1f)).toInt()
@@ -149,7 +172,7 @@ class PoliceVoiceEngine(
             .firstOrNull { it.isLetter() }
             ?: return MouthViseme.REST
         return when (letter) {
-            'ب', 'م', 'ف' -> MouthViseme.CLOSED
+            'ب', 'م', 'ف' -> MouthVisime.CLOSED
             'و', 'ؤ' -> MouthViseme.ROUND
             'ي', 'ى', 'س', 'ش', 'ث', 'ز', 'ج' -> MouthViseme.WIDE
             'ا', 'أ', 'إ', 'آ', 'ع', 'ه', 'ح', 'خ', 'ق', 'ك' -> MouthViseme.OPEN
