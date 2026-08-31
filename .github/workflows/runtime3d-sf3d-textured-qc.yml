@@ -1,4 +1,4 @@
-name: Generate Stable Fast 3D Textured Donor - Authenticated Free
+name: Probe Stable Fast 3D Gradio State - Free CPU Only
 
 on:
   workflow_dispatch:
@@ -13,9 +13,9 @@ permissions:
   actions: read
 
 jobs:
-  sf3d-textured:
+  sf3d-probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 10
     env:
       HERO_REFERENCE_RUN_ID: '33391759260'
       HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
@@ -26,21 +26,19 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v4
 
-      - name: Enforce authenticated free-only gate
+      - name: Enforce free CPU-only diagnostic gate
         shell: bash
         run: |
           set -euo pipefail
           test -n "$HF_TOKEN" || { echo '::error::HF_TOKEN is required'; exit 1; }
           echo 'PROVIDER=stabilityai/stable-fast-3d'
+          echo 'GPU_INVOKED=false'
           echo 'FREE_ONLY=true'
           echo 'PAID_FALLBACK=false'
-          echo 'REMESH=false'
-          echo 'PRODUCTION_ACTIVATION=false'
           python3 - <<'PY'
           import json
           from pathlib import Path
-          data=json.loads(Path('runtime3d/manifest.json').read_text())
-          assert data.get('enabled') is False
+          assert json.loads(Path('runtime3d/manifest.json').read_text()).get('enabled') is False
           print('manifest.enabled=false')
           PY
 
@@ -53,66 +51,26 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
 
-      - name: Verify reference
-        shell: bash
-        run: |
-          set -euo pipefail
-          REF="$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE"
-          test -s "$REF"
-          BYTES=$(stat -c%s "$REF")
-          (( BYTES >= 10000 )) || exit 1
-          echo "heroReferenceBytes=$BYTES"
-
-      - name: Install free client and mask dependencies
+      - name: Install probe dependencies
         run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' 'Pillow>=10,<12' 'numpy>=1.26,<3'
 
-      - name: Generate exact Stable Fast 3D textured donor
+      - name: Probe current Gradio state contract without GPU
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/sf3d-textured"
-          python3 runtime3d/sf3d_textured_reference.py \
+          python3 runtime3d/sf3d_probe.py \
             --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
-            --output "$RUNNER_TEMP/sf3d-textured/police_dog.sf3d.textured_reference.glb" \
-            --report "$RUNNER_TEMP/sf3d-textured/police_dog.sf3d.textured_reference.json"
+            --work-dir "$RUNNER_TEMP/sf3d-probe"
 
-      - name: Validate material and geometry payload
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, sys
-          from pathlib import Path
-          sys.path.insert(0,'runtime3d')
-          from inspect_glb import read_glb_json
-          root=Path(os.environ['RUNNER_TEMP'])/'sf3d-textured'
-          p=root/'police_dog.sf3d.textured_reference.glb'
-          rp=root/'police_dog.sf3d.textured_reference.json'
-          r=json.loads(rp.read_text()); d=read_glb_json(p)
-          meshes=d.get('meshes') or []; mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []; acc=d.get('accessors') or []
-          verts=0
-          for mesh in meshes:
-              for prim in mesh.get('primitives') or []:
-                  pos=(prim.get('attributes') or {}).get('POSITION')
-                  if isinstance(pos,int) and 0 <= pos < len(acc): verts += int(acc[pos].get('count') or 0)
-          print(json.dumps({'bytes':p.stat().st_size,'vertices':verts,'meshes':len(meshes),'materials':len(mats),'textures':len(tex),'images':len(imgs),'channels':r.get('pbrChannels')},indent=2))
-          if verts < 1000 or not mats or not tex or not imgs: raise SystemExit('SF3D structural/material floor failed')
-          if 'baseColorTexture' not in (r.get('pbrChannels') or []): raise SystemExit('BaseColor missing')
-          if r.get('freeOnly') is not True or r.get('paidFallbackAllowed') is not False: raise SystemExit('Free-only policy failed')
-          if r.get('productionReady') is not False: raise SystemExit('Candidate self-declared production')
-          print('SF3D_TEXTURED_STRUCTURAL_GATE=PASS')
-          print('PRODUCTION_GATE=CLOSED')
-          PY
-
-      - name: Upload Stable Fast 3D donor
+      - name: Upload probe report
         uses: actions/upload-artifact@v4
         with:
-          name: Runtime3D-sf3d-textured-reference-candidate
-          path: ${{ runner.temp }}/sf3d-textured/*
+          name: Runtime3D-sf3d-gradio-probe
+          path: ${{ runner.temp }}/sf3d-probe/sf3d-gradio-probe.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
       - name: Keep production manifest closed
         run: |
-          echo 'VISUAL_MULTI_ANGLE_QC_REQUIRED=true'
+          echo 'GPU_INVOKED=false'
           echo 'PRODUCTION_GATE=CLOSED'
