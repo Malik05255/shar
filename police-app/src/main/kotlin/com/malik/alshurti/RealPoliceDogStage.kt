@@ -17,8 +17,9 @@ import io.github.sceneview.rememberModelLoader
 /**
  * Production visual stage.
  *
- * Preferred path is now a persistent multi-actor runtime office delivered as a verified 3D content
- * pack. MP4 is explicitly migration-only and is never considered the infinite-life implementation.
+ * Preferred path is a persistent multi-actor runtime office delivered as a verified 3D content
+ * pack. A finite MP4 deck is no longer accepted as a fallback because any finite clip set will
+ * eventually repeat and break the illusion of a living office.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -59,13 +60,12 @@ fun RealPoliceDogStage(
         return
     }
 
-    // Development-only bridge. This path remains until the cinematic GLB pack is populated; it is
-    // intentionally NOT presented as the root solution for persistent office life.
-    AiCinematicDogStage(
-        mood = mood,
+    // Fail closed on motion quality. Keep one photoreal master frame until the verified runtime 3D
+    // world is available instead of replaying migration MP4s. This guarantees there is no visual
+    // loop or repeated cinematic scene in the fallback path.
+    PhotorealPoliceDogFallback(
         phase = phase,
-        viseme = viseme,
-        officeScene = officeScene,
+        attention = officeScene.attention,
         modifier = modifier
     )
 }
