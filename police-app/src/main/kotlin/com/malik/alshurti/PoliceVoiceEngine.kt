@@ -196,8 +196,20 @@ class PoliceVoiceEngine(
         }
     )
 
+    fun localModelsInstalled(): Boolean =
+        offlineListener.isModelInstalled() && localVoice.isModelInstalled()
+
+    fun recommendedStartupMode(): VoiceMode = VoiceModePolicy.startupMode(
+        localAsrInstalled = offlineListener.isModelInstalled(),
+        localTtsInstalled = localVoice.isModelInstalled()
+    )
+
     fun setMode(newMode: VoiceMode) {
-        mode = newMode
+        // The cinematic UI intentionally has no mode selector. Legacy callers may still request
+        // ONLINE on every launch; resolve that request to strict OFFLINE when both local packs are
+        // already installed so no cloud voice/listener is even prepared in steady state.
+        val resolvedMode = if (newMode == VoiceMode.ONLINE) recommendedStartupMode() else newMode
+        mode = resolvedMode
         stopListening()
         interruptSpeech()
         observerHasSpoken = false
@@ -205,8 +217,9 @@ class PoliceVoiceEngine(
         fallbackAttempted = false
         readyReported = false
 
-        when (newMode) {
+        when (resolvedMode) {
             VoiceMode.OFFLINE -> {
+                cloudTtsReady = false
                 offlineListener.prepare(allowDownload = false)
                 localVoice.prepare(allowDownload = false)
             }
