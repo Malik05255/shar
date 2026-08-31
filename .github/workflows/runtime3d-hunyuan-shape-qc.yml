@@ -1,0 +1,155 @@
+name: Render Hunyuan 2.1 Shape Candidate QC - Free Blender
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-hunyuan-shape-qc.yml'
+      - 'runtime3d/blender_render_shape_qc.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  render-shape-qc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_RUN_ID: '33418983877'
+      SOURCE_ARTIFACT: Runtime3D-free-provider-pool-candidate
+      SOURCE_GLB: police_dog.hf-hunyuan3d-2.1-zero.candidate.glb
+      BLENDER_VERSION: '4.0.2'
+      BLENDER_ARCHIVE: blender-4.0.2-linux-x64.tar.xz
+      BLENDER_ROOT: runtime3d/.toolcache/blender-4.0.2
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce candidate-only gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          print('FREE_ONLY=true')
+          print('SOURCE=official-hf-hunyuan3d-2.1-zero')
+          print('VISUAL_QC_ONLY=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Download exact Hunyuan candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: ${{ runner.temp }}/hunyuan-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify exact Hunyuan shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/hunyuan-source/$SOURCE_GLB"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json
+          p=Path(os.environ['RUNNER_TEMP'])/'hunyuan-source'/os.environ['SOURCE_GLB']
+          d=read_glb_json(p)
+          accessors=d.get('accessors') or []
+          vertices=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({'bytes':p.stat().st_size,'meshes':len(d.get('meshes') or []),'vertices':vertices,
+                            'materials':len(d.get('materials') or []),'textures':len(d.get('textures') or []),
+                            'images':len(d.get('images') or [])},indent=2))
+          if p.stat().st_size < 100000 or vertices < 100000:
+              raise SystemExit('Hunyuan shape structural floor failed')
+          PY
+
+      - name: Restore verified Blender portable cache
+        uses: actions/cache@v4
+        with:
+          path: runtime3d/.toolcache/blender-4.0.2
+          key: blender-linux-x64-4.0.2-official-v1
+
+      - name: Prepare official portable Blender runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/$BLENDER_ROOT"
+          URL_BASE="https://download.blender.org/release/Blender4.0"
+          if [[ ! -x "$ROOT/blender" ]]; then
+            rm -rf "$ROOT"
+            mkdir -p "$(dirname "$ROOT")"
+            curl --fail --location --retry 3 --retry-delay 2 "$URL_BASE/$BLENDER_ARCHIVE" -o "$RUNNER_TEMP/$BLENDER_ARCHIVE"
+            curl --fail --location --retry 3 --retry-delay 2 "$URL_BASE/blender-4.0.2.sha256" -o "$RUNNER_TEMP/blender-4.0.2.sha256"
+            grep -E "[ *]${BLENDER_ARCHIVE}$" "$RUNNER_TEMP/blender-4.0.2.sha256" > "$RUNNER_TEMP/blender-selected.sha256"
+            test -s "$RUNNER_TEMP/blender-selected.sha256"
+            ( cd "$RUNNER_TEMP" && sha256sum -c blender-selected.sha256 )
+            tar -xJf "$RUNNER_TEMP/$BLENDER_ARCHIVE" -C "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/blender-4.0.2-linux-x64" "$ROOT"
+          fi
+          test -x "$ROOT/blender"
+          echo "$ROOT" >> "$GITHUB_PATH"
+          "$ROOT/blender" --version | head -n2
+
+      - name: Ensure minimal headless EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libEGL.so.1'; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
+          fi
+          ldconfig -p | grep 'libEGL.so.1'
+
+      - name: Render four-axis neutral geometry QC
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hunyuan-qc/previews"
+          blender --background \
+            --python runtime3d/blender_render_shape_qc.py -- \
+            --input "$RUNNER_TEMP/hunyuan-source/$SOURCE_GLB" \
+            --output-dir "$RUNNER_TEMP/hunyuan-qc/previews" \
+            --report "$RUNNER_TEMP/hunyuan-qc/hunyuan_shape_qc.json"
+          test -s "$RUNNER_TEMP/hunyuan-qc/hunyuan_shape_qc.json"
+          COUNT=$(find "$RUNNER_TEMP/hunyuan-qc/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
+          [[ "$COUNT" -eq 4 ]] || { echo "::error::Expected four Hunyuan shape renders, got $COUNT"; exit 1; }
+
+      - name: Copy exact source GLB for review artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/hunyuan-source/$SOURCE_GLB" "$RUNNER_TEMP/hunyuan-qc/$SOURCE_GLB"
+
+      - name: Upload Hunyuan shape QC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-hunyuan21-shape-qc
+          path: ${{ runner.temp }}/hunyuan-qc/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production gate closed
+        run: |
+          echo 'MANUAL_VISUAL_IDENTITY_QC_REQUIRED=true'
+          echo 'PBR_TEXTURE_STAGE_NOT_STARTED=true'
+          echo 'RIG_DEFORMATION_QC_NOT_STARTED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
