@@ -44,7 +44,7 @@ class OfficeSoundscape(context: Context) {
                 }
                 if (cue == OfficeCue.PAPER_RUSTLE && startupCuePending) {
                     startupCuePending = false
-                    playLoadedLocked(cue, sampleId, now + OfficeFoleyPolicy.cooldownMs(cue))
+                    playLoadedLocked(cue, sampleId, now)
                 }
             }
         }
