@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/runtime3d-office-props.yml'
       - 'runtime3d/blender_author_office_props.py'
+      - 'runtime3d/blender_author_office_props_entry.py'
       - 'runtime3d/inspect_glb.py'
 
 permissions:
@@ -52,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/office-props"
-          blender --background --python runtime3d/blender_author_office_props.py -- \
+          blender --background --python runtime3d/blender_author_office_props_entry.py -- \
             --output-dir "$RUNNER_TEMP/office-props" \
             --report "$RUNNER_TEMP/office-props.qc.json"
           test -s "$RUNNER_TEMP/office-props.qc.json"
