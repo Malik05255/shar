@@ -180,19 +180,103 @@ jobs:
           echo "RELEASE_SHA=${RELEASE_APK}.sha256" >> "$GITHUB_ENV"
           du -h "$RELEASE_APK"
 
-      - name: Publish GitHub Release
+      - name: Generate delta from previous signed release
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
+        id: delta
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${VERSION_NAME}"
-          gh release create "$TAG" "$RELEASE_APK" "$RELEASE_SHA" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "الشرطي ${VERSION_NAME}" --generate-notes --latest
+          set -euo pipefail
+          PREV_TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
+            --json tagName,isDraft,isPrerelease \
+            --jq '[.[] | select((.isDraft == false) and (.isPrerelease == false))][0].tagName // ""')
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No previous signed release; full APK will be the bootstrap update."
+            exit 0
+          fi
 
-      - name: Upload signed APK artifact
+          PREV_VERSION="${PREV_TAG#v}"
+          PREV_DIR="$RUNNER_TEMP/alshorti-prev"
+          mkdir -p "$PREV_DIR"
+          if ! gh release download "$PREV_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "AlShorti-${PREV_VERSION}.apk" --dir "$PREV_DIR"; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Previous release has no compatible APK asset; skipping delta."
+            exit 0
+          fi
+
+          OLD_APK="$PREV_DIR/AlShorti-${PREV_VERSION}.apk"
+          PATCH="release-out/AlShorti-${PREV_VERSION}-to-${VERSION_NAME}.bsdiff"
+          MANIFEST="release-out/AlShorti-${PREV_VERSION}-to-${VERSION_NAME}.delta.json"
+          test -s "$OLD_APK"
+          python3 -m pip install --quiet --disable-pip-version-check bsdiff4==1.2.6
+          OLD_APK="$OLD_APK" NEW_APK="$RELEASE_APK" PATCH="$PATCH" MANIFEST="$MANIFEST" \
+          FROM_VERSION="$PREV_VERSION" TO_VERSION="$VERSION_NAME" python3 - <<'PY'
+          import hashlib, json, os
+          import bsdiff4
+
+          old = os.environ['OLD_APK']
+          new = os.environ['NEW_APK']
+          patch = os.environ['PATCH']
+          manifest = os.environ['MANIFEST']
+          bsdiff4.file_diff(old, new, patch)
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          data = {
+              'format': 'BSDIFF40',
+              'fromVersion': os.environ['FROM_VERSION'],
+              'toVersion': os.environ['TO_VERSION'],
+              'sourceSha256': sha(old),
+              'targetSha256': sha(new),
+              'patchSha256': sha(patch),
+              'patchSizeBytes': os.path.getsize(patch),
+              'targetSizeBytes': os.path.getsize(new),
+          }
+          with open(manifest, 'w', encoding='utf-8') as f:
+              json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
+          PY
+
+          PATCH_SIZE=$(stat -c%s "$PATCH")
+          FULL_SIZE=$(stat -c%s "$RELEASE_APK")
+          if (( PATCH_SIZE >= FULL_SIZE )); then
+            rm -f "$PATCH" "$MANIFEST"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Delta is not smaller than the full APK; skipping it."
+            exit 0
+          fi
+
+          echo "DELTA_PATCH=$PATCH" >> "$GITHUB_ENV"
+          echo "DELTA_MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "Delta: $PREV_VERSION -> $VERSION_NAME"
+          du -h "$PATCH" "$RELEASE_APK"
+
+      - name: Publish GitHub Release
+        if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION_NAME}"
+          assets=("$RELEASE_APK" "$RELEASE_SHA")
+          if [[ -n "${DELTA_PATCH:-}" && -s "${DELTA_PATCH:-}" && -n "${DELTA_MANIFEST:-}" && -s "${DELTA_MANIFEST:-}" ]]; then
+            assets+=("$DELTA_PATCH" "$DELTA_MANIFEST")
+          fi
+          gh release create "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "الشرطي ${VERSION_NAME}" --generate-notes --latest
+
+      - name: Upload signed release artifacts
         if: steps.prerequisites.outputs.ready == 'true' && steps.release_check.outputs.publish == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: AlShorti-${{ env.VERSION_NAME }}-signed-release
-          path: |
-            ${{ env.RELEASE_APK }}
-            ${{ env.RELEASE_SHA }}
+          path: release-out/*
