@@ -30,16 +30,15 @@ fun buildSetting(name: String, defaultValue: String = ""): String =
 fun quotedBuildConfig(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-val elevenLabsApiKey = buildSetting("ELEVENLABS_API_KEY")
-val elevenLabsVoiceId = buildSetting(
-    "ALSHORTI_ELEVENLABS_VOICE_ID",
-    // Jeddawi: native Saudi male / Jeddah accent. This is intentionally not a
-    // generic multilingual English voice.
-    "yXEnnEln9armDCyhkXcA"
+val azureSpeechKey = buildSetting("AZURE_SPEECH_KEY")
+val azureSpeechRegion = buildSetting("AZURE_SPEECH_REGION")
+val azurePoliceVoice = buildSetting(
+    "ALSHORTI_AZURE_POLICE_VOICE",
+    "ar-SA-HamedNeural"
 )
-val elevenLabsStaffVoiceId = buildSetting(
-    "ALSHORTI_ELEVENLABS_STAFF_VOICE_ID",
-    elevenLabsVoiceId
+val azureStaffVoice = buildSetting(
+    "ALSHORTI_AZURE_STAFF_VOICE",
+    "ar-SA-ZariyahNeural"
 )
 
 android {
@@ -47,8 +46,6 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        // Permanent Android identity. Never change this after distribution: it is
-        // what lets Al-Shorti coexist with VibeApp and receive in-place updates.
         applicationId = "com.malik.alshurti"
         minSdk = 29
         targetSdk = 36
@@ -57,11 +54,12 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Never commit the API key. Local builds can use -PELEVENLABS_API_KEY=...
-        // or the ELEVENLABS_API_KEY environment variable.
-        buildConfigField("String", "ELEVENLABS_API_KEY", quotedBuildConfig(elevenLabsApiKey))
-        buildConfigField("String", "ELEVENLABS_VOICE_ID", quotedBuildConfig(elevenLabsVoiceId))
-        buildConfigField("String", "ELEVENLABS_STAFF_VOICE_ID", quotedBuildConfig(elevenLabsStaffVoiceId))
+        // Test builds can inject Azure Speech directly. Production should proxy this secret
+        // server-side so the subscription key is never distributed inside the APK.
+        buildConfigField("String", "AZURE_SPEECH_KEY", quotedBuildConfig(azureSpeechKey))
+        buildConfigField("String", "AZURE_SPEECH_REGION", quotedBuildConfig(azureSpeechRegion))
+        buildConfigField("String", "AZURE_POLICE_VOICE", quotedBuildConfig(azurePoliceVoice))
+        buildConfigField("String", "AZURE_STAFF_VOICE", quotedBuildConfig(azureStaffVoice))
     }
 
     signingConfigs {
@@ -77,9 +75,6 @@ android {
 
     buildTypes {
         debug {
-            // CI/private test APKs use the permanent app certificate whenever the signing secrets
-            // are available. That lets a test APK receive later signed updates in-place instead of
-            // being stranded on a one-off Android debug certificate.
             signingConfigs.findByName("release")?.let { signingConfig = it }
         }
         release {
@@ -124,12 +119,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // Legacy local voice code remains buildable for development/reference only.
-    // It is no longer on the production speech path because the product contract
-    // requires a native Saudi human-sounding voice and forbids robotic fallback.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
-
-    // Filament-based real GLB character renderer. The old Canvas dog is only a fallback.
     implementation("io.github.sceneview:sceneview:4.33.0")
 
     testImplementation(libs.junit)
