@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a real runtime3d hero candidate through Tripo v3.
+"""Generate a real runtime3d hero candidate through the current Tripo OpenAPI.
 
 This intentionally writes a candidate artifact, not production police_dog.glb.
 Production activation remains gated by runtime3d/inspect_glb.py and the physical-device
@@ -7,11 +7,6 @@ acceptance contract in CONTENT_PACK_SPEC.md.
 
 Required environment:
   TRIPO_API_KEY
-
-Example:
-  python3 runtime3d/generate_tripo_candidate.py \
-    --image-url https://example.com/master.png \
-    --output runtime3d-candidate/police_dog.rigged.glb
 """
 
 from __future__ import annotations
@@ -24,9 +19,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
-BASE = "https://openapi.tripo3d.com/v3"
-TERMINAL_FAILURES = {"failed", "cancelled"}
+BASE = "https://api.tripo3d.ai/v2/openapi"
+TERMINAL_FAILURES = {"failed", "cancelled", "banned", "expired", "unknown"}
 
 
 def request_json(method: str, path: str, api_key: str, payload: dict | None = None) -> dict:
@@ -38,7 +34,7 @@ def request_json(method: str, path: str, api_key: str, payload: dict | None = No
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "al-shorti-runtime3d/1.0",
+            "User-Agent": "al-shorti-runtime3d/1.1",
         },
     )
     try:
@@ -46,7 +42,9 @@ def request_json(method: str, path: str, api_key: str, payload: dict | None = No
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Tripo HTTP {exc.code} for {path}: {detail[:1000]}") from exc
+        trace = exc.headers.get("X-Tripo-Trace-ID", "")
+        suffix = f" trace={trace}" if trace else ""
+        raise RuntimeError(f"Tripo HTTP {exc.code} for {path}:{suffix} {detail[:1000]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Tripo network error for {path}: {exc}") from exc
 
@@ -56,25 +54,26 @@ def request_json(method: str, path: str, api_key: str, payload: dict | None = No
     return parsed.get("data") or {}
 
 
-def create_task(path: str, api_key: str, payload: dict) -> str:
-    data = request_json("POST", path, api_key, payload)
+def create_task(api_key: str, payload: dict) -> str:
+    data = request_json("POST", "/task", api_key, payload)
     task_id = data.get("task_id")
     if not task_id:
-        raise RuntimeError(f"Tripo did not return task_id for {path}: {data}")
-    print(f"created {path}: {task_id}", flush=True)
+        raise RuntimeError(f"Tripo did not return task_id for {payload.get('type')}: {data}")
+    print(f"created {payload.get('type')}: {task_id}", flush=True)
     return str(task_id)
 
 
 def poll(task_id: str, api_key: str, timeout_seconds: int = 1200) -> dict:
     deadline = time.monotonic() + timeout_seconds
-    last_progress = None
+    last_state = None
     while time.monotonic() < deadline:
-        data = request_json("GET", f"/tasks/{task_id}", api_key)
+        data = request_json("GET", f"/task/{task_id}", api_key)
         status = str(data.get("status", "")).lower()
         progress = data.get("progress")
-        if progress != last_progress:
+        state = (status, progress)
+        if state != last_state:
             print(f"{task_id}: status={status or '?'} progress={progress}", flush=True)
-            last_progress = progress
+            last_state = state
         if status == "success":
             return data
         if status in TERMINAL_FAILURES:
@@ -86,9 +85,16 @@ def poll(task_id: str, api_key: str, timeout_seconds: int = 1200) -> dict:
     raise TimeoutError(f"Tripo task {task_id} exceeded {timeout_seconds}s")
 
 
+def image_type(url: str) -> str:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "jpg"
+    return "png"
+
+
 def download(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-runtime3d/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "al-shorti-runtime3d/1.1"})
     try:
         with urllib.request.urlopen(req, timeout=120) as response, destination.open("wb") as handle:
             while True:
@@ -104,6 +110,11 @@ def download(url: str, destination: Path) -> None:
     print(f"downloaded {destination} ({destination.stat().st_size} bytes)", flush=True)
 
 
+def task_credit(task: dict) -> object:
+    output = task.get("output") or {}
+    return output.get("consumed_credit")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image-url", required=True)
@@ -117,25 +128,34 @@ def main() -> None:
     if not args.image_url.startswith("https://"):
         raise SystemExit("--image-url must be a public HTTPS image")
 
-    # Highest-fidelity H-series path. No low-poly mode is used for the hero.
+    # Current official image_to_model task. Preserve high visual fidelity and PBR.
     generation_id = create_task(
-        "/generation/image-to-model",
         api_key,
         {
-            "input": args.image_url,
-            "model": "v3.1-20260211",
+            "type": "image_to_model",
+            "model_version": "v3.1-20260211",
+            "file": {
+                "type": image_type(args.image_url),
+                "url": args.image_url,
+            },
             "texture": True,
             "pbr": True,
             "texture_quality": "detailed",
             "geometry_quality": "detailed",
             "quad": True,
-            "orientation": "align_image",
         },
     )
     generated = poll(generation_id, api_key)
 
-    # Free compatibility gate before consuming rigging credits.
-    check_id = create_task("/animations/rig-check", api_key, {"input": generation_id})
+    # Compatibility gate before rigging. This tells us whether the result is riggable
+    # and which anatomy class (quadruped/biped/etc.) the rig service recognized.
+    check_id = create_task(
+        api_key,
+        {
+            "type": "animate_prerigcheck",
+            "original_model_task_id": generation_id,
+        },
+    )
     checked = poll(check_id, api_key)
     check_output = checked.get("output") or {}
     if not check_output.get("riggable"):
@@ -143,28 +163,29 @@ def main() -> None:
 
     rig_type = str(check_output.get("rig_type") or "").strip()
     if not rig_type:
-        raise RuntimeError(f"Rig check returned no rig_type: {check_output}")
-    rig_model = "v1.0-20240301" if rig_type == "biped" else "v2.5-20260210"
-    print(f"rig-check accepted hero as {rig_type}; rig model={rig_model}", flush=True)
+        raise RuntimeError(f"Pre-rig check returned no rig_type: {check_output}")
+    topology = str(check_output.get("topology") or "").strip()
+    print(f"pre-rig accepted hero as {rig_type}; topology={topology or '?'}", flush=True)
 
-    rig_id = create_task(
-        "/animations/rig",
-        api_key,
-        {
-            "input": generation_id,
-            "model": rig_model,
-            "rig_type": rig_type,
-            "spec": "tripo",
-            "out_format": "glb",
-        },
-    )
+    rig_payload = {
+        "type": "animate_rig",
+        "original_model_task_id": generation_id,
+        "model_version": "v2.5-20260210",
+        "rig_type": rig_type,
+        "spec": "tripo",
+        "out_format": "glb",
+    }
+    if topology in {"bip", "quad"}:
+        rig_payload["topology"] = topology
+
+    rig_id = create_task(api_key, rig_payload)
     rigged = poll(rig_id, api_key)
     output = rigged.get("output") or {}
-    model_url = output.get("model_url")
+    model_url = output.get("model") or output.get("pbr_model") or output.get("base_model")
     if not model_url:
-        raise RuntimeError(f"Rig task returned no model_url: {rigged}")
+        raise RuntimeError(f"Rig task returned no model URL: {rigged}")
 
-    # Tripo task URLs are short-lived, so download immediately.
+    # Task asset URLs may be short-lived, so download immediately.
     download(str(model_url), args.output)
 
     metadata_path = args.metadata or args.output.with_suffix(".json")
@@ -172,11 +193,13 @@ def main() -> None:
     metadata = {
         "sourceImage": args.image_url,
         "generationTask": generation_id,
-        "rigCheckTask": check_id,
+        "preRigCheckTask": check_id,
         "rigTask": rig_id,
         "rigType": rig_type,
-        "generationCredits": generated.get("credits_consumed"),
-        "rigCredits": rigged.get("credits_consumed"),
+        "topology": topology or None,
+        "generationCredits": task_credit(generated),
+        "preRigCheckCredits": task_credit(checked),
+        "rigCredits": task_credit(rigged),
         "productionReady": False,
         "reason": (
             "Candidate must still receive the exact authored body/facial animation set and pass "
