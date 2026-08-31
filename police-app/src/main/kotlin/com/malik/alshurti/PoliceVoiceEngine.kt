@@ -172,7 +172,7 @@ class PoliceVoiceEngine(
             .firstOrNull { it.isLetter() }
             ?: return MouthViseme.REST
         return when (letter) {
-            'ب', 'م', 'ف' -> MouthVisime.CLOSED
+            'ب', 'م', 'ف' -> MouthViseme.CLOSED
             'و', 'ؤ' -> MouthViseme.ROUND
             'ي', 'ى', 'س', 'ش', 'ث', 'ز', 'ج' -> MouthViseme.WIDE
             'ا', 'أ', 'إ', 'آ', 'ع', 'ه', 'ح', 'خ', 'ق', 'ك' -> MouthViseme.OPEN
