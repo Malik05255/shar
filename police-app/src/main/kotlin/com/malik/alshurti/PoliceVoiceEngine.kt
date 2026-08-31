@@ -76,7 +76,7 @@ class PoliceVoiceEngine(
             override fun onSpeechStarted(durationMs: Long) {
                 ttsRetryCount = 0
                 lastViseme = MouthViseme.OPEN
-                listener.onViseme(lastViseme)
+                dispatchViseme(lastViseme)
                 listener.onTtsStarted()
             }
 
@@ -84,20 +84,20 @@ class PoliceVoiceEngine(
                 val viseme = visemeAtFraction(spokenText, fraction)
                 if (viseme != lastViseme) {
                     lastViseme = viseme
-                    listener.onViseme(viseme)
+                    dispatchViseme(viseme)
                 }
             }
 
             override fun onSpeechFinished() {
                 ttsRetryCount = 0
                 lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
+                dispatchViseme(MouthViseme.REST)
                 listener.onTtsFinished()
             }
 
             override fun onError(message: String) {
                 lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
+                dispatchViseme(MouthViseme.REST)
                 handleVoiceError(message)
             }
         }
@@ -132,7 +132,7 @@ class PoliceVoiceEngine(
         mainHandler.removeCallbacksAndMessages(null)
         saudiVoice.interrupt()
         lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        dispatchViseme(MouthViseme.REST)
     }
 
     fun speak(text: String) {
@@ -161,7 +161,17 @@ class PoliceVoiceEngine(
         silentListener.release()
         saudiVoice.release()
         lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        dispatchViseme(MouthViseme.REST)
+    }
+
+    /**
+     * Keep the legacy UI/fallback pose and the persistent Runtime3D facial channel on exactly the
+     * same TTS cursor event. Runtime3DOfficeStage samples this StateFlow every rendered frame, so
+     * viseme changes never recreate the scene or republish the whole office choreography.
+     */
+    private fun dispatchViseme(viseme: MouthViseme) {
+        RuntimeOfficePlanBus.publishViseme(viseme)
+        listener.onViseme(viseme)
     }
 
     private fun handleVoiceError(message: String) {
