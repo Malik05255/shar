@@ -1,0 +1,86 @@
+name: Generate Runtime 3D Hero Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      reference_url:
+        description: Approved cinematic police-dog master reference (public HTTPS PNG/JPG)
+        required: true
+        default: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+
+permissions:
+  contents: read
+
+jobs:
+  generate-hero:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TRIPO_API_KEY: ${{ secrets.TRIPO_API_KEY }}
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Require Tripo API key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${TRIPO_API_KEY:-}" ]]; then
+            echo '::error::Repository secret TRIPO_API_KEY is missing. Add a Tripo v3 API key before running this paid generation workflow.'
+            exit 1
+          fi
+
+      - name: Generate high-fidelity rigged hero GLB candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runtime3d-candidate"
+          python3 runtime3d/generate_tripo_candidate.py \
+            --image-url '${{ inputs.reference_url }}' \
+            --output "$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.glb" \
+            --metadata "$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.json"
+
+      - name: Verify candidate is a real rigged GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CANDIDATE="$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.glb"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from runtime3d.inspect_glb import read_glb_json
+
+          path = Path(os.environ['CANDIDATE'])
+          doc = read_glb_json(path)
+          meshes = doc.get('meshes') or []
+          materials = doc.get('materials') or []
+          skins = doc.get('skins') or []
+          joints = max((len(skin.get('joints') or []) for skin in skins), default=0)
+          if not meshes:
+              raise SystemExit('candidate contains no meshes')
+          if not materials:
+              raise SystemExit('candidate contains no materials')
+          if not skins or joints < 12:
+              raise SystemExit(f'candidate is not meaningfully rigged: skins={len(skins)} maxJoints={joints}')
+          print(f'candidate structural gate passed: meshes={len(meshes)} materials={len(materials)} skins={len(skins)} maxJoints={joints}')
+          PY
+
+      - name: Demonstrate production gate remains closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/runtime3d-candidate/police_dog.rigged.glb" "$RUNNER_TEMP/runtime3d-candidate/police_dog.glb"
+          if python3 runtime3d/inspect_glb.py "$RUNNER_TEMP/runtime3d-candidate/police_dog.glb"; then
+            echo '::warning::Candidate unexpectedly already satisfies the complete production animation contract. Review manually before activation.'
+          else
+            echo 'Production gate correctly remains closed until exact body/facial clips are authored.'
+          fi
+
+      - name: Upload candidate for Blender/Maya animation finishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-rigged-candidate
+          path: ${{ runner.temp }}/runtime3d-candidate/*
+          if-no-files-found: error
+          retention-days: 14
