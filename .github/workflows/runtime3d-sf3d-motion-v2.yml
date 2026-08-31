@@ -1,0 +1,195 @@
+name: Rig Photoreal SF3D Shape to Motion V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-sf3d-motion-v2.yml'
+      - 'runtime3d/blender_rig_sf3d_donor_v2.py'
+      - 'runtime3d/blender_transfer_sf3d_candidate.py'
+      - 'runtime3d/extract_glb_pbr_images.py'
+      - 'runtime3d/inspect_glb.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rig-photoreal-shape:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MOTION_RUN_ID: '33427570106'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-v2-candidate
+      MOTION_GLB: police_dog.motion_v2_candidate.glb
+      DONOR_RUN_ID: '33410396487'
+      DONOR_ARTIFACT: Runtime3D-sf3d-textured-reference-candidate
+      DONOR_GLB: police_dog.sf3d.textured_reference.glb
+      OUTPUT_GLB: police_dog.sf3d_motion_v2_shape_candidate.glb
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enforce free candidate-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          assert manifest.get('actors') == []
+          print('FREE_ONLY=true')
+          print('PAID_FALLBACK=false')
+          print('PRESERVE_SF3D_NATIVE_UV_PBR=true')
+          print('MOTION_V2_ARMATURE=true')
+          print('FINAL_SPARSE_TRANSPLANT_REQUIRED=true')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Download exact Motion V2 source
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Download exact photoreal SF3D donor
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DONOR_ARTIFACT }}
+          path: ${{ runner.temp }}/donor
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.DONOR_RUN_ID }}
+
+      - name: Verify immutable source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          motion=Path(os.environ['RUNNER_TEMP'])/'motion'/os.environ['MOTION_GLB']
+          donor=Path(os.environ['RUNNER_TEMP'])/'donor'/os.environ['DONOR_GLB']
+          md=read_glb_json(motion); dd=read_glb_json(donor)
+          names={a.get('name') for a in (md.get('animations') or []) if a.get('name')}
+          skins=md.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins), default=0)
+          print(json.dumps({'motionAnimations':len(names),'missing':sorted(set(DOG_CLIPS)-names),
+                            'skins':len(skins),'joints':joints,'donorMeshes':len(dd.get('meshes') or []),
+                            'donorMaterials':len(dd.get('materials') or []),'donorTextures':len(dd.get('textures') or []),
+                            'donorImages':len(dd.get('images') or [])},indent=2))
+          if names != set(DOG_CLIPS) or len(skins)!=1 or joints<32:
+              raise SystemExit('Motion V2 source contract failed')
+          if not dd.get('meshes') or not dd.get('materials') or len(dd.get('textures') or [])<2 or len(dd.get('images') or [])<2:
+              raise SystemExit('SF3D donor contract failed')
+          PY
+
+      - name: Extract durable native SF3D PBR images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/source-images"
+          python3 runtime3d/extract_glb_pbr_images.py \
+            --input "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output-dir "$RUNNER_TEMP/source-images" \
+            --metadata "$RUNNER_TEMP/source-images/extraction.json"
+          BASE=$(find "$RUNNER_TEMP/source-images" -maxdepth 1 -type f -name 'basecolor.*' | head -n1)
+          NORMAL=$(find "$RUNNER_TEMP/source-images" -maxdepth 1 -type f -name 'normal.*' | head -n1)
+          test -n "$BASE" && test -s "$BASE"
+          test -n "$NORMAL" && test -s "$NORMAL"
+          echo "SF3D_BASECOLOR_PATH=$BASE" >> "$GITHUB_ENV"
+          echo "SF3D_NORMAL_PATH=$NORMAL" >> "$GITHUB_ENV"
+
+      - name: Install Blender numpy and headless GL
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends blender python3-numpy libegl1 libgl1-mesa-dri
+          blender --version | head -n 2
+
+      - name: Rig native SF3D shape with Motion V2 armature
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sf3d-motion-v2/previews"
+          blender --background \
+            --python runtime3d/blender_rig_sf3d_donor_v2.py -- \
+            --motion "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output "$RUNNER_TEMP/sf3d-motion-v2/$OUTPUT_GLB" \
+            --qc "$RUNNER_TEMP/sf3d-motion-v2/sf3d-motion-v2.qc.json" \
+            --preview-dir "$RUNNER_TEMP/sf3d-motion-v2/previews" \
+            --subdivision-levels 2
+          test -s "$RUNNER_TEMP/sf3d-motion-v2/$OUTPUT_GLB"
+          test "$(find "$RUNNER_TEMP/sf3d-motion-v2/previews" -type f -name '*.png' | wc -l)" -eq 4
+
+      - name: Validate shape PBR rig and facial weight presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          root=Path(os.environ['RUNNER_TEMP'])/'sf3d-motion-v2'
+          p=root/os.environ['OUTPUT_GLB']; d=read_glb_json(p)
+          names={a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+          skins=d.get('skins') or []; joints=max((len(s.get('joints') or []) for s in skins),default=0)
+          accessors=d.get('accessors') or []; vertices=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors): vertices += int(accessors[pos].get('count') or 0)
+          mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []
+          base=normal=False
+          for mat in mats:
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              base = base or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
+              normal = normal or isinstance((mat.get('normalTexture') or {}).get('index'),int)
+          qc=json.loads((root/'sf3d-motion-v2.qc.json').read_text())
+          unused=set((qc.get('skinTransfer') or {}).get('unusedWeightGroups') or [])
+          face_required={'jaw','muzzle_ctrl','eye.L','eye.R'}
+          print(json.dumps({'bytes':p.stat().st_size,'vertices':vertices,'animations':len(names),
+                            'missing':sorted(set(DOG_CLIPS)-names),'skins':len(skins),'joints':joints,
+                            'materials':len(mats),'textures':len(tex),'images':len(imgs),'baseColor':base,'normal':normal,
+                            'weightedRatio':qc.get('weightedRatio'),'unusedWeightGroups':sorted(unused),
+                            'previews':qc.get('previewFiles')},indent=2))
+          if set(DOG_CLIPS)-names or len(skins)!=1 or joints<32: raise SystemExit('Rig/action contract failed')
+          if vertices<100000 or float(qc.get('weightedRatio') or 0)<0.999: raise SystemExit('Density/weight gate failed')
+          if len(tex)<2 or len(imgs)<2 or not base or not normal: raise SystemExit('Native SF3D PBR missing')
+          if face_required & unused: raise SystemExit(f'Facial controls received no donor weights: {sorted(face_required & unused)}')
+          print('SF3D_MOTION_V2_SHAPE_GATE=PASS')
+          print('FINAL_SPARSE_TRANSPLANT_REQUIRED=true')
+          PY
+
+      - name: Upload alternate hero candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-sf3d-motion-v2-shape-candidate
+          path: ${{ runner.temp }}/sf3d-motion-v2/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production gate closed
+        if: success()
+        run: |
+          echo 'MANUAL_IDENTITY_QC_REQUIRED=true'
+          echo 'SPARSE_MOTION_TRANSPLANT_REQUIRED=true'
+          echo 'DEFORMATION_QC_REQUIRED=true'
+          echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'
