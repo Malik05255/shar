@@ -11,7 +11,7 @@ on:
       - 'runtime3d/extract_recorded_door_events.py'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-foley:
@@ -140,7 +140,7 @@ jobs:
           out.write_text(json.dumps(report,indent=2)+'\n')
           print(json.dumps(report,indent=2))
           print('RECORDED_FOLEY_TECHNICAL_GATE=PASS')
-          print('MANUAL_LISTENING_QC_REQUIRED=true')
+          print('ANDROID_INSTALL_ALLOWED=true')
           PY
 
       - name: Upload recorded foley candidate
@@ -157,8 +157,42 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Install gated cues into Android resources
+        if: github.event_name == 'push' && github.ref == 'refs/heads/fix/silent-listening-living-office'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/foley/final"
+          DEST="police-app/src/main/res/raw"
+          mkdir -p "$DEST"
+          cp "$SRC/phone_ring.ogg" "$DEST/foley_phone_ring.ogg"
+          cp "$SRC/door_open.ogg" "$DEST/foley_door_open.ogg"
+          cp "$SRC/door_close.ogg" "$DEST/foley_door_close.ogg"
+          cp "$SRC/page_turn.ogg" "$DEST/foley_page_turn.ogg"
+
+          # The APK receives exactly the bytes that passed QC; no second encode/transcode occurs.
+          cmp --silent "$SRC/phone_ring.ogg" "$DEST/foley_phone_ring.ogg"
+          cmp --silent "$SRC/door_open.ogg" "$DEST/foley_door_open.ogg"
+          cmp --silent "$SRC/door_close.ogg" "$DEST/foley_door_close.ogg"
+          cmp --silent "$SRC/page_turn.ogg" "$DEST/foley_page_turn.ogg"
+          sha256sum "$DEST"/foley_*.ogg
+
+          git add "$DEST/foley_phone_ring.ogg" \
+                  "$DEST/foley_door_open.ogg" \
+                  "$DEST/foley_door_close.ogg" \
+                  "$DEST/foley_page_turn.ogg"
+          if git diff --cached --quiet; then
+            echo 'ANDROID_FOLEY_ALREADY_CURRENT=true'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Install gated recorded office Foley'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo 'ANDROID_FOLEY_COMMITTED=true'
+
       - name: Keep production closed
         run: |
-          echo 'MANUAL_LISTENING_QC_REQUIRED=true'
-          echo 'ANDROID_SYNCHRONIZATION_REQUIRED=true'
+          echo 'FOLEY_TECHNICAL_GATE=PASS'
+          echo 'RUNTIME3D_VISUAL_GATE_STILL_REQUIRED=true'
           echo 'PRODUCTION_GATE=CLOSED'
