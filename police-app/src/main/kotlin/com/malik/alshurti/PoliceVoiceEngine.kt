@@ -17,7 +17,7 @@ import com.malik.alshurti.voice.SaudiHumanVoice
  *   2) local neural Supertonic when available/offline.
  *
  * A failed natural/neural backend must surface as an error or fall through to the other neural
- * backend. It must never silently degrade to a robotic platform TextToSpeech voice.
+ * backend. It must never silently degrade to a robotic platform speech voice.
  */
 class PoliceVoiceEngine(
     private val context: Context,
