@@ -33,13 +33,14 @@ jobs:
         run: |
           echo 'FREE_ONLY=true'
           echo 'PAID_FALLBACK=false'
-          echo 'TARGET_STYLE=photorealistic-real-dog'
+          echo 'TARGET_STYLE=photorealistic-real-k9-officer'
           echo 'CARTOON_ACCEPTED=false'
+          echo 'BIPED_RIG_REFERENCE=true'
 
       - name: Install public Gradio client
-        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2'
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' Pillow
 
-      - name: Prepare isolated full-body photorealistic hero reference
+      - name: Prepare photorealistic anatomy then K9 officer reference
         shell: bash
         run: |
           set -o pipefail
@@ -48,19 +49,23 @@ jobs:
             --reference-url "$REFERENCE_URL" \
             --output-dir "$RUNNER_TEMP/runtime3d-hero-reference"
 
-      - name: Verify reference artifact exists
+      - name: Verify final reference dimensions
         shell: bash
         run: |
           set -euo pipefail
           REF="$RUNNER_TEMP/runtime3d-hero-reference/police_dog.hero_reference.fullbody.png"
           test -s "$REF"
-          BYTES=$(stat -c%s "$REF")
-          if (( BYTES < 100000 )); then
-            echo "::error::Hero reference is suspiciously small: $BYTES"
-            exit 1
-          fi
-          echo "hero_reference_bytes=$BYTES"
-          echo 'Visual approval is still required before 3D production use.'
+          REF="$REF" python3 - <<'PY'
+          import os
+          from PIL import Image
+          p = os.environ['REF']
+          with Image.open(p) as im:
+              w, h = im.size
+              print(f'hero_reference={w}x{h} bytes={os.path.getsize(p)}')
+              if min(w, h) < 700:
+                  raise SystemExit(f'hero reference resolution too low: {w}x{h}')
+          print('Structural image gate passed. Visual quality approval remains mandatory.')
+          PY
 
       - name: Upload hero reference candidate
         if: always()
