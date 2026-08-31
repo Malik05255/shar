@@ -48,7 +48,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Test builds can inject Gemini directly. Production should proxy this secret server-side
-        // so the API key is never distributed inside a public APK.
+        // so the API key is never distributed inside a public APK. The production conversation
+        // path also has local Whisper + Supertonic fallbacks that require no API key after install.
         buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
         buildConfigField("String", "GEMINI_POLICE_VOICE", quotedBuildConfig(geminiPoliceVoice))
         buildConfigField("String", "GEMINI_STAFF_VOICE", quotedBuildConfig(geminiStaffVoice))
@@ -156,6 +157,7 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
 
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    implementation("com.github.k2-fsa:sherpa-onnx:v1.13.4")
     implementation("io.github.sceneview:sceneview:4.33.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
 
