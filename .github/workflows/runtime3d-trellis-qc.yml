@@ -117,7 +117,7 @@ jobs:
           if scene.world is None:
               scene.world = bpy.data.worlds.new('QC_WORLD')
           scene.world.color = (0.025, 0.025, 0.025)
-          scene.render.engine = 'BLENDER_EEVEE_NEXT'
+          scene.render.engine = 'BLENDER_EEVEE'
           scene.render.resolution_x = 768
           scene.render.resolution_y = 1024
           scene.render.resolution_percentage = 100
