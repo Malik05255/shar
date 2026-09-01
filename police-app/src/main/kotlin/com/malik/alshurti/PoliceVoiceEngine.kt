@@ -172,6 +172,10 @@ class PoliceVoiceEngine(
                 if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechCursor(fraction)
             }
 
+            override fun onSpeechFrame(fraction: Float, energy: Float) {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleEnergySpeechFrame(fraction, energy)
+            }
+
             override fun onSpeechFinished() {
                 if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechFinished()
             }
@@ -333,7 +337,11 @@ class PoliceVoiceEngine(
     }
 
     private fun handleLocalSpeechFrame(fraction: Float, energy: Float) {
-        localLipEnergy = energy.coerceIn(0f, 1f)
+        handleEnergySpeechFrame(fraction, energy)
+    }
+
+    private fun handleEnergySpeechFrame(fraction: Float, energy: Float) {
+        localLipEnergy = PcmSpeechEnergy.smooth(localLipEnergy, energy.coerceIn(0f, 1f))
         localLipVoiced = PcmSpeechEnergy.isVoiced(localLipEnergy, localLipVoiced)
         val viseme = if (localLipVoiced) visemeAtFraction(spokenText, fraction) else MouthViseme.REST
         if (viseme != lastViseme) {

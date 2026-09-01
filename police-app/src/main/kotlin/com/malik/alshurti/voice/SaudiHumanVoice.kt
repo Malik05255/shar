@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import com.malik.alshurti.BuildConfig
+import com.malik.alshurti.neural.PcmSpeechEnergy
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -46,6 +47,7 @@ class SaudiHumanVoice(
         fun onReady()
         fun onSpeechStarted(durationMs: Long)
         fun onSpeechCursor(fraction: Float)
+        fun onSpeechFrame(fraction: Float, energy: Float) = onSpeechCursor(fraction)
         fun onSpeechFinished()
         fun onError(message: String)
     }
@@ -426,36 +428,52 @@ class SaudiHumanVoice(
             track.setVolume(targetVolume())
             track.play()
 
+            val floatPcm = pcm16ToFloat(pcm)
+            val calibration = PcmSpeechEnergy.calibrate(floatPcm, clip.sampleRate)
             var offset = 0
+            var startedReported = false
             while (offset < pcm.size && ticket == generation.get() && !released && audioTrack === track) {
                 val length = minOf(STREAM_CHUNK_BYTES, pcm.size - offset)
                 val written = track.write(pcm, offset, length, AudioTrack.WRITE_BLOCKING)
                 if (written <= 0) throw IllegalStateException("تعذر إرسال الصوت للسماعة.")
                 offset += written
 
-                // OEM watchdog: after enough PCM has been queued, playbackHeadPosition must advance.
-                if (offset >= minOf(pcm.size, START_WATCHDOG_BYTES) && track.playbackHeadPosition == 0) {
-                    Thread.sleep(START_WATCHDOG_MS)
+                if (!startedReported && offset >= minOf(pcm.size, START_WATCHDOG_BYTES)) {
+                    if (track.playbackHeadPosition == 0) Thread.sleep(START_WATCHDOG_MS)
                     if (track.playbackHeadPosition == 0) {
                         throw IllegalStateException("مسار AudioTrack لم يبدأ على هذا الجهاز.")
                     }
+                    startedReported = true
+                    dispatch { callbacks.onSpeechStarted(durationMs) }
+                }
+
+                if (startedReported) {
+                    val played = track.playbackHeadPosition.toLong().coerceAtLeast(0L)
+                    val fraction = (played.toDouble() / totalFrames.toDouble()).toFloat().coerceIn(0f, 1f)
+                    val energy = PcmSpeechEnergy.normalizedAt(floatPcm, clip.sampleRate, fraction, calibration)
+                    dispatch { callbacks.onSpeechFrame(fraction, energy) }
                 }
             }
             if (ticket != generation.get() || released || audioTrack !== track) return
+            if (!startedReported) {
+                Thread.sleep(START_WATCHDOG_MS)
+                if (track.playbackHeadPosition == 0) throw IllegalStateException("مسار AudioTrack لم يبدأ على هذا الجهاز.")
+                dispatch { callbacks.onSpeechStarted(durationMs) }
+            }
 
-            dispatch { callbacks.onSpeechStarted(durationMs) }
             val deadline = System.currentTimeMillis() + durationMs + PLAYBACK_GRACE_MS
             while (ticket == generation.get() && !released && audioTrack === track) {
                 val played = track.playbackHeadPosition.toLong().coerceAtLeast(0L)
                 val fraction = (played.toDouble() / totalFrames.toDouble()).toFloat().coerceIn(0f, 1f)
-                dispatch { callbacks.onSpeechCursor(fraction) }
+                val energy = PcmSpeechEnergy.normalizedAt(floatPcm, clip.sampleRate, fraction, calibration)
+                dispatch { callbacks.onSpeechFrame(fraction, energy) }
                 if (played >= totalFrames - 2L) break
                 if (System.currentTimeMillis() >= deadline) break
                 Thread.sleep(CURSOR_INTERVAL_MS)
             }
             if (ticket == generation.get() && !released && audioTrack === track) {
                 dispatch {
-                    callbacks.onSpeechCursor(1f)
+                    callbacks.onSpeechFrame(1f, 0f)
                     callbacks.onSpeechFinished()
                 }
             }
@@ -473,6 +491,8 @@ class SaudiHumanVoice(
         val pcm = clip.file.readBytes()
         if (pcm.size < MIN_PCM_BYTES) throw IllegalStateException("ملف الصوت ناقص.")
 
+        val floatPcm = pcm16ToFloat(pcm)
+        val calibration = PcmSpeechEnergy.calibrate(floatPcm, clip.sampleRate)
         val wavFile = File(appContext.cacheDir, "alshorti-fallback-${role.name.lowercase()}-$ticket.wav")
         wavFile.writeBytes(pcmToWav(pcm, clip.sampleRate))
         val finished = CountDownLatch(1)
@@ -500,14 +520,15 @@ class SaudiHumanVoice(
             while (ticket == generation.get() && !released && mediaPlayer === player && finished.count > 0L) {
                 val position = runCatching { player.currentPosition.toLong() }.getOrDefault(0L)
                 val fraction = (position.toDouble() / durationMs.toDouble()).toFloat().coerceIn(0f, 1f)
-                dispatch { callbacks.onSpeechCursor(fraction) }
+                val energy = PcmSpeechEnergy.normalizedAt(floatPcm, clip.sampleRate, fraction, calibration)
+                dispatch { callbacks.onSpeechFrame(fraction, energy) }
                 if (System.currentTimeMillis() - startedAt > durationMs + PLAYBACK_GRACE_MS) break
                 if (finished.await(CURSOR_INTERVAL_MS, TimeUnit.MILLISECONDS)) break
             }
             completionError?.let { throw it }
             if (ticket == generation.get() && !released && mediaPlayer === player) {
                 dispatch {
-                    callbacks.onSpeechCursor(1f)
+                    callbacks.onSpeechFrame(1f, 0f)
                     callbacks.onSpeechFinished()
                 }
             }
@@ -520,6 +541,20 @@ class SaudiHumanVoice(
             runCatching { wavFile.delete() }
             abandonAudioFocus()
         }
+    }
+
+    private fun pcm16ToFloat(pcm: ByteArray): FloatArray {
+        val samples = FloatArray(pcm.size / 2)
+        var byteIndex = 0
+        var sampleIndex = 0
+        while (byteIndex + 1 < pcm.size) {
+            val low = pcm[byteIndex].toInt() and 0xff
+            val high = pcm[byteIndex + 1].toInt()
+            val signed = ((high shl 8) or low).toShort().toInt()
+            samples[sampleIndex++] = (signed / 32768f).coerceIn(-1f, 1f)
+            byteIndex += 2
+        }
+        return samples
     }
 
     private fun pcmToWav(pcm: ByteArray, sampleRate: Int): ByteArray {
