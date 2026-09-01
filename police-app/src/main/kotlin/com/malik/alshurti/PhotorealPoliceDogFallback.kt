@@ -26,12 +26,10 @@ import kotlinx.coroutines.isActive
 import kotlin.random.Random
 
 /**
- * Photoreal master-frame fallback with a living OFFICE around it.
+ * Photoreal master-frame fallback with visibly living office motion.
  *
- * The character bitmap is never given fake skeletal motion. Instead, this fallback removes the
- * previous dead-screen feeling with non-periodic camera drift, practical-light variation, monitor
- * spill and occasional passing office shadows. Every motion chooses a new random destination and
- * duration, so there is no finite scene deck or visible clip loop to replay.
+ * No MP4 deck and no finite scene loop are used. Motion is continuous/non-periodic and deliberately
+ * large enough to remain visible on a phone display while the source character image stays intact.
  */
 @Composable
 fun PhotorealPoliceDogFallback(
@@ -61,71 +59,89 @@ fun PhotorealPoliceDogFallback(
 
     val cameraX = remember { Animatable(0f) }
     val cameraY = remember { Animatable(0f) }
-    val cameraScale = remember { Animatable(1.035f) }
-    val roomLight = remember { Animatable(0.08f) }
-    val monitorGlow = remember { Animatable(0.07f) }
-    val shadowProgress = remember { Animatable(-0.30f) }
+    val cameraScale = remember { Animatable(1.055f) }
+    val roomLight = remember { Animatable(0.10f) }
+    val monitorGlow = remember { Animatable(0.12f) }
+    val shadowProgress = remember { Animatable(-0.28f) }
     val shadowAlpha = remember { Animatable(0f) }
+    val eventPulse = remember { Animatable(0f) }
 
+    // Immediate visible camera life. Destinations and durations are randomized, never looped.
     LaunchedEffect(Unit) {
         val random = Random(System.nanoTime() xor 0x13579BL)
         while (isActive) {
             cameraX.animateTo(
-                targetValue = random.nextInt(-7, 8).toFloat(),
-                animationSpec = tween(random.nextInt(3_400, 7_600), easing = LinearEasing)
+                targetValue = random.nextInt(-22, 23).toFloat(),
+                animationSpec = tween(random.nextInt(2_000, 4_800), easing = LinearEasing)
             )
-            delay(random.nextLong(500L, 1_900L))
+            delay(random.nextLong(120L, 650L))
         }
     }
     LaunchedEffect(Unit) {
         val random = Random(System.nanoTime() xor 0x2468ACL)
         while (isActive) {
             cameraY.animateTo(
-                targetValue = random.nextInt(-5, 6).toFloat(),
-                animationSpec = tween(random.nextInt(3_700, 8_400), easing = LinearEasing)
+                targetValue = random.nextInt(-14, 15).toFloat(),
+                animationSpec = tween(random.nextInt(2_300, 5_200), easing = LinearEasing)
             )
-            delay(random.nextLong(700L, 2_400L))
+            delay(random.nextLong(180L, 750L))
         }
     }
-    LaunchedEffect(Unit) {
-        val random = Random(System.nanoTime() xor 0x77AA55L)
-        while (isActive) {
-            cameraScale.animateTo(
-                targetValue = 1.028f + random.nextFloat() * 0.026f,
-                animationSpec = tween(random.nextInt(5_000, 10_500), easing = LinearEasing)
-            )
-            delay(random.nextLong(900L, 2_800L))
+
+    // Phase-aware push/pull makes speaking and listening visibly different.
+    LaunchedEffect(phase) {
+        val target = when (phase) {
+            CallPhase.SPEAKING -> 1.095f
+            CallPhase.THINKING -> 1.075f
+            CallPhase.LISTENING -> 1.052f
+            CallPhase.ERROR -> 1.082f
+            CallPhase.STARTING -> 1.062f
         }
+        cameraScale.animateTo(target, animationSpec = tween(900, easing = LinearEasing))
     }
+
     LaunchedEffect(Unit) {
         val random = Random(System.nanoTime() xor 0x112233L)
         while (isActive) {
             roomLight.animateTo(
-                targetValue = 0.035f + random.nextFloat() * 0.085f,
-                animationSpec = tween(random.nextInt(1_700, 4_900), easing = LinearEasing)
+                targetValue = 0.06f + random.nextFloat() * 0.13f,
+                animationSpec = tween(random.nextInt(900, 2_400), easing = LinearEasing)
             )
             monitorGlow.animateTo(
-                targetValue = 0.035f + random.nextFloat() * 0.075f,
-                animationSpec = tween(random.nextInt(900, 2_600), easing = LinearEasing)
+                targetValue = 0.07f + random.nextFloat() * 0.16f,
+                animationSpec = tween(random.nextInt(650, 1_800), easing = LinearEasing)
             )
-            delay(random.nextLong(350L, 1_700L))
+            delay(random.nextLong(120L, 700L))
         }
     }
+
+    // A staff silhouette crosses within the first two seconds, then irregularly every few seconds.
     LaunchedEffect(Unit) {
         val random = Random(System.nanoTime() xor 0x445566L)
+        delay(900L)
         while (isActive) {
-            delay(random.nextLong(8_000L, 21_000L))
-            shadowProgress.snapTo(-0.30f)
+            shadowProgress.snapTo(-0.28f)
             shadowAlpha.snapTo(0f)
             shadowAlpha.animateTo(
-                targetValue = 0.08f + random.nextFloat() * 0.055f,
-                animationSpec = tween(random.nextInt(220, 520))
+                targetValue = 0.16f + random.nextFloat() * 0.10f,
+                animationSpec = tween(random.nextInt(180, 340))
             )
             shadowProgress.animateTo(
-                targetValue = 1.20f,
-                animationSpec = tween(random.nextInt(1_800, 3_600), easing = LinearEasing)
+                targetValue = 1.18f,
+                animationSpec = tween(random.nextInt(1_250, 2_250), easing = LinearEasing)
             )
-            shadowAlpha.animateTo(0f, animationSpec = tween(random.nextInt(280, 620)))
+            shadowAlpha.animateTo(0f, animationSpec = tween(random.nextInt(180, 380)))
+            delay(random.nextLong(3_200L, 7_800L))
+        }
+    }
+
+    // Phone/door/staff attention produces an unmistakable one-shot practical-light event.
+    LaunchedEffect(attention) {
+        if (attention in setOf(DogAttention.PHONE, DogAttention.DOOR, DogAttention.STAFF)) {
+            eventPulse.snapTo(0f)
+            eventPulse.animateTo(1f, animationSpec = tween(220))
+            eventPulse.animateTo(0.18f, animationSpec = tween(820))
+            eventPulse.animateTo(0f, animationSpec = tween(1_200))
         }
     }
 
@@ -157,42 +173,53 @@ fun PhotorealPoliceDogFallback(
         )
 
         Canvas(Modifier.fillMaxSize()) {
-            // Practical room-light breathing: intentionally small so the source image stays real.
             drawRect(
-                color = phaseWash.copy(alpha = roomLight.value * 0.34f),
+                color = phaseWash.copy(alpha = roomLight.value * 0.42f),
                 size = size
             )
 
-            // Monitor spill, positioned as broad environmental light instead of a UI widget.
+            // Monitor glow remains continuously alive.
             drawCircle(
                 color = Color(0xFF8EDCFF).copy(alpha = monitorGlow.value),
-                radius = size.minDimension * 0.19f,
+                radius = size.minDimension * 0.23f,
                 center = Offset(size.width * 0.72f, size.height * 0.30f)
             )
 
-            // Context-responsive practical lights make office events visibly different.
             when (attention) {
-                DogAttention.PHONE -> drawCircle(
-                    color = Color(0xFFFFD58B).copy(alpha = 0.10f + monitorGlow.value * 0.55f),
-                    radius = size.minDimension * 0.13f,
-                    center = Offset(size.width * 0.22f, size.height * 0.62f)
-                )
+                DogAttention.PHONE -> {
+                    drawCircle(
+                        color = Color(0xFFFFC86A).copy(alpha = 0.14f + eventPulse.value * 0.28f),
+                        radius = size.minDimension * (0.12f + eventPulse.value * 0.035f),
+                        center = Offset(size.width * 0.22f, size.height * 0.62f)
+                    )
+                }
                 DogAttention.DOOR,
-                DogAttention.STAFF -> drawRect(
-                    color = Color(0xFFFFE2B8).copy(alpha = 0.075f + roomLight.value * 0.55f),
-                    topLeft = Offset(size.width * 0.78f, size.height * 0.06f),
-                    size = Size(size.width * 0.22f, size.height * 0.84f)
-                )
+                DogAttention.STAFF -> {
+                    val width = size.width * (0.10f + eventPulse.value * 0.16f)
+                    drawRect(
+                        color = Color(0xFFFFE2B8).copy(alpha = 0.10f + eventPulse.value * 0.20f),
+                        topLeft = Offset(size.width - width, size.height * 0.04f),
+                        size = Size(width, size.height * 0.88f)
+                    )
+                }
                 else -> Unit
             }
 
-            // A soft foreground shadow crosses at irregular intervals to imply staff movement
-            // beyond the camera plane without pretending the dog bitmap itself is animated.
+            // Foreground passer: wide and visible enough to read as office activity on a phone.
             val shadowX = size.width * shadowProgress.value
             drawRect(
-                color = Color.Black.copy(alpha = shadowAlpha.value),
-                topLeft = Offset(shadowX, size.height * 0.08f),
-                size = Size(size.width * 0.13f, size.height * 0.78f)
+                brush = Brush.horizontalGradient(
+                    listOf(
+                        Color.Transparent,
+                        Color.Black.copy(alpha = shadowAlpha.value),
+                        Color.Black.copy(alpha = shadowAlpha.value * 0.72f),
+                        Color.Transparent
+                    ),
+                    startX = shadowX,
+                    endX = shadowX + size.width * 0.20f
+                ),
+                topLeft = Offset(shadowX, size.height * 0.04f),
+                size = Size(size.width * 0.20f, size.height * 0.86f)
             )
         }
 
@@ -202,10 +229,10 @@ fun PhotorealPoliceDogFallback(
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            Color(0x08000000),
+                            Color(0x06000000),
                             Color.Transparent,
-                            Color(0x07000000),
-                            Color(0x28000000)
+                            Color(0x05000000),
+                            Color(0x20000000)
                         )
                     )
                 )
