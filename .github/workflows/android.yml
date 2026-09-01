@@ -34,16 +34,12 @@ jobs:
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
 
-      - name: Require Gemini natural voice configuration
+      - name: Install pinned Saudi neural voice generator
         shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "$GEMINI_API_KEY" ]]; then
-            echo "::error::GEMINI_API_KEY missing. Refusing to build a potentially silent APK."
-            exit 1
-          fi
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'edge-tts==7.2.8'
+          ffmpeg -version | head -1
 
       - name: Restore permanent signing key when configured
         shell: bash
@@ -81,8 +77,9 @@ jobs:
       - name: Generate all bundled natural Saudi speech
         shell: bash
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+          ALSHORTI_EDGE_POLICE_VOICE: ar-SA-HamedNeural
+          ALSHORTI_EDGE_POLICE_RATE: '-4%'
+          ALSHORTI_EDGE_POLICE_PITCH: '-2Hz'
         run: |
           set -euo pipefail
           python3 tools/generate_bundled_natural_voice.py
@@ -117,10 +114,13 @@ jobs:
                       raise SystemExit(f'{name}: expected mono')
                   if wav.getsampwidth() != 2:
                       raise SystemExit(f'{name}: expected PCM16')
-                  if wav.getframerate() < 16000:
-                      raise SystemExit(f'{name}: sample rate too low')
+                  if wav.getframerate() != 24000:
+                      raise SystemExit(f'{name}: expected 24000 Hz')
                   if wav.getnframes() <= 1000:
                       raise SystemExit(f'{name}: too short')
+                  duration = wav.getnframes() / wav.getframerate()
+                  if duration < 0.70:
+                      raise SystemExit(f'{name}: duration too short ({duration:.2f}s)')
                   frames = wav.readframes(wav.getnframes())
               sample_count = len(frames) // 2
               if sample_count == 0:
@@ -129,7 +129,7 @@ jobs:
               rms = math.sqrt(sum(s * s for s in samples) / sample_count)
               if rms <= 150:
                   raise SystemExit(f'{name}: effectively silent (RMS={rms:.1f})')
-              print(f'{name}: RMS={rms:.1f}')
+              print(f'{name}: {duration:.2f}s RMS={rms:.1f}')
           print(f'Audited {len(expected)} natural speech assets.')
           PY
 
