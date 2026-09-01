@@ -69,8 +69,8 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
-    // The only non-Android runtime dependency in V2: persistent WebSocket transport.
-    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    // Mature WebSocket transport without pulling Android 37 metadata into the clean V2 build.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
