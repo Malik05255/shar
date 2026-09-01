@@ -46,15 +46,14 @@ class BundledNaturalVoice(
         .setOnAudioFocusChangeListener { }
         .build()
 
-    fun has(text: String): Boolean = findEntry(text) != null
+    fun has(text: String): Boolean {
+        val entry = findEntry(text) ?: return false
+        return resourceId(entry) != 0
+    }
 
     fun speak(text: String): Boolean {
         val entry = findEntry(text) ?: return false
-        val resId = appContext.resources.getIdentifier(
-            "voice_${entry.resourceName}",
-            "raw",
-            appContext.packageName
-        )
+        val resId = resourceId(entry)
         if (resId == 0) {
             callbacks.onError("ملف الصوت الطبيعي المحلي غير موجود: ${entry.resourceName}")
             return false
@@ -134,6 +133,12 @@ class BundledNaturalVoice(
             runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
         }
     }
+
+    private fun resourceId(entry: Entry): Int = appContext.resources.getIdentifier(
+        "voice_${entry.resourceName}",
+        "raw",
+        appContext.packageName
+    )
 
     private fun findEntry(text: String): Entry? {
         val normalized = normalize(text)
