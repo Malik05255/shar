@@ -297,7 +297,7 @@ class GeminiSilentListener(
                 }
             }
         }
-        return collected.joinToString(" ").strip()
+        return collected.joinToString(" ").trim()
     }
 
     private fun rms(samples: ShortArray): Double {
