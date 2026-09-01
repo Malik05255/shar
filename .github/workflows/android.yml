@@ -65,7 +65,40 @@ jobs:
           curl --fail --location --retry 4 --connect-timeout 20 --max-time 120 \
             "$MASTER_FRAME_URL" --output "$DRAW_DIR/cinematic_office_reference.png"
           test -s "$DRAW_DIR/cinematic_office_reference.png"
-          echo "No cinematic MP4 is bundled into the APK."
+          echo "Photoreal frame prepared beneath non-repeating cinematic motion."
+
+      - name: Bundle verified local Whisper ASR
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASR_DIR="police-app/src/main/assets/asr/whisper-tiny-int8"
+          mkdir -p "$ASR_DIR"
+          BASE="https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny/resolve/main"
+
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 240 \
+            "$BASE/tiny-encoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-encoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 300 \
+            "$BASE/tiny-decoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-decoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 120 \
+            "$BASE/tiny-tokens.txt?download=true" \
+            --output "$ASR_DIR/tiny-tokens.txt"
+
+          printf '%s  %s\n' \
+            'd24fb083ae3b1041fc24e97971d60e280c9342201fbb67b0ab428a8b4a51a434' \
+            "$ASR_DIR/tiny-encoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'd2fece8dd42771f1df975c6c0445770d0c292bf7547c2cae04a6c0cc57540925' \
+            "$ASR_DIR/tiny-decoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126' \
+            "$ASR_DIR/tiny-tokens.txt" | sha256sum -c -
+
+          test "$(stat -c%s "$ASR_DIR/tiny-encoder.int8.onnx")" -ge 12000000
+          test "$(stat -c%s "$ASR_DIR/tiny-decoder.int8.onnx")" -ge 85000000
+          test "$(stat -c%s "$ASR_DIR/tiny-tokens.txt")" -ge 700000
+          echo "Verified Whisper Tiny INT8 is bundled; cloud transcription is not required."
 
       - name: Validate committed Saudi voice pack
         shell: bash
@@ -127,12 +160,9 @@ jobs:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
-          ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
 
-      - name: Verify APK contains all natural speech
+      - name: Verify APK contains local listening and natural speech
         shell: bash
         run: |
           set -euo pipefail
@@ -146,19 +176,29 @@ jobs:
 
           apk = pathlib.Path(sys.argv[1])
           catalog = json.loads(pathlib.Path('police-app/src/main/assets/natural_voice_catalog.json').read_text(encoding='utf-8'))
-          expected = {f"res/raw/voice_{entry['id']}.wav" for entry in catalog}
+          expected_voice = {f"res/raw/voice_{entry['id']}.wav" for entry in catalog}
+          expected_asr = {
+              'assets/asr/whisper-tiny-int8/tiny-encoder.int8.onnx': 12_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-decoder.int8.onnx': 85_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-tokens.txt': 700_000,
+          }
           with zipfile.ZipFile(apk) as archive:
               names = set(archive.namelist())
-              missing = sorted(expected - names)
-              actual = sorted(name for name in names if name.startswith('res/raw/voice_') and name.endswith('.wav'))
-              if missing:
-                  raise SystemExit(f'APK missing bundled natural voices: {missing}')
-              if len(actual) != 15:
-                  raise SystemExit(f'APK expected 15 bundled voices, found {len(actual)}')
-              for name in actual:
+              missing_voice = sorted(expected_voice - names)
+              if missing_voice:
+                  raise SystemExit(f'APK missing bundled natural voices: {missing_voice}')
+              actual_voice = sorted(name for name in names if name.startswith('res/raw/voice_') and name.endswith('.wav'))
+              if len(actual_voice) != 15:
+                  raise SystemExit(f'APK expected 15 bundled voices, found {len(actual_voice)}')
+              for name in actual_voice:
                   if len(archive.read(name)) <= 3000:
                       raise SystemExit(f'{name}: embedded file unexpectedly small')
-          print('APK contains all 15 non-empty natural speech resources.')
+              for name, minimum in expected_asr.items():
+                  if name not in names:
+                      raise SystemExit(f'APK missing local ASR asset: {name}')
+                  if len(archive.read(name)) < minimum:
+                      raise SystemExit(f'{name}: embedded ASR asset unexpectedly small')
+          print('APK contains 15 natural speech resources and the complete local Whisper ASR model.')
           PY
 
       - name: Report APK size
@@ -167,7 +207,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlShorti-${{ env.VERSION_NAME }}-guaranteed-audible
+          name: AlShorti-${{ env.VERSION_NAME }}-local-listening-living-scene
           path: police-app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
