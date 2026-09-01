@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke the exact Gemini Live setup used by police-live-v2."""
+"""Smoke the exact server-accepted Gemini Live setup used by police-live-v2."""
 
 import asyncio
 import base64
@@ -56,8 +56,6 @@ def exact_android_setup() -> dict:
             },
             "inputAudioTranscription": {"languageCodes": ["ar-SA"]},
             "outputAudioTranscription": {},
-            "proactivity": {"proactiveAudio": True},
-            "contextWindowCompression": {"slidingWindow": {}},
         }
     }
 
