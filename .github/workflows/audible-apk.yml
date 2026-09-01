@@ -34,6 +34,27 @@ jobs:
           set -euo pipefail
           test -n "$GEMINI_API_KEY" || { echo '::error::GEMINI_API_KEY missing'; exit 1; }
 
+      - name: Restore permanent signing key when configured
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ALSHORTI_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "Permanent signing not configured; using Android debug certificate."
+            echo "PERMANENT_SIGNING=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEYSTORE_FILE="$RUNNER_TEMP/alshorti-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+          test -s "$KEYSTORE_FILE"
+          echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "PERMANENT_SIGNING=true" >> "$GITHUB_ENV"
+
       - name: Prepare photoreal office master frame
         env:
           MASTER_FRAME_URL: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
@@ -46,6 +67,39 @@ jobs:
             "$MASTER_FRAME_URL" \
             --output "$DRAW_DIR/cinematic_office_reference.png"
           test -s "$DRAW_DIR/cinematic_office_reference.png"
+
+      - name: Bundle verified local Whisper ASR
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASR_DIR="police-app/src/main/assets/asr/whisper-tiny-int8"
+          mkdir -p "$ASR_DIR"
+          BASE="https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny/resolve/main"
+
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 240 \
+            "$BASE/tiny-encoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-encoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 300 \
+            "$BASE/tiny-decoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-decoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 120 \
+            "$BASE/tiny-tokens.txt?download=true" \
+            --output "$ASR_DIR/tiny-tokens.txt"
+
+          printf '%s  %s\n' \
+            'd24fb083ae3b1041fc24e97971d60e280c9342201fbb67b0ab428a8b4a51a434' \
+            "$ASR_DIR/tiny-encoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'd2fece8dd42771f1df975c6c0445770d0c292bf7547c2cae04a6c0cc57540925' \
+            "$ASR_DIR/tiny-decoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126' \
+            "$ASR_DIR/tiny-tokens.txt" | sha256sum -c -
+
+          test "$(stat -c%s "$ASR_DIR/tiny-encoder.int8.onnx")" -ge 12000000
+          test "$(stat -c%s "$ASR_DIR/tiny-decoder.int8.onnx")" -ge 85000000
+          test "$(stat -c%s "$ASR_DIR/tiny-tokens.txt")" -ge 700000
+          echo 'LOCAL_ASR_GATE=PASS'
 
       - name: Generate and validate emergency Saudi speech fallback
         env:
@@ -86,6 +140,8 @@ jobs:
           grep -q 'SpeechBackend.CLOUD' police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt
           grep -q 'localVoice.prepare(allowDownload = true)' police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt
           grep -q 'AMBIENT_COOLDOWN' police-app/src/main/kotlin/com/malik/alshurti/AiCinematicDogStage.kt
+          grep -q 'DeterministicPoliceBrain' police-app/src/main/kotlin/com/malik/alshurti/PoliceCallViewModel.kt
+          grep -q 'بدون إنترنت' police-app/src/main/kotlin/com/malik/alshurti/PoliceCallScreen.kt
           if grep -q "printf '\[\]" .github/workflows/audible-apk.yml; then
             echo '::error::voice catalog must never be erased at build time'
             exit 1
@@ -98,16 +154,19 @@ jobs:
           ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
         run: python3 tools/smoke_online_stack.py
 
-      - name: Build, test and lint recovery APK
+      - name: Build, test and lint unified recovery APK
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
           ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
+          ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
+          ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
+          ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon :police-app:testDebugUnitTest :police-app:lintDebug :police-app:assembleDebug
 
-      - name: Verify final APK recovery payload
+      - name: Verify final APK contains online and offline recovery payload
         run: |
           set -euo pipefail
           APK=$(ls police-app/build/outputs/apk/debug/*.apk | head -1)
@@ -115,6 +174,11 @@ jobs:
           python3 - "$APK" <<'PY'
           import json, sys, zipfile
           apk=sys.argv[1]
+          expected_asr = {
+              'assets/asr/whisper-tiny-int8/tiny-encoder.int8.onnx': 12_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-decoder.int8.onnx': 85_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-tokens.txt': 700_000,
+          }
           with zipfile.ZipFile(apk) as z:
               raw=[n for n in z.namelist() if n.startswith('res/raw/voice_') and n.endswith('.wav')]
               if len(raw) != 15:
@@ -122,12 +186,19 @@ jobs:
               catalog=json.loads(z.read('assets/natural_voice_catalog.json').decode('utf-8'))
               if len(catalog) != 15:
                   raise SystemExit(f'expected 15 runtime fallback phrases, found {len(catalog)}')
-              print('APK_RECOVERY_PAYLOAD_GATE=PASS voice_resources=', len(raw), 'catalog=', len(catalog))
+              for name, minimum in expected_asr.items():
+                  if name not in z.namelist():
+                      raise SystemExit(f'APK missing local ASR asset: {name}')
+                  if len(z.read(name)) < minimum:
+                      raise SystemExit(f'{name}: too small')
+              print('APK_UNIFIED_RECOVERY_GATE=PASS voice=', len(raw), 'asr=', len(expected_asr))
           PY
+          du -h "$APK"
+          echo "PERMANENT_SIGNING=${PERMANENT_SIGNING:-false}"
 
-      - name: Upload radical recovery APK
+      - name: Upload unified radical recovery APK
         uses: actions/upload-artifact@v4
         with:
-          name: AlShorti-${{ env.VERSION_NAME }}-radical-recovery
+          name: AlShorti-${{ env.VERSION_NAME }}-unified-radical-recovery
           path: police-app/build/outputs/apk/debug/*.apk
           retention-days: 30
