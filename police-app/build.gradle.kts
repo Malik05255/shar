@@ -47,8 +47,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Test builds can inject Gemini directly. Production should proxy this secret server-side
-        // so the API key is never distributed inside a public APK.
+        // Debug/prototype builds inject the key directly. Production V2 must move to an ephemeral
+        // Live API token before public distribution.
         buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
         buildConfigField("String", "GEMINI_POLICE_VOICE", quotedBuildConfig(geminiPoliceVoice))
         buildConfigField("String", "GEMINI_STAFF_VOICE", quotedBuildConfig(geminiStaffVoice))
@@ -111,6 +111,10 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
+    // V2: one persistent Gemini Live WebSocket instead of ASR -> LLM -> TTS chaining.
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+
+    // Legacy dependencies remain only so the old implementation still compiles while V2 is proven.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
     implementation("io.github.sceneview:sceneview:4.33.0")
 
