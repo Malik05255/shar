@@ -132,21 +132,34 @@ jobs:
           print('BUNDLED_FALLBACK_GATE=PASS count=', len(expected))
           PY
 
-      - name: Enforce radical architecture invariants
+      - name: Enforce device-first architecture invariants
         run: |
           set -euo pipefail
+          VOICE=police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt
+          VM=police-app/src/main/kotlin/com/malik/alshurti/PoliceCallViewModel.kt
+          UI=police-app/src/main/kotlin/com/malik/alshurti/PoliceCallScreen.kt
+          MIC=police-app/src/main/kotlin/com/malik/alshurti/voice/GeminiSilentListener.kt
+
           grep -q 'class HybridPoliceBrain' police-app/src/main/kotlin/com/malik/alshurti/PoliceBrain.kt
           grep -q 'gemini-3.5-flash-lite' police-app/src/main/kotlin/com/malik/alshurti/PoliceBrain.kt
-          grep -q 'SpeechBackend.CLOUD' police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt
-          grep -q 'localVoice.prepare(allowDownload = true)' police-app/src/main/kotlin/com/malik/alshurti/PoliceVoiceEngine.kt
+          grep -q 'recommendedStartupMode' "$VM"
+          grep -q 'ONLINE / GEMINI' "$UI"
+          grep -q 'BuildConfig.VERSION_NAME' "$UI"
+          grep -q 'MAX_INITIAL_WAIT_FRAMES' "$MIC"
+          grep -q 'MediaRecorder.AudioSource.MIC' "$MIC"
+          grep -q 'spokenText == STARTUP_PROBE_TEXT' "$VOICE"
+          grep -q 'localListener.prepare(allowDownload = false)' "$VOICE"
+          if grep -q 'allowDownload = true' "$VOICE"; then
+            echo '::error::Online path must not initialize/download local ASR/TTS models'
+            exit 1
+          fi
           grep -q 'AMBIENT_COOLDOWN' police-app/src/main/kotlin/com/malik/alshurti/AiCinematicDogStage.kt
-          grep -q 'DeterministicPoliceBrain' police-app/src/main/kotlin/com/malik/alshurti/PoliceCallViewModel.kt
-          grep -q 'بدون إنترنت' police-app/src/main/kotlin/com/malik/alshurti/PoliceCallScreen.kt
+          grep -q 'بدون إنترنت' "$UI"
           if grep -q "printf '\[\]" .github/workflows/audible-apk.yml; then
             echo '::error::voice catalog must never be erased at build time'
             exit 1
           fi
-          echo 'ARCHITECTURE_GATE=PASS'
+          echo 'DEVICE_FIRST_ARCHITECTURE_GATE=PASS'
 
       - name: Smoke live Gemini conversation, TTS and transcription
         env:
