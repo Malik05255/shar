@@ -33,17 +33,10 @@ object PoliceCharacterContract {
     """.trimIndent()
 }
 
-/**
- * Production conversation brain.
- *
- * Gemini is the primary conversational path. The deterministic local brain is a fail-open safety
- * net only, so a transient network/API problem never parks the child in an error screen or makes
- * the app unusable. A small in-memory history gives the character continuity without persisting
- * the child's transcript to disk.
- */
+/** Gemini-first production brain with deterministic local failover. */
 class HybridPoliceBrain(
     private val cloud: PoliceBrain = GeminiPoliceBrain(),
-    private val fallback: PoliceBrain = LocalPoliceBrain()
+    private val fallback: PoliceBrain = DeterministicPoliceBrain()
 ) : PoliceBrain {
     override suspend fun reply(userText: String): PoliceReply {
         val normalized = userText.trim()
@@ -65,6 +58,15 @@ class HybridPoliceBrain(
             DogMood.SERIOUS
         )
     }
+}
+
+/**
+ * Compatibility entry point used by the existing ViewModel. It is no longer a scripted brain:
+ * every normal online turn routes through HybridPoliceBrain.
+ */
+class LocalPoliceBrain : PoliceBrain {
+    private val delegate = HybridPoliceBrain()
+    override suspend fun reply(userText: String): PoliceReply = delegate.reply(userText)
 }
 
 class GeminiPoliceBrain(
@@ -190,11 +192,8 @@ class GeminiPoliceBrain(
     }
 }
 
-/**
- * Deterministic emergency/fallback brain. It is intentionally not the normal online conversation
- * engine. It keeps the app responsive if the cloud path is unavailable.
- */
-class LocalPoliceBrain : PoliceBrain {
+/** Deterministic offline-only safety/failure fallback. */
+class DeterministicPoliceBrain : PoliceBrain {
     private var previousTopic: String = ""
 
     override suspend fun reply(userText: String): PoliceReply {
