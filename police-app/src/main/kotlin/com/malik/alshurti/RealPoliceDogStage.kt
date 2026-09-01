@@ -18,8 +18,9 @@ import io.github.sceneview.rememberModelLoader
  * Production visual stage.
  *
  * Preferred path is a persistent multi-actor runtime office delivered as a verified 3D content
- * pack. A finite MP4 deck is no longer accepted as a fallback because any finite clip set will
- * eventually repeat and break the illusion of a living office.
+ * pack. Until that pack passes the visual gate, the fallback uses the finite cinematic sources as
+ * one-shot motion only: sources are consumed without automatic looping and the master frame remains
+ * underneath. This avoids a frozen screen without bringing back the old endless MP4 replay loop.
  */
 @Composable
 fun RealPoliceDogStage(
@@ -60,12 +61,13 @@ fun RealPoliceDogStage(
         return
     }
 
-    // Fail closed on motion quality. Keep one photoreal master frame until the verified runtime 3D
-    // world is available instead of replaying migration MP4s. This guarantees there is no visual
-    // loop or repeated cinematic scene in the fallback path.
-    PhotorealPoliceDogFallback(
+    // Actual cinematic motion, but no automatic replay loop. AiCinematicDogStage keeps a per-screen
+    // used-source set and falls back to the photoreal master frame when its one-shot deck is spent.
+    AiCinematicDogStage(
+        mood = mood,
         phase = phase,
-        attention = officeScene.attention,
+        viseme = viseme,
+        officeScene = officeScene,
         modifier = modifier
     )
 }
