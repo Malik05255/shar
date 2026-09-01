@@ -1,12 +1,16 @@
 package com.malik.alshurti.voice
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import androidx.core.content.ContextCompat
 import com.malik.alshurti.BuildConfig
 import org.json.JSONArray
 import org.json.JSONObject
@@ -57,6 +61,10 @@ class GeminiSilentListener(
             dispatch { callbacks.onError("التعرّف الصوتي غير مهيأ في هذه النسخة.", false) }
             return
         }
+        if (!hasRecordAudioPermission()) {
+            dispatch { callbacks.onError("إذن الميكروفون مطلوب.", false) }
+            return
+        }
 
         val ticket = generation.incrementAndGet()
         listening = true
@@ -84,6 +92,8 @@ class GeminiSilentListener(
     private fun captureOneUtterance(ticket: Long) {
         var localRecorder: AudioRecord? = null
         try {
+            if (!hasRecordAudioPermission()) throw SecurityException("RECORD_AUDIO revoked")
+
             val minBuffer = AudioRecord.getMinBufferSize(
                 INPUT_SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
@@ -186,7 +196,14 @@ class GeminiSilentListener(
         }
     }
 
+    private fun hasRecordAudioPermission(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    @SuppressLint("MissingPermission")
     private fun createCompatibleRecorder(bufferBytes: Int): AudioRecord {
+        if (!hasRecordAudioPermission()) throw SecurityException("RECORD_AUDIO revoked")
+
         var lastError: Throwable? = null
         for (source in intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC)) {
             val candidate = runCatching {
