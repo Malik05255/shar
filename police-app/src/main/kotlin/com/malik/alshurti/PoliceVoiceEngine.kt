@@ -9,12 +9,13 @@ import com.malik.alshurti.voice.OfflineArabicListener
 import com.malik.alshurti.voice.SaudiHumanVoice
 
 /**
- * Single resilient half-duplex voice coordinator.
+ * One half-duplex voice coordinator with two intentionally isolated modes.
  *
- * ONLINE always prefers the cloud ASR/TTS path. Local models are prepared in the background and are
- * used only as a recovery path. A failure of one cloud utterance never disables cloud audio for the
- * rest of the session. Every arbitrary reply therefore has three output chances:
- * Gemini -> exact bundled emergency clip -> local neural voice.
+ * ONLINE never initializes ONNX/Whisper/Supertonic. This keeps startup light and makes failures
+ * observable instead of silently falling into a different backend. The known opening phrase is
+ * played from the bundled validated WAV immediately; arbitrary replies use Gemini TTS.
+ *
+ * OFFLINE initializes and uses only the local ASR/TTS stack.
  */
 class PoliceVoiceEngine(
     context: Context,
@@ -48,7 +49,6 @@ class PoliceVoiceEngine(
     private var cloudTtsReady = false
     private var activeSpeechBackend = SpeechBackend.NONE
     private var activeListenBackend = ListenBackend.NONE
-    private var localListenFallbackUsed = false
     private val attemptedSpeechBackends = linkedSetOf<SpeechBackend>()
 
     private var lastViseme = MouthViseme.REST
@@ -74,20 +74,14 @@ class PoliceVoiceEngine(
             override fun onFinalText(text: String) {
                 if (released || activeListenBackend != ListenBackend.CLOUD) return
                 activeListenBackend = ListenBackend.NONE
-                localListenFallbackUsed = false
                 listener.onFinalText(text)
             }
 
             override fun onError(message: String, recoverable: Boolean) {
                 if (released || activeListenBackend != ListenBackend.CLOUD) return
                 activeListenBackend = ListenBackend.NONE
-                if (mode == VoiceMode.ONLINE && localAsrReady && !localListenFallbackUsed) {
-                    localListenFallbackUsed = true
-                    activeListenBackend = ListenBackend.LOCAL
-                    localListener.start()
-                } else {
-                    listener.onSpeechError(message, recoverable || localAsrReady)
-                }
+                // Never hide an online failure by booting the heavy local stack in the background.
+                listener.onSpeechError(message, recoverable)
             }
         }
     )
@@ -117,7 +111,6 @@ class PoliceVoiceEngine(
             override fun onFinalText(text: String) {
                 if (released || activeListenBackend != ListenBackend.LOCAL) return
                 activeListenBackend = ListenBackend.NONE
-                localListenFallbackUsed = false
                 listener.onFinalText(text)
             }
 
@@ -165,7 +158,6 @@ class PoliceVoiceEngine(
 
             override fun onError(message: String) {
                 if (activeSpeechBackend == SpeechBackend.CLOUD) {
-                    // Do not poison the entire session because one request/playback failed.
                     failActiveSpeechBackend(message, keepBackendReady = true)
                 } else {
                     cloudTtsReady = false
@@ -245,14 +237,10 @@ class PoliceVoiceEngine(
         interruptSpeech()
         mode = newMode
         readyReported = false
-        localListenFallbackUsed = false
 
         when (newMode) {
             VoiceMode.ONLINE -> {
-                // Prepare both local recovery engines in the background. They must never steal the
-                // primary online path just because their download happened to finish first.
-                localListener.prepare(allowDownload = true)
-                localVoice.prepare(allowDownload = true)
+                // Critical: no local model initialization in Online mode.
                 if (cloudAvailable) cloudVoice.prepare() else cloudTtsReady = false
             }
             VoiceMode.OFFLINE -> {
@@ -266,20 +254,23 @@ class PoliceVoiceEngine(
 
     fun startListening() {
         if (released || activeListenBackend != ListenBackend.NONE) return
-        localListenFallbackUsed = false
-        when {
-            mode == VoiceMode.ONLINE && cloudAvailable -> {
+        when (mode) {
+            VoiceMode.ONLINE -> {
+                if (!cloudAvailable) {
+                    listener.onSpeechError("وضع الإنترنت غير مهيأ في هذه النسخة.", false)
+                    return
+                }
                 activeListenBackend = ListenBackend.CLOUD
                 cloudListener.start()
             }
-            localAsrReady -> {
-                activeListenBackend = ListenBackend.LOCAL
-                localListener.start()
+            VoiceMode.OFFLINE -> {
+                if (localAsrReady) {
+                    activeListenBackend = ListenBackend.LOCAL
+                    localListener.start()
+                } else {
+                    listener.onSpeechError("الاستماع المحلي غير مجهز بعد.", true)
+                }
             }
-            else -> listener.onSpeechError(
-                if (mode == VoiceMode.OFFLINE) "الاستماع المحلي غير مجهز بعد." else "جاري تجهيز الاستماع.",
-                true
-            )
         }
     }
 
@@ -329,9 +320,12 @@ class PoliceVoiceEngine(
         if (released || spokenText.isBlank()) return
         val next = when (mode) {
             VoiceMode.ONLINE -> when {
+                // The greeting must be instant and device-local. It also proves media playback works.
+                spokenText == STARTUP_PROBE_TEXT &&
+                    bundledVoice.has(spokenText) &&
+                    SpeechBackend.BUNDLED !in attemptedSpeechBackends -> SpeechBackend.BUNDLED
                 cloudTtsReady && SpeechBackend.CLOUD !in attemptedSpeechBackends -> SpeechBackend.CLOUD
                 bundledVoice.has(spokenText) && SpeechBackend.BUNDLED !in attemptedSpeechBackends -> SpeechBackend.BUNDLED
-                localTtsReady && SpeechBackend.LOCAL !in attemptedSpeechBackends -> SpeechBackend.LOCAL
                 else -> SpeechBackend.NONE
             }
             VoiceMode.OFFLINE -> when {
@@ -346,7 +340,7 @@ class PoliceVoiceEngine(
             resetMouth()
             listener.onTtsError(
                 lastError ?: if (mode == VoiceMode.ONLINE) {
-                    "تعذر تشغيل الصوت الآن."
+                    "تعذر تشغيل صوت Gemini لهذه الجملة."
                 } else {
                     "الصوت المحلي غير جاهز بعد."
                 }
@@ -383,11 +377,11 @@ class PoliceVoiceEngine(
     private fun maybeReportReady() {
         if (released || readyReported) return
         val inputReady = when (mode) {
-            VoiceMode.ONLINE -> cloudAvailable || localAsrReady
+            VoiceMode.ONLINE -> cloudAvailable
             VoiceMode.OFFLINE -> localAsrReady
         }
         val outputReady = when (mode) {
-            VoiceMode.ONLINE -> cloudTtsReady || bundledVoice.has(STARTUP_PROBE_TEXT) || localTtsReady
+            VoiceMode.ONLINE -> bundledVoice.has(STARTUP_PROBE_TEXT) && (cloudTtsReady || cloudAvailable)
             VoiceMode.OFFLINE -> localTtsReady || bundledVoice.has(STARTUP_PROBE_TEXT)
         }
         if (inputReady && outputReady) {
@@ -448,7 +442,7 @@ class PoliceVoiceEngine(
         val to = (position + 4).coerceAtMost(text.length)
         val letter = text.substring(from, to).firstOrNull(Char::isLetter) ?: return MouthViseme.REST
         return when (letter) {
-            'ب', 'م', 'ف' -> MouthViseme.CLOSED
+            'ب', 'م', 'ف' -> MouthVisime.CLOSED
             'و', 'ؤ' -> MouthViseme.ROUND
             'ي', 'ى', 'س', 'ش', 'ث', 'ز', 'ج' -> MouthViseme.WIDE
             'ا', 'أ', 'إ', 'آ', 'ع', 'ه', 'ح', 'خ', 'ق', 'ك' -> MouthViseme.OPEN
