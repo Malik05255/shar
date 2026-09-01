@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import itertools
 import json
 import math
 import os
@@ -16,10 +17,11 @@ CATALOG = ROOT / "police-app/src/main/assets/natural_voice_catalog.json"
 RAW_DIR = ROOT / "police-app/src/main/res/raw"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 API_REVISION = "2026-05-20"
-MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+MODELS = ["gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview"]
 GROUP_SIZE = 3
 WINDOW_MS = 20
-MIN_BOUNDARY_SILENCE_MS = 520
+MIN_BOUNDARY_SILENCE_MS = 420
+MIN_UTTERANCE_SECONDS = 0.70
 
 
 def make_prompt(texts):
@@ -38,8 +40,13 @@ def make_prompt(texts):
 
 
 def parse_retry_seconds(body: str):
-    match = re.search(r"retry in\s+([0-9.]+)s", body, re.IGNORECASE)
-    return float(match.group(1)) if match else None
+    seconds = re.search(r"retry in\s+([0-9.]+)s", body, re.IGNORECASE)
+    if seconds:
+        return float(seconds.group(1))
+    milliseconds = re.search(r"retry in\s+([0-9.]+)ms", body, re.IGNORECASE)
+    if milliseconds:
+        return float(milliseconds.group(1)) / 1000.0
+    return None
 
 
 def request_once(api_key: str, voice: str, texts, model: str):
@@ -66,7 +73,7 @@ def request_once(api_key: str, voice: str, texts, model: str):
 def request_group(api_key: str, voice: str, texts):
     last_error = None
     for model in MODELS:
-        for attempt in range(4):
+        for attempt in range(5):
             try:
                 audio = request_once(api_key, voice, texts, model)
                 print(f"  using {model}", flush=True)
@@ -77,21 +84,21 @@ def request_group(api_key: str, voice: str, texts):
                     body = exc.read().decode("utf-8", errors="replace")[:1200]
                 except Exception:
                     body = ""
-                print(f"  {model}: HTTP {exc.code} attempt {attempt + 1}/4 {body}", flush=True)
+                print(f"  {model}: HTTP {exc.code} attempt {attempt + 1}/5 {body}", flush=True)
                 if exc.code != 429:
-                    if exc.code in (500, 502, 503, 504) and attempt < 3:
-                        time.sleep(min(2 ** attempt, 8))
+                    if exc.code in (500, 502, 503, 504) and attempt < 4:
+                        time.sleep(min(2 ** attempt, 10))
                         continue
                     break
                 retry = parse_retry_seconds(body)
-                wait = min(max((retry or (2 ** attempt)) + 1.0, 2.0), 28.0)
+                wait = min(max((retry or (2 ** attempt)) + 1.0, 1.5), 65.0)
                 print(f"  quota wait {wait:.1f}s", flush=True)
                 time.sleep(wait)
             except Exception as exc:
                 last_error = exc
                 print(f"  {model}: {type(exc).__name__}: {exc}", flush=True)
-                if attempt < 3:
-                    time.sleep(min(2 ** attempt, 8))
+                if attempt < 4:
+                    time.sleep(min(2 ** attempt, 10))
                 else:
                     break
     raise last_error if last_error is not None else RuntimeError("All Gemini TTS models failed")
@@ -149,6 +156,17 @@ def window_rms(samples, start, end):
     return math.sqrt(total / (end - start))
 
 
+def trimmed_bounds(samples, start_sample, end_sample, window, threshold, rate):
+    start = start_sample
+    end = end_sample
+    pad = int(rate * 0.08)
+    while start + window < end and window_rms(samples, start, start + window) <= threshold:
+        start += window
+    while end - window > start and window_rms(samples, end - window, end) <= threshold:
+        end -= window
+    return max(start_sample, start - pad), min(end_sample, end + pad)
+
+
 def split_on_long_silence(pcm: bytes, rate: int, count: int):
     if count == 1:
         return [pcm]
@@ -175,8 +193,7 @@ def split_on_long_silence(pcm: bytes, rate: int, count: int):
             length = index - run_start
             if length >= min_windows:
                 mid_sample = ((run_start + index) * window) // 2
-                # Ignore leading/trailing silence; only internal pauses are boundaries.
-                if rate // 3 < mid_sample < sample_count - rate // 3:
+                if int(rate * MIN_UTTERANCE_SECONDS) < mid_sample < sample_count - int(rate * MIN_UTTERANCE_SECONDS):
                     runs.append((length, mid_sample, run_start, index))
             run_start = None
 
@@ -184,31 +201,67 @@ def split_on_long_silence(pcm: bytes, rate: int, count: int):
     if len(runs) < required:
         longest = sorted((length * WINDOW_MS for length, *_ in runs), reverse=True)
         raise RuntimeError(
-            f"Gemini did not create {required} long pause boundaries; found {len(runs)} ({longest})"
+            f"Gemini did not create {required} usable long pauses; found {len(runs)} ({longest})"
         )
 
-    chosen = sorted(sorted(runs, reverse=True)[:required], key=lambda item: item[1])
-    boundaries = [0] + [item[1] for item in chosen] + [sample_count]
+    print(
+        "  silence candidates:",
+        [
+            {"ms": length * WINDOW_MS, "at_s": round(mid / rate, 2)}
+            for length, mid, *_ in sorted(runs, key=lambda item: item[1])
+        ],
+        flush=True,
+    )
+
+    min_segment_samples = int(rate * MIN_UTTERANCE_SECONDS)
+    best = None
+    best_score = None
+    for combo in itertools.combinations(runs, required):
+        ordered = sorted(combo, key=lambda item: item[1])
+        boundaries = [0] + [item[1] for item in ordered] + [sample_count]
+        raw_lengths = [b - a for a, b in zip(boundaries, boundaries[1:])]
+        if any(length < min_segment_samples for length in raw_lengths):
+            continue
+
+        trimmed = [
+            trimmed_bounds(samples, a, b, window, silence_threshold, rate)
+            for a, b in zip(boundaries, boundaries[1:])
+        ]
+        durations = [(end - start) / rate for start, end in trimmed]
+        if any(duration < MIN_UTTERANCE_SECONDS for duration in durations):
+            continue
+
+        # Real [long pause] boundaries should have the most silence. A small spacing term discourages
+        # selecting multiple pauses inside one long sentence when several candidates are similar.
+        silence_score = sum(item[0] for item in ordered)
+        smallest_duration = min(durations)
+        score = silence_score * 1000.0 + smallest_duration
+        if best_score is None or score > best_score:
+            best_score = score
+            best = (ordered, trimmed, durations)
+
+    if best is None:
+        raise RuntimeError(
+            "No silence-boundary combination can produce all utterances at least "
+            f"{MIN_UTTERANCE_SECONDS:.2f}s long"
+        )
+
+    chosen, trimmed, durations = best
+    print(
+        "  chosen boundaries:",
+        [round(item[1] / rate, 2) for item in chosen],
+        "durations:",
+        [round(value, 2) for value in durations],
+        flush=True,
+    )
+
     segments = []
-    for start_sample, end_sample in zip(boundaries, boundaries[1:]):
-        # Trim edge silence but retain 80ms padding to preserve natural attack/release.
-        start = start_sample
-        end = end_sample
-        pad = int(rate * 0.08)
-        while start + window < end and window_rms(samples, start, start + window) <= silence_threshold:
-            start += window
-        while end - window > start and window_rms(samples, end - window, end) <= silence_threshold:
-            end -= window
-        start = max(start_sample, start - pad)
-        end = min(end_sample, end + pad)
-        duration = (end - start) / rate
-        if duration < 0.55:
-            raise RuntimeError(f"split utterance too short: {duration:.2f}s")
+    for start, end in trimmed:
         segment_samples = samples[start:end]
-        segment = struct.pack("<" + "h" * len(segment_samples), *segment_samples)
-        if window_rms(segment_samples, 0, len(segment_samples)) <= 150:
-            raise RuntimeError("split utterance is effectively silent")
-        segments.append(segment)
+        rms = window_rms(segment_samples, 0, len(segment_samples))
+        if rms <= 150:
+            raise RuntimeError(f"split utterance is effectively silent (RMS={rms:.1f})")
+        segments.append(struct.pack("<" + "h" * len(segment_samples), *segment_samples))
     return segments
 
 
