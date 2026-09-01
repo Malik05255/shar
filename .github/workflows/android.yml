@@ -16,7 +16,7 @@ jobs:
     name: Build installable debug APK
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,22 +33,6 @@ jobs:
 
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-
-      - name: Install pinned Saudi neural voice generator
-        shell: bash
-        run: |
-          set -euo pipefail
-          COUNT=$(find police-app/src/main/res/raw -maxdepth 1 -type f -name 'voice_*.wav' 2>/dev/null | wc -l)
-          if [[ "$COUNT" -eq 15 ]]; then
-            echo "Committed voice pack detected; external synthesis tools are not required."
-            exit 0
-          fi
-          python3 -m pip install --disable-pip-version-check --no-cache-dir 'edge-tts==7.2.8'
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends ffmpeg
-          fi
-          ffmpeg -version | head -1
 
       - name: Restore permanent signing key when configured
         shell: bash
@@ -83,12 +67,8 @@ jobs:
           test -s "$DRAW_DIR/cinematic_office_reference.png"
           echo "No cinematic MP4 is bundled into the APK."
 
-      - name: Generate or validate bundled natural Saudi speech
+      - name: Validate committed Saudi voice pack
         shell: bash
-        env:
-          ALSHORTI_EDGE_POLICE_VOICE: ar-SA-HamedNeural
-          ALSHORTI_EDGE_POLICE_RATE: '-4%'
-          ALSHORTI_EDGE_POLICE_PITCH: '-2Hz'
         run: |
           set -euo pipefail
           python3 tools/generate_bundled_natural_voice.py
@@ -139,41 +119,8 @@ jobs:
               if rms <= 150:
                   raise SystemExit(f'{name}: effectively silent (RMS={rms:.1f})')
               print(f'{name}: {duration:.2f}s RMS={rms:.1f}')
-          print(f'Audited {len(expected)} natural speech assets.')
+          print(f'Audited {len(expected)} committed natural speech assets.')
           PY
-
-      - name: Persist validated voice pack to branch
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
-        shell: bash
-        env:
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-          ORIGINAL_SHA=$(git rev-parse HEAD)
-          PACK="$RUNNER_TEMP/alshorti-validated-voice-pack"
-          mkdir -p "$PACK"
-          cp police-app/src/main/res/raw/voice_*.wav "$PACK/"
-
-          git fetch origin "$HEAD_BRANCH"
-          git checkout -B "$HEAD_BRANCH" "origin/$HEAD_BRANCH"
-          mkdir -p police-app/src/main/res/raw
-          cp "$PACK"/*.wav police-app/src/main/res/raw/
-          git add police-app/src/main/res/raw/voice_*.wav
-
-          if ! git diff --cached --quiet; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git commit -m 'Bundle validated Saudi neural voice pack'
-            git push origin "HEAD:$HEAD_BRANCH"
-            echo "Validated voice pack persisted to $HEAD_BRANCH."
-          else
-            echo "Validated voice pack already committed."
-          fi
-
-          git checkout --detach "$ORIGINAL_SHA"
-          mkdir -p police-app/src/main/res/raw
-          cp "$PACK"/*.wav police-app/src/main/res/raw/
 
       - name: Build Al-Shorti
         env:
