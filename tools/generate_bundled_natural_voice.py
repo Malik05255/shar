@@ -56,13 +56,41 @@ def validate_wav(path: pathlib.Path) -> tuple[float, float]:
     return duration, rms
 
 
+def expected_names(entries: list[dict]) -> list[str]:
+    return sorted(f"voice_{item['id']}.wav" for item in entries)
+
+
+def validate_existing_pack(entries: list[dict], verbose: bool = True) -> bool:
+    expected = expected_names(entries)
+    actual = sorted(path.name for path in RAW_DIR.glob("voice_*.wav")) if RAW_DIR.exists() else []
+    if actual != expected:
+        if verbose:
+            print(
+                f"Committed voice pack not complete yet: found {len(actual)}/{len(expected)} files.",
+                flush=True,
+            )
+        return False
+    try:
+        for name in expected:
+            duration, rms = validate_wav(RAW_DIR / name)
+            if verbose:
+                print(f"  existing {name}: {duration:.2f}s, RMS={rms:.1f}", flush=True)
+    except Exception as exc:
+        if verbose:
+            print(f"Committed voice pack failed validation: {exc}", flush=True)
+        return False
+    if verbose:
+        print(f"Using committed validated Saudi voice pack ({len(expected)} WAV files).", flush=True)
+    return True
+
+
 def require_runtime_tools() -> None:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is required for deterministic PCM WAV conversion")
     try:
         import edge_tts  # noqa: F401
     except ImportError as exc:
-        raise SystemExit("edge-tts is required; install pinned edge-tts before generation") from exc
+        raise SystemExit("edge-tts is required only when regenerating the voice pack") from exc
 
 
 def convert_to_pcm16(source: pathlib.Path, target: pathlib.Path) -> None:
@@ -141,11 +169,15 @@ async def synthesize_one(item: dict, voice: str, rate: str, pitch: str) -> None:
 
 
 async def main_async() -> None:
-    require_runtime_tools()
     entries = json.loads(CATALOG.read_text(encoding="utf-8"))
     if len(entries) != 15:
         raise SystemExit(f"expected exactly 15 catalog entries, got {len(entries)}")
 
+    force_regenerate = os.environ.get("ALSHORTI_REGENERATE_VOICE", "").strip() == "1"
+    if not force_regenerate and validate_existing_pack(entries):
+        return
+
+    require_runtime_tools()
     voice = os.environ.get("ALSHORTI_EDGE_POLICE_VOICE", "").strip() or DEFAULT_VOICE
     rate = os.environ.get("ALSHORTI_EDGE_POLICE_RATE", "").strip() or DEFAULT_RATE
     pitch = os.environ.get("ALSHORTI_EDGE_POLICE_PITCH", "").strip() or DEFAULT_PITCH
@@ -162,21 +194,14 @@ async def main_async() -> None:
         flush=True,
     )
 
-    # Intentionally sequential. The output is generated only at build time, and serial requests avoid
-    # burst throttling while keeping every utterance independently replaceable and auditable.
     for index, item in enumerate(entries, 1):
         print(f"[{index}/{len(entries)}] {item['id']}", flush=True)
         await synthesize_one(item, voice, rate, pitch)
         await asyncio.sleep(0.25)
 
-    generated = sorted(path.name for path in RAW_DIR.glob("voice_*.wav"))
-    expected = sorted(f"voice_{item['id']}.wav" for item in entries)
-    if generated != expected:
-        raise RuntimeError(f"generated catalog mismatch: {generated} != {expected}")
-
-    for name in expected:
-        validate_wav(RAW_DIR / name)
-    print(f"Generated and validated all {len(expected)} bundled Saudi neural WAV files.")
+    if not validate_existing_pack(entries):
+        raise RuntimeError("generated voice pack did not pass final validation")
+    print("Generated and validated permanent Saudi neural voice pack.")
 
 
 def main() -> None:
