@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """Author target-owned procedural PBR for the exact Motion V2 hero.
 
-This is deliberately independent of donor UV islands.  The high-detail hero rig is the
-source of truth for semantic regions.  Each region receives its own repeating target
+This is deliberately independent of donor UV islands. The high-detail hero rig is the
+source of truth for semantic regions. Each region receives its own repeating target
 material (fur, muzzle, eyes, navy uniform, duty belt, gloves, boots), and a box-projected
-UV generated from the hero's own local coordinates.  BaseColor and tangent-space normal
+UV generated from the hero's own local coordinates. BaseColor and tangent-space normal
 textures are synthesized deterministically and packed into the GLB.
 
-The approach fixes the two failure modes seen in donor transfer candidates:
-1) no body part can sample another donor UV island;
-2) no flat vertex-color-only appearance: each surface has microstructure and a normal map.
-
-No decimation, remesh, subdivision, or skin changes are performed.  This is still a
-candidate: rendered visual inspection remains mandatory and production stays closed.
+No decimation, remesh, subdivision, or skin changes are performed. Rendered visual
+inspection remains mandatory and production stays closed.
 """
 from __future__ import annotations
 
 import json
-import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -88,8 +83,36 @@ def repeat_scale(klass: str) -> float:
     }[klass]
 
 
+def ensure_target_materials(target: bpy.types.Object) -> int:
+    """Create material slots before assigning polygon indices.
+
+    Blender clamps polygon.material_index to zero when the mesh has no material slots.
+    The previous pipeline assigned semantic indices first and created slots afterwards,
+    causing all 440k polygons to remain on material 0 and the glTF exporter to discard
+    the six unused materials. This function is intentionally called before UV/semantic
+    assignment and is idempotent when base.main later invokes copy_materials().
+    """
+    expected_names = [f"POLICE_DOG_{kind.upper()}_PBR" for kind in MATERIAL_ORDER]
+    current = [mat.name if mat else "" for mat in target.data.materials]
+    if current == expected_names:
+        return len(current)
+
+    target.data.materials.clear()
+    for kind in MATERIAL_ORDER:
+        target.data.materials.append(build_material(kind))
+
+    current = [mat.name if mat else "" for mat in target.data.materials]
+    if current != expected_names:
+        raise RuntimeError(f"Failed to author exact target PBR material slots: {current}")
+    return len(current)
+
+
 def transfer_target_uvs(target: bpy.types.Object, _donor: bpy.types.Object) -> dict[str, object]:
     mesh = target.data
+
+    # Critical ordering invariant: material slots must exist before setting material_index.
+    ensure_target_materials(target)
+
     mn, mx = base.local_bounds(target)
     extent = mx - mn
     extent = Vector(tuple(max(1e-6, float(v)) for v in extent))
@@ -111,13 +134,21 @@ def transfer_target_uvs(target: bpy.types.Object, _donor: bpy.types.Object) -> d
 
     polygon_counts: Counter[str] = Counter()
     direction_counts: Counter[str] = Counter()
+    slot_counts: Counter[int] = Counter()
     loops_written = 0
 
     for poly in mesh.polygons:
         votes = Counter(vertex_class[int(vi)] for vi in poly.vertices)
         klass = votes.most_common(1)[0][0]
-        poly.material_index = MATERIAL_INDEX[klass]
+        wanted_index = MATERIAL_INDEX[klass]
+        poly.material_index = wanted_index
+        if int(poly.material_index) != wanted_index:
+            raise RuntimeError(
+                f"Blender rejected material index {wanted_index} for {klass}; "
+                f"mesh has {len(mesh.materials)} slots"
+            )
         polygon_counts[klass] += 1
+        slot_counts[int(poly.material_index)] += 1
         axis = dominant_axis(poly.normal)
         direction_counts[f"{klass}:{axis}"] += 1
         scale = repeat_scale(klass)
@@ -128,11 +159,11 @@ def transfer_target_uvs(target: bpy.types.Object, _donor: bpy.types.Object) -> d
             nx = (float(co.x) - float(mn.x)) / float(extent.x)
             ny = (float(co.y) - float(mn.y)) / float(extent.y)
             nz = (float(co.z) - float(mn.z)) / float(extent.z)
-            if axis == 0:       # X-facing surface -> YZ projection
+            if axis == 0:
                 u, v = ny, nz
-            elif axis == 1:     # Y-facing surface -> XZ projection
+            elif axis == 1:
                 u, v = nx, nz
-            else:               # Z-facing surface -> XY projection
+            else:
                 u, v = nx, ny
             uv.data[li].uv = (u * scale, v * scale)
             loops_written += 1
@@ -143,6 +174,14 @@ def transfer_target_uvs(target: bpy.types.Object, _donor: bpy.types.Object) -> d
     if loops_written != len(mesh.loops):
         raise RuntimeError(f"Target UV loop mismatch: {loops_written} != {len(mesh.loops)}")
 
+    expected_slots = set(range(len(MATERIAL_ORDER)))
+    used_slots = {index for index, count in slot_counts.items() if count > 0}
+    if used_slots != expected_slots:
+        raise RuntimeError(
+            f"Semantic material slots not all used: used={sorted(used_slots)} expected={sorted(expected_slots)} "
+            f"counts={dict(slot_counts)}"
+        )
+
     qc = {
         "algorithm": "target-rig semantic materials + target box UV",
         "uvName": UV_NAME,
@@ -151,6 +190,8 @@ def transfer_target_uvs(target: bpy.types.Object, _donor: bpy.types.Object) -> d
         "targetLoops": len(mesh.loops),
         "loopsWritten": loops_written,
         "semanticPolygons": dict(polygon_counts),
+        "materialSlotPolygons": {str(i): int(slot_counts[i]) for i in range(len(MATERIAL_ORDER))},
+        "materialSlots": len(mesh.materials),
         "projectionBuckets": dict(direction_counts),
         "materialOrder": list(MATERIAL_ORDER),
         "donorUvUsedAtRuntime": False,
@@ -180,52 +221,52 @@ def texture_fields(kind: str, size: int) -> tuple[np.ndarray, np.ndarray, float]
     if kind == "fur":
         fibers = periodic_field(x, y, ((72, 4, .42, .2), (96, -5, .30, 1.1), (128, 7, .18, 2.0), (41, 1, .10, .6)))
         height = 0.57 * fibers + 0.28 * fine + 0.15 * broad
-        base = np.array([0.135, 0.055, 0.015], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.34 * broad + 0.24 * fibers)[..., None])
-        # Sparse darker guard-hair streaks.
-        guard = np.clip((fibers + fine - .72) * 1.7, 0.0, 1.0)[..., None]
-        rgb *= 1.0 - 0.38 * guard
+        # Warm German-shepherd brown that remains readable under cinematic lighting.
+        base_color = np.array([0.255, 0.105, 0.030], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.30 * broad + 0.22 * fibers)[..., None])
+        guard = np.clip((fibers + fine - .65) * 1.6, 0.0, 1.0)[..., None]
+        rgb *= 1.0 - 0.42 * guard
         roughness = 0.78
     elif kind == "muzzle":
         pores = periodic_field(x, y, ((39, 23, .38, .2), (61, -31, .34, 1.0), (91, 57, .28, 2.0)))
         height = 0.45 * pores + 0.30 * fine + 0.25 * broad
-        base = np.array([0.032, 0.018, 0.010], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.20 * broad + 0.12 * pores)[..., None])
-        roughness = 0.66
+        base_color = np.array([0.055, 0.027, 0.014], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.20 * broad + 0.12 * pores)[..., None])
+        roughness = 0.64
     elif kind == "eye":
         iris = 0.5 + 0.5 * periodic_field(x, y, ((8, 0, .5, 0), (0, 8, .5, 1.1)))
         height = 0.05 * fine
-        base = np.array([0.009, 0.006, 0.003], dtype=np.float32)
-        amber = np.array([0.028, 0.012, 0.002], dtype=np.float32)
-        rgb = base[None, None, :] + amber[None, None, :] * (0.15 * iris[..., None])
-        roughness = 0.20
+        base_color = np.array([0.012, 0.008, 0.004], dtype=np.float32)
+        amber = np.array([0.110, 0.045, 0.006], dtype=np.float32)
+        rgb = base_color[None, None, :] + amber[None, None, :] * (0.34 * iris[..., None])
+        roughness = 0.16
     elif kind == "uniform":
         weave = np.sin(2 * np.pi * 96 * x) * np.sin(2 * np.pi * 96 * y)
         diagonal = periodic_field(x, y, ((44, 43, .5, .3), (45, -46, .5, 1.3)))
         height = 0.52 * weave + 0.28 * diagonal + 0.20 * fine
-        base = np.array([0.010, 0.026, 0.055], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.12 * broad + 0.08 * weave)[..., None])
+        base_color = np.array([0.025, 0.064, 0.145], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.14 * broad + 0.08 * weave)[..., None])
         roughness = 0.82
     elif kind == "belt":
         grain = periodic_field(x, y, ((19, 13, .38, .4), (37, -29, .34, 1.4), (73, 59, .28, 2.4)))
         height = 0.45 * grain + 0.30 * fine + 0.25 * broad
-        base = np.array([0.010, 0.013, 0.016], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.20 * broad + 0.12 * grain)[..., None])
-        roughness = 0.58
+        base_color = np.array([0.030, 0.036, 0.044], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.20 * broad + 0.12 * grain)[..., None])
+        roughness = 0.56
     elif kind == "glove":
         grain = periodic_field(x, y, ((31, 27, .40, .2), (53, -41, .35, 1.5), (89, 71, .25, 2.2)))
         height = 0.48 * grain + 0.32 * fine + 0.20 * broad
-        base = np.array([0.012, 0.015, 0.018], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.18 * broad + 0.10 * grain)[..., None])
-        roughness = 0.64
-    else:  # boot
+        base_color = np.array([0.025, 0.031, 0.038], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.18 * broad + 0.10 * grain)[..., None])
+        roughness = 0.62
+    else:
         grain = periodic_field(x, y, ((17, 11, .40, .1), (29, -23, .34, 1.4), (59, 47, .26, 2.1)))
         height = 0.45 * grain + 0.32 * fine + 0.23 * broad
-        base = np.array([0.008, 0.010, 0.013], dtype=np.float32)
-        rgb = base[None, None, :] * (1.0 + (0.18 * broad + 0.11 * grain)[..., None])
-        roughness = 0.52
+        base_color = np.array([0.020, 0.025, 0.032], dtype=np.float32)
+        rgb = base_color[None, None, :] * (1.0 + (0.18 * broad + 0.11 * grain)[..., None])
+        roughness = 0.50
 
-    rgb = np.clip(rgb, 0.001, 0.45).astype(np.float32)
+    rgb = np.clip(rgb, 0.002, 0.70).astype(np.float32)
     return rgb, height.astype(np.float32), roughness
 
 
@@ -284,7 +325,7 @@ def build_material(kind: str) -> bpy.types.Material:
     normal_tex.extension = "REPEAT"
     normal_tex.image.colorspace_settings.name = "Non-Color"
     nmap = nodes.new("ShaderNodeNormalMap")
-    nmap.inputs["Strength"].default_value = 0.42 if kind == "fur" else 0.28
+    nmap.inputs["Strength"].default_value = 0.46 if kind == "fur" else (0.18 if kind == "eye" else 0.30)
     links.new(base_tex.outputs["Color"], bsdf.inputs["Base Color"])
     links.new(normal_tex.outputs["Color"], nmap.inputs["Color"])
     links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
@@ -295,17 +336,15 @@ def build_material(kind: str) -> bpy.types.Material:
     if bsdf.inputs.get("Roughness") is not None:
         bsdf.inputs["Roughness"].default_value = roughness
     if bsdf.inputs.get("Specular IOR Level") is not None:
-        bsdf.inputs["Specular IOR Level"].default_value = 0.34 if kind == "eye" else 0.24
+        bsdf.inputs["Specular IOR Level"].default_value = 0.42 if kind == "eye" else 0.24
+    if kind == "eye" and bsdf.inputs.get("Coat Weight") is not None:
+        bsdf.inputs["Coat Weight"].default_value = 0.35
     return mat
 
 
 def copy_target_materials(target: bpy.types.Object, _donor: bpy.types.Object) -> int:
-    target.data.materials.clear()
-    for kind in MATERIAL_ORDER:
-        target.data.materials.append(build_material(kind))
-    if len(target.data.materials) != len(MATERIAL_ORDER):
-        raise RuntimeError("Failed to author all target-owned PBR materials")
-    return len(target.data.materials)
+    # Idempotent: transfer_target_uvs already creates the slots before assigning indices.
+    return ensure_target_materials(target)
 
 
 base.transfer_uvs = transfer_target_uvs
