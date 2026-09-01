@@ -1,0 +1,107 @@
+name: Al-Shorti Guaranteed Audible APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+
+concurrency:
+  group: alshorti-guaranteed-audible-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-audible:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Load version
+        run: cat version.properties >> "$GITHUB_ENV"
+
+      - name: Require natural voice secret
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$GEMINI_API_KEY" || { echo '::error::GEMINI_API_KEY missing'; exit 1; }
+
+      - name: Prepare photoreal office master frame
+        env:
+          MASTER_FRAME_URL: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+        run: |
+          set -euo pipefail
+          mkdir -p police-app/src/main/res/drawable-nodpi
+          curl --fail --location --retry 4 --connect-timeout 20 --max-time 120 \
+            "$MASTER_FRAME_URL" \
+            --output police-app/src/main/res/drawable-nodpi/cinematic_office_reference.png
+          test -s police-app/src/main/res/drawable-nodpi/cinematic_office_reference.png
+
+      - name: Generate all bundled natural Saudi speech
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+        run: python3 tools/generate_bundled_natural_voice.py
+
+      - name: Audit bundled speech files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, wave, audioop
+          root = pathlib.Path('police-app/src/main')
+          catalog = json.loads((root/'assets/natural_voice_catalog.json').read_text())
+          raw = root/'res/raw'
+          expected = {f"voice_{x['id']}.wav" for x in catalog}
+          actual = {p.name for p in raw.glob('voice_*.wav')}
+          assert actual == expected, (actual, expected)
+          for name in sorted(expected):
+              path = raw/name
+              with wave.open(str(path), 'rb') as w:
+                  assert w.getnchannels() == 1
+                  assert w.getsampwidth() == 2
+                  assert w.getframerate() >= 16000
+                  frames = w.readframes(w.getnframes())
+                  assert w.getnframes() > 1000
+                  assert audioop.rms(frames, 2) > 150, f'{name}: effectively silent'
+              assert path.stat().st_size > 3000
+          print('Audited', len(expected), 'natural speech assets')
+          PY
+
+      - name: Build, test and lint audible APK
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
+          ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :police-app:testDebugUnitTest :police-app:lintDebug :police-app:assembleDebug
+
+      - name: Verify APK contains bundled voice resources
+        run: |
+          set -euo pipefail
+          APK=$(ls police-app/build/outputs/apk/debug/*.apk | head -1)
+          test -s "$APK"
+          python3 - "$APK" <<'PY'
+          import sys, zipfile
+          apk=sys.argv[1]
+          with zipfile.ZipFile(apk) as z:
+              raw=[n for n in z.namelist() if n.startswith('res/raw/voice_') and n.endswith('.wav')]
+              if len(raw) != 15:
+                  raise SystemExit(f'expected 15 bundled voice resources, found {len(raw)}')
+              print('APK contains', len(raw), 'bundled natural voice resources')
+          PY
+
+      - name: Upload guaranteed audible APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlShorti-${{ env.VERSION_NAME }}-guaranteed-audible
+          path: police-app/build/outputs/apk/debug/*.apk
+          retention-days: 30
