@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "freeOnly": true,
+  "stopBeforePaid": true,
+  "qualityFloor": {
+    "minimumGlbBytes": 102400,
+    "minimumHeroVertices": 10000,
+    "allowLowPolyHero": false,
+    "allowSpriteHero": false,
+    "requireManualIdentityAcceptanceBeforeProduction": true
+  },
+  "providers": [
+    {
+      "id": "local-hunyuan3d-2.1",
+      "priority": 10,
+      "class": "unlimited-open-source",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "hero-primary",
+      "notes": "Unlimited when run on suitable local/borrowed GPU; preferred production reconstruction path."
+    },
+    {
+      "id": "local-trellis",
+      "priority": 20,
+      "class": "unlimited-open-source",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "hero-candidate",
+      "notes": "Unlimited on suitable NVIDIA GPU; comparison path."
+    },
+    {
+      "id": "local-stable-fast-3d",
+      "priority": 30,
+      "class": "unlimited-open-source",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "candidate",
+      "notes": "Unlimited local GLB reconstruction; never overrides the cinematic quality gate."
+    },
+    {
+      "id": "hf-hunyuan3d-2.1-zero",
+      "priority": 40,
+      "class": "recurring-free-cloud-quota",
+      "automatedInGithub": true,
+      "adapter": "hf_hunyuan21_shape",
+      "space": "tencent/Hunyuan3D-2.1",
+      "export": true,
+      "qualityTier": "hero-primary",
+      "notes": "Official ZeroGPU Space. Shape stage only so it can fit free GPU duration."
+    },
+    {
+      "id": "hf-hunyuan3d-2-zero",
+      "priority": 50,
+      "class": "recurring-free-cloud-quota",
+      "automatedInGithub": true,
+      "adapter": "hf_hunyuan2_shape",
+      "space": "tencent/Hunyuan3D-2",
+      "export": true,
+      "qualityTier": "hero-fallback",
+      "notes": "Official older Hunyuan ZeroGPU fallback; accepted only if the same visual gate is met."
+    },
+    {
+      "id": "hf-stable-fast-3d-zero",
+      "priority": 60,
+      "class": "recurring-free-cloud-quota",
+      "automatedInGithub": false,
+      "space": "stabilityai/stable-fast-3d",
+      "export": true,
+      "qualityTier": "candidate",
+      "notes": "Official ZeroGPU GLB option. Kept as a pool member; adapter is disabled until its multi-event Gradio flow is safely automated."
+    },
+    {
+      "id": "lightning-ai-free-gpu",
+      "priority": 70,
+      "class": "recurring-free-compute-quota",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "hero-primary",
+      "notes": "Run Hunyuan/TRELLIS on a legitimate free Lightning workspace allocation."
+    },
+    {
+      "id": "kaggle-free-gpu",
+      "priority": 80,
+      "class": "recurring-free-compute-quota",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "hero-primary",
+      "notes": "Run open-source models using the account's normal free notebook GPU quota."
+    },
+    {
+      "id": "google-colab-free",
+      "priority": 90,
+      "class": "dynamic-free-compute-quota",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "candidate",
+      "notes": "Opportunistic free compute; availability is dynamic."
+    },
+    {
+      "id": "tripo-studio-free",
+      "priority": 100,
+      "class": "recurring-free-credits",
+      "automatedInGithub": false,
+      "export": true,
+      "qualityTier": "hero-comparison",
+      "notes": "Use only normal free Studio allowance and only where free export remains available. Paid API balance is never consumed automatically."
+    },
+    {
+      "id": "masterpiece-x-signup-free",
+      "priority": 110,
+      "class": "one-time-free-credits",
+      "automatedInGithub": false,
+      "export": "verify-before-use",
+      "qualityTier": "comparison",
+      "notes": "Use legitimate signup credits only after export/license verification."
+    },
+    {
+      "id": "meshy-free",
+      "priority": 120,
+      "class": "recurring-free-credits-preview-only",
+      "automatedInGithub": false,
+      "export": false,
+      "qualityTier": "reference-only",
+      "notes": "Free generation may be used for comparison/reference, but no production dependency because free downloads are restricted."
+    }
+  ]
+}

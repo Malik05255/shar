@@ -1,0 +1,190 @@
+name: Render TRELLIS Textured Hero Donor QC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-trellis-qc.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  donor-qc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DONOR_RUN_ID: '33406563097'
+      DONOR_ARTIFACT: Runtime3D-geometry-aware-textured-reference-candidate
+      DONOR_GLB: police_dog.geometry_aware.textured_reference.glb
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce candidate-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'PRODUCTION_ACTIVATION=false'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False
+          print('manifest.enabled=false')
+          PY
+
+      - name: Download exact TRELLIS donor artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DONOR_ARTIFACT }}
+          path: ${{ runner.temp }}/donor
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.DONOR_RUN_ID }}
+
+      - name: Verify donor material payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          p = Path(os.environ['RUNNER_TEMP']) / 'donor' / os.environ['DONOR_GLB']
+          d = read_glb_json(p)
+          meshes = d.get('meshes') or []
+          materials = d.get('materials') or []
+          textures = d.get('textures') or []
+          images = d.get('images') or []
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in meshes:
+              for prim in mesh.get('primitives') or []:
+                  pos = (prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          print(json.dumps({'bytes': p.stat().st_size, 'meshes': len(meshes), 'vertices': vertices,
+                            'materials': len(materials), 'textures': len(textures), 'images': len(images)}, indent=2))
+          if not meshes or vertices < 100000 or not materials or not textures or not images:
+              raise SystemExit('TRELLIS donor structural floor failed')
+          print('TRELLIS_DONOR_STRUCTURAL_GATE=PASS')
+          PY
+
+      - name: Install free Blender runtime and glTF numpy dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy libegl1 libgl1
+          blender --version | head -n 2
+          blender --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
+
+      - name: Render donor front three-quarter and side
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/donor-qc/previews"
+          cat > "$RUNNER_TEMP/render_trellis_qc.py" <<'PY'
+          import bpy, os
+          from pathlib import Path
+          from mathutils import Vector
+
+          donor = Path(os.environ['RUNNER_TEMP']) / 'donor' / os.environ['DONOR_GLB']
+          out = Path(os.environ['RUNNER_TEMP']) / 'donor-qc' / 'previews'
+          out.mkdir(parents=True, exist_ok=True)
+
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.import_scene.gltf(filepath=str(donor))
+          meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+          if not meshes:
+              raise RuntimeError('No mesh after donor import')
+          hero = max(meshes, key=lambda o: len(o.data.vertices))
+          for o in bpy.context.scene.objects:
+              if o.type == 'MESH':
+                  o.hide_render = (o != hero)
+
+          scene = bpy.context.scene
+          if scene.world is None:
+              scene.world = bpy.data.worlds.new('QC_WORLD')
+          scene.world.color = (0.025, 0.025, 0.025)
+          scene.render.engine = 'BLENDER_EEVEE'
+          scene.render.resolution_x = 768
+          scene.render.resolution_y = 1024
+          scene.render.resolution_percentage = 100
+          scene.render.image_settings.file_format = 'PNG'
+          scene.render.film_transparent = False
+
+          coords = [hero.matrix_world @ Vector(corner) for corner in hero.bound_box]
+          mn = Vector((min(p.x for p in coords), min(p.y for p in coords), min(p.z for p in coords)))
+          mx = Vector((max(p.x for p in coords), max(p.y for p in coords), max(p.z for p in coords)))
+          center = (mn + mx) * 0.5
+          ext = mx - mn
+          radius = max(ext.x, ext.y, ext.z) * 1.25
+
+          cam_data = bpy.data.cameras.new('QC_CAMERA')
+          cam = bpy.data.objects.new('QC_CAMERA', cam_data)
+          bpy.context.collection.objects.link(cam)
+          scene.camera = cam
+          cam.data.lens = 58
+
+          def point(obj, target):
+              obj.rotation_euler = (target - obj.location).to_track_quat('-Z', 'Y').to_euler()
+
+          for name, energy, size, offset in [
+              ('KEY', 1300, 0.85, (1.4,-1.2,1.4)),
+              ('FILL', 650, 0.75, (-1.0,-0.8,0.7)),
+              ('RIM', 900, 0.6, (-0.4,1.1,1.3)),
+          ]:
+              ld = bpy.data.lights.new('QC_'+name, type='AREA')
+              ld.energy = energy
+              ld.size = radius * size
+              lo = bpy.data.objects.new('QC_'+name, ld)
+              bpy.context.collection.objects.link(lo)
+              lo.location = center + Vector(offset) * radius
+              point(lo, center)
+
+          views = [
+              ('front', Vector((0.0, -2.35, 0.10))),
+              ('three_quarter', Vector((1.35, -1.95, 0.14))),
+              ('side', Vector((2.25, 0.0, 0.12))),
+              ('back', Vector((0.0, 2.35, 0.10))),
+          ]
+          for name, direction in views:
+              cam.location = center + direction * radius
+              point(cam, center)
+              scene.render.filepath = str(out / f'trellis_donor.{name}.png')
+              bpy.ops.render.render(write_still=True)
+
+          print(f'HERO_OBJECT={hero.name}')
+          print(f'HERO_VERTICES={len(hero.data.vertices)}')
+          print(f'HERO_MATERIALS={len(hero.data.materials)}')
+          print('TRELLIS_DONOR_RENDER_GATE=PASS')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+          blender --background --python "$RUNNER_TEMP/render_trellis_qc.py"
+          for f in front three_quarter side back; do
+            test -s "$RUNNER_TEMP/donor-qc/previews/trellis_donor.$f.png"
+          done
+
+      - name: Upload donor QC previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-trellis-donor-qc
+          path: ${{ runner.temp }}/donor-qc
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production gate closed
+        run: |
+          echo 'VISUAL_QC_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'

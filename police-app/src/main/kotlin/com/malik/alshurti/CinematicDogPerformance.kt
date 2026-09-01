@@ -12,17 +12,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.random.Random
 
 /**
- * Runtime performance pose shared by the photoreal fallback, AI motion clips and the GLB path.
- *
- * External attention deliberately follows the order eyes -> head -> torso.  This prevents the
- * character from snapping like a game avatar and keeps reactions readable at child eye level.
+ * Runtime performance pose shared by the photoreal fallback, cinematic clips and GLB path.
+ * External attention follows eyes -> head -> torso to avoid game-like snapping.
  */
 data class CinematicDogPose(
     val breath: Float = 0f,
@@ -57,6 +53,8 @@ fun rememberCinematicDogPose(
     val gazeTarget = when (attention) {
         DogAttention.PHONE -> -1f
         DogAttention.DOOR, DogAttention.STAFF -> 1f
+        DogAttention.MONITOR -> -0.42f
+        DogAttention.PAPER -> -0.18f
         DogAttention.CAMERA -> 0f
     }
     val gazeX by animateFloatAsState(
@@ -65,15 +63,12 @@ fun rememberCinematicDogPose(
         label = "gaze"
     )
 
-    // Head follows the eyes after a perceptible but natural delay.
-    val headTarget = gazeTarget * 1f
     val headYaw by animateFloatAsState(
-        targetValue = headTarget,
+        targetValue = gazeTarget,
         animationSpec = tween(265, delayMillis = 120, easing = FastOutSlowInEasing),
         label = "head-yaw"
     )
 
-    // Torso is deliberately slower and lower amplitude than the head.
     val torsoYaw by animateFloatAsState(
         targetValue = gazeTarget * 0.55f,
         animationSpec = tween(430, delayMillis = 250, easing = FastOutSlowInEasing),
@@ -97,11 +92,15 @@ fun rememberCinematicDogPose(
     val earLeftTarget = when (attention) {
         DogAttention.PHONE -> 0.25f
         DogAttention.DOOR, DogAttention.STAFF -> 0.95f
+        DogAttention.MONITOR -> 0.22f
+        DogAttention.PAPER -> 0.16f
         DogAttention.CAMERA -> if (phase == CallPhase.LISTENING) 0.42f else 0.12f
     }
     val earRightTarget = when (attention) {
         DogAttention.PHONE -> 0.95f
         DogAttention.DOOR, DogAttention.STAFF -> 0.32f
+        DogAttention.MONITOR -> 0.30f
+        DogAttention.PAPER -> 0.18f
         DogAttention.CAMERA -> if (phase == CallPhase.LISTENING) 0.48f else 0.16f
     }
     val earLeft by animateFloatAsState(
@@ -115,7 +114,6 @@ fun rememberCinematicDogPose(
         label = "ear-right"
     )
 
-    // Irregular blink timing avoids a visible animation loop.
     val blink = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -130,7 +128,6 @@ fun rememberCinematicDogPose(
         }
     }
 
-    // Micro posture is also irregular; it should never read as a pendulum loop.
     val microX = remember { Animatable(0f) }
     val microY = remember { Animatable(0f) }
     LaunchedEffect(phase) {

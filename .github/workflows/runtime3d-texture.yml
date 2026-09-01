@@ -1,0 +1,257 @@
+name: Texture Runtime 3D Hero Candidate - Local Reference PBR
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-texture.yml'
+      - 'runtime3d/reference_pbr_maps.py'
+      - 'runtime3d/blender_apply_reference_pbr_candidate.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reference-pbr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      MOTION_RUN_ID: '33393807309'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-candidate
+      MOTION_GLB: police_dog.motion_candidate.glb
+      HERO_REFERENCE_RUN_ID: '33391759260'
+      HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
+      HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Enforce zero-cost topology-preservation policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'CLOUD_TEXTURE_PROVIDER=false'
+          echo 'PAID_FALLBACK=false'
+          echo 'DECIMATION=false'
+          echo 'REMESH=false'
+          echo 'PRODUCTION_ACTIVATION=false'
+
+      - name: Download exact motion hero artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Download exact hero reference artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.HERO_REFERENCE_ARTIFACT }}
+          path: ${{ runner.temp }}/reference
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/motion/$MOTION_GLB"
+          test -s "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE"
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          motion = Path(os.environ['RUNNER_TEMP']) / 'motion' / os.environ['MOTION_GLB']
+          doc = read_glb_json(motion)
+          required = {
+              'IdleWork','Breathing','Blink','EyeSaccade','LookAtDesk','LookAtMonitor',
+              'LookAtCamera','LookAtDoor','LookAtStaff','ReachFile','ReviewFile','TurnPage',
+              'WriteNote','SetFileDown','UsePhone','Listen','Talk','StandUp','SitDown','Walk',
+              'LeanBack','VisemeRest','VisemeOpen','VisemeWide','VisemeRound','VisemeClosed'
+          }
+          names = {a.get('name') for a in (doc.get('animations') or [])}
+          missing = sorted(required - names)
+          skins = doc.get('skins') or []
+          max_joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          summary = {
+              'motionBytes': motion.stat().st_size,
+              'animations': len(names),
+              'missing': missing,
+              'skins': len(skins),
+              'maxJoints': max_joints,
+              'materialsBefore': len(doc.get('materials') or [])
+          }
+          print(json.dumps(summary, indent=2))
+          if missing or len(skins) < 1 or max_joints < 24:
+              raise SystemExit('Motion source contract failed')
+          ref = Path(os.environ['RUNNER_TEMP']) / 'reference' / os.environ['HERO_REFERENCE_FILE']
+          if ref.stat().st_size < 10_000:
+              raise SystemExit('Hero reference unexpectedly small')
+          print(f'heroReferenceBytes={ref.stat().st_size}')
+          PY
+
+      - name: Install local image-map dependencies
+        run: python3 -m pip install --quiet 'Pillow>=10,<12' 'numpy>=1.26,<3'
+
+      - name: Derive local reference PBR maps
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/reference-pbr/maps"
+          python3 runtime3d/reference_pbr_maps.py \
+            --reference "$RUNNER_TEMP/reference/$HERO_REFERENCE_FILE" \
+            --output-dir "$RUNNER_TEMP/reference-pbr/maps" \
+            --size 2048
+          test -s "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_basecolor.png"
+          test -s "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_roughness.png"
+          test -s "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_normal.png"
+
+      - name: Install free Blender runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender libegl1 libgl1
+          blender --version | head -n 2
+          ldconfig -p | grep -E 'libEGL\.so\.1|libGL\.so\.1'
+
+      - name: Apply reference PBR to animated hero and render QC
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/reference-pbr/previews"
+          blender --background \
+            --python runtime3d/blender_apply_reference_pbr_candidate.py -- \
+            --target "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --basecolor "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_basecolor.png" \
+            --roughness "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_roughness.png" \
+            --normal "$RUNNER_TEMP/reference-pbr/maps/police_dog.reference_normal.png" \
+            --output "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.glb" \
+            --qc "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.qc.json" \
+            --preview-dir "$RUNNER_TEMP/reference-pbr/previews"
+          test -s "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.glb"
+          test -s "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.qc.json"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.front.png"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.three_quarter.png"
+          test -s "$RUNNER_TEMP/reference-pbr/previews/police_dog.reference_pbr.side.png"
+
+      - name: Validate materials textures skin geometry and all runtime clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          root = Path(os.environ['RUNNER_TEMP']) / 'reference-pbr'
+          glb = root / 'police_dog.reference_pbr_motion_candidate.glb'
+          qc = json.loads((root / 'police_dog.reference_pbr_motion_candidate.qc.json').read_text())
+          doc = read_glb_json(glb)
+          required = {
+              'IdleWork','Breathing','Blink','EyeSaccade','LookAtDesk','LookAtMonitor',
+              'LookAtCamera','LookAtDoor','LookAtStaff','ReachFile','ReviewFile','TurnPage',
+              'WriteNote','SetFileDown','UsePhone','Listen','Talk','StandUp','SitDown','Walk',
+              'LeanBack','VisemeRest','VisemeOpen','VisemeWide','VisemeRound','VisemeClosed'
+          }
+          names = {a.get('name') for a in (doc.get('animations') or [])}
+          missing = sorted(required - names)
+          skins = doc.get('skins') or []
+          max_joints = max((len(s.get('joints') or []) for s in skins), default=0)
+          materials = doc.get('materials') or []
+          textures = doc.get('textures') or []
+          images = doc.get('images') or []
+          if not materials:
+              raise SystemExit('No exported material')
+          mat = materials[0]
+          pbr = mat.get('pbrMetallicRoughness') or {}
+          material_channels = {
+              'baseColorTexture': pbr.get('baseColorTexture') is not None,
+              'metallicRoughnessTexture': pbr.get('metallicRoughnessTexture') is not None,
+              'normalTexture': mat.get('normalTexture') is not None,
+          }
+          summary = {
+              'bytes': glb.stat().st_size,
+              'materials': len(materials),
+              'textures': len(textures),
+              'images': len(images),
+              'materialChannels': material_channels,
+              'animationCount': len(names),
+              'missingAnimations': missing,
+              'skins': len(skins),
+              'maxJoints': max_joints,
+              'meshCount': qc.get('meshCount'),
+              'meshNames': qc.get('meshNames'),
+              'geometryPreserved': qc.get('geometryPreserved'),
+              'verticesBeforeAfter': qc.get('targetVerticesBeforeAfter'),
+              'polygonsBeforeAfter': qc.get('targetPolygonsBeforeAfter'),
+              'decimationApplied': qc.get('decimationApplied'),
+              'remeshApplied': qc.get('remeshApplied'),
+              'renderEngine': qc.get('renderEngine')
+          }
+          print(json.dumps(summary, indent=2))
+          if not all(material_channels.values()):
+              raise SystemExit(f'Missing expected glTF material channel: {material_channels}')
+          if len(textures) < 2 or len(images) < 2:
+              raise SystemExit('Exported texture payload unexpectedly incomplete')
+          if missing:
+              raise SystemExit(f'Runtime animation names lost: {missing}')
+          if len(skins) < 1 or max_joints < 24:
+              raise SystemExit('Skin/joint contract failed')
+          if (qc.get('meshCount') or 0) < 1:
+              raise SystemExit('QC reports no target meshes')
+          if qc.get('geometryPreserved') is not True or qc.get('decimationApplied') is not False or qc.get('remeshApplied') is not False:
+              raise SystemExit('Topology preservation policy failed')
+          vb = qc.get('targetVerticesBeforeAfter') or []
+          pb = qc.get('targetPolygonsBeforeAfter') or []
+          if len(vb) != 2 or vb[0] != vb[1]:
+              raise SystemExit('Target vertex count changed')
+          if len(pb) != 2 or pb[0] != pb[1]:
+              raise SystemExit('Target polygon count changed')
+          for name, item in (qc.get('topologyBeforeAfter') or {}).items():
+              if item.get('vertices', [0, 1])[0] != item.get('vertices', [0, 1])[1]:
+                  raise SystemExit(f'Vertex count changed for mesh {name}')
+              if item.get('polygons', [0, 1])[0] != item.get('polygons', [0, 1])[1]:
+                  raise SystemExit(f'Polygon count changed for mesh {name}')
+          for preview in qc.get('previewFiles') or []:
+              p = root / 'previews' / preview
+              if not p.is_file() or p.stat().st_size < 10_000:
+                  raise SystemExit(f'QC preview missing/small: {preview}')
+          print('REFERENCE_PBR_STRUCTURAL_GATE=PASS')
+          print('VISUAL_FACIAL_DEVICE_ACCEPTANCE=STILL_REQUIRED')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+          cp "$RUNNER_TEMP/reference-pbr/police_dog.reference_pbr_motion_candidate.glb" "$RUNNER_TEMP/reference-pbr/police_dog.glb"
+          python3 runtime3d/inspect_glb.py "$RUNNER_TEMP/reference-pbr/police_dog.glb"
+          echo 'STRICT_GLB_CONTRACT=PASS'
+          echo 'PRODUCTION_GATE=CLOSED'
+
+      - name: Upload reference PBR motion candidate and QC
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-reference-pbr-motion-candidate
+          path: ${{ runner.temp }}/reference-pbr
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production manifest closed
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False, 'Production manifest must remain disabled during visual QC'
+          print('manifest.enabled=false')
+          print('PRODUCTION_GATE=CLOSED')
+          PY

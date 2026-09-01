@@ -1,0 +1,77 @@
+name: Install Approved Office Foley
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/install-approved-office-foley.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      APPROVED_ARTIFACT_ID: '9777378700'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download exact approved Foley artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/approved-foley"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${APPROVED_ARTIFACT_ID}/zip" > "$RUNNER_TEMP/approved-foley.zip"
+          unzip -q "$RUNNER_TEMP/approved-foley.zip" -d "$RUNNER_TEMP/approved-foley"
+          find "$RUNNER_TEMP/approved-foley" -type f -maxdepth 8 -print
+
+      - name: Verify approved bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/approved-foley"
+          PHONE="$(find "$ROOT" -type f -name phone_ring.ogg -print -quit)"
+          OPEN="$(find "$ROOT" -type f -name door_open.ogg -print -quit)"
+          CLOSE="$(find "$ROOT" -type f -name door_close.ogg -print -quit)"
+          PAGE="$(find "$ROOT" -type f -name page_turn.ogg -print -quit)"
+          test -n "$PHONE" && test -n "$OPEN" && test -n "$CLOSE" && test -n "$PAGE"
+          echo "ef116d48e4ec85db965e25f9871882ed73ba7cb3a1dea264ed48214d0fdd3905  $PHONE" | sha256sum -c -
+          echo "c17b3ffc177ac930f67a3e34d6670500cce92e7dcad3a20f3805ece495b995c3  $OPEN" | sha256sum -c -
+          echo "634d702a90f9e89a284de5738708e3d77782ed15914facc66693ca0e0b5c55dc  $CLOSE" | sha256sum -c -
+          echo "a081c8d0572c8cff6a107ddbf1c3ded29908d2e5979b935eb223940fe7e27e76  $PAGE" | sha256sum -c -
+          echo 'APPROVED_FOLEY_HASH_GATE=PASS'
+
+      - name: Install exact bytes into Android raw resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/approved-foley"
+          DEST="police-app/src/main/res/raw"
+          mkdir -p "$DEST"
+          cp "$(find "$ROOT" -type f -name phone_ring.ogg -print -quit)" "$DEST/foley_phone_ring.ogg"
+          cp "$(find "$ROOT" -type f -name door_open.ogg -print -quit)" "$DEST/foley_door_open.ogg"
+          cp "$(find "$ROOT" -type f -name door_close.ogg -print -quit)" "$DEST/foley_door_close.ogg"
+          cp "$(find "$ROOT" -type f -name page_turn.ogg -print -quit)" "$DEST/foley_page_turn.ogg"
+
+          echo 'ef116d48e4ec85db965e25f9871882ed73ba7cb3a1dea264ed48214d0fdd3905  police-app/src/main/res/raw/foley_phone_ring.ogg' | sha256sum -c -
+          echo 'c17b3ffc177ac930f67a3e34d6670500cce92e7dcad3a20f3805ece495b995c3  police-app/src/main/res/raw/foley_door_open.ogg' | sha256sum -c -
+          echo '634d702a90f9e89a284de5738708e3d77782ed15914facc66693ca0e0b5c55dc  police-app/src/main/res/raw/foley_door_close.ogg' | sha256sum -c -
+          echo 'a081c8d0572c8cff6a107ddbf1c3ded29908d2e5979b935eb223940fe7e27e76  police-app/src/main/res/raw/foley_page_turn.ogg' | sha256sum -c -
+
+          git add "$DEST/foley_phone_ring.ogg" "$DEST/foley_door_open.ogg" "$DEST/foley_door_close.ogg" "$DEST/foley_page_turn.ogg"
+          if git diff --cached --quiet; then
+            echo 'ANDROID_FOLEY_ALREADY_CURRENT=true'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Install approved recorded office Foley'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo 'ANDROID_FOLEY_COMMITTED=true'

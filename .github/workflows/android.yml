@@ -3,13 +3,9 @@ name: Al-Shorti Android CI
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - dev
+    branches: [main, dev]
   pull_request:
-    branches:
-      - main
-      - dev
+    branches: [main, dev]
 
 concurrency:
   group: alshorti-android-${{ github.workflow }}-${{ github.ref }}
@@ -24,29 +20,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
-      - name: Check Gemini natural voice configuration
-        id: voice
-        shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$GEMINI_API_KEY" ]]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Gemini natural voice is not configured. Missing repository secret: GEMINI_API_KEY"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
+
       - name: Restore permanent signing key when configured
         shell: bash
         env:
@@ -57,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
-            echo "Permanent signing not configured; this CI run will use the Android debug certificate."
+            echo "Permanent signing not configured; using Android debug certificate."
             exit 0
           fi
           KEYSTORE_FILE="$RUNNER_TEMP/alshorti-release.jks"
@@ -65,136 +52,164 @@ jobs:
           chmod 600 "$KEYSTORE_FILE"
           test -s "$KEYSTORE_FILE"
           echo "ALSHORTI_KEYSTORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
-      - name: Prepare cinematic dog motion assets
+
+      - name: Prepare exact cinematic fallback frame
         shell: bash
         env:
           MASTER_FRAME_URL: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
-          DOG_IDLE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142010_21ee919f-e378-4db1-b7ed-66e367acc0e3.mp4
-          DOG_TALK_SEATED_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142018_248ecb5a-3804-457a-9a43-9b19de5f8121.mp4
-          DOG_STAND_UP_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_141957_53df74a5-4bcb-445d-95a5-69182cd4f0d5.mp4
-          DOG_TALK_STANDING_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142642_29bd6e49-40ad-484b-97f2-ebed9197a923.mp4
-          DOG_APPROACH_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142734_345318c2-5f9c-4f87-b067-8ca5bb5c5b54.mp4
-          DOG_PHONE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_140952_4319b02c-dc65-4750-b24f-f5459350058b.mp4
-          DOG_DOOR_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142029_d4e858db-fdfa-46ce-a248-34ccf47f19de.mp4
-          DOG_REVIEW_FILE_URL: https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_145806_3f9ed13a-6db3-41a4-a89a-34a383d9f5a3.mp4
         run: |
           set -euo pipefail
-          RAW_DIR="police-app/src/main/res/raw"
           DRAW_DIR="police-app/src/main/res/drawable-nodpi"
-          mkdir -p "$RAW_DIR" "$DRAW_DIR"
-          fetch_asset() {
-            local url="$1"
-            local out="$2"
-            echo "Downloading $(basename "$out")"
-            curl --fail --location --retry 4 --retry-delay 2 --connect-timeout 20 --max-time 180 "$url" --output "$out"
-            test -s "$out"
-          }
+          mkdir -p "$DRAW_DIR"
           rm -f "$DRAW_DIR/cinematic_office_reference.jpg" "$DRAW_DIR/cinematic_office_reference.png"
-          rm -f "$RAW_DIR/dog_idle_living.mp4" "$RAW_DIR/dog_talk_seated_living.mp4" "$RAW_DIR/dog_talk_standing_living.mp4"
-          fetch_asset "$MASTER_FRAME_URL" "$DRAW_DIR/cinematic_office_reference.png"
-          fetch_asset "$DOG_IDLE_URL" "$RAW_DIR/dog_idle_loop.mp4"
-          fetch_asset "$DOG_TALK_SEATED_URL" "$RAW_DIR/dog_talk_seated.mp4"
-          fetch_asset "$DOG_STAND_UP_URL" "$RAW_DIR/dog_stand_up.mp4"
-          fetch_asset "$DOG_TALK_STANDING_URL" "$RAW_DIR/dog_talk_standing.mp4"
-          fetch_asset "$DOG_APPROACH_URL" "$RAW_DIR/dog_approach_camera.mp4"
-          fetch_asset "$DOG_PHONE_URL" "$RAW_DIR/dog_answer_phone.mp4"
-          fetch_asset "$DOG_DOOR_URL" "$RAW_DIR/dog_walk_to_door.mp4"
-          fetch_asset "$DOG_REVIEW_FILE_URL" "$RAW_DIR/dog_review_file.mp4"
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg
-          fi
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_stand_up.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_sit_down.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_walk_to_door.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_to_desk.mp4"
-          ffmpeg -hide_banner -loglevel error -y -i "$RAW_DIR/dog_approach_camera.mp4" -an -vf reverse -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -movflags +faststart "$RAW_DIR/dog_return_from_camera.mp4"
-          echo "Cinematic assets bundled (all playback is one-shot):"
-          du -h "$DRAW_DIR/cinematic_office_reference.png" "$RAW_DIR"/*.mp4
-      - name: Verify Gemini Saudi-directed voice end-to-end
-        if: steps.voice.outputs.ready == 'true'
+          curl --fail --location --retry 4 --connect-timeout 20 --max-time 120 \
+            "$MASTER_FRAME_URL" --output "$DRAW_DIR/cinematic_office_reference.png"
+          test -s "$DRAW_DIR/cinematic_office_reference.png"
+          echo "Photoreal frame prepared beneath non-repeating cinematic motion."
+
+      - name: Bundle verified local Whisper ASR
         shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
         run: |
           set -euo pipefail
-          VOICE="${ALSHORTI_GEMINI_POLICE_VOICE:-Gacrux}"
-          RESPONSE="$RUNNER_TEMP/gemini-tts-response.json"
-          WAV="$RUNNER_TEMP/alshorti-gemini-smoke.wav"
-          PAYLOAD=$(python3 - <<PY
+          ASR_DIR="police-app/src/main/assets/asr/whisper-tiny-int8"
+          mkdir -p "$ASR_DIR"
+          BASE="https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny/resolve/main"
+
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 240 \
+            "$BASE/tiny-encoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-encoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 300 \
+            "$BASE/tiny-decoder.int8.onnx?download=true" \
+            --output "$ASR_DIR/tiny-decoder.int8.onnx"
+          curl --fail --location --retry 5 --connect-timeout 20 --max-time 120 \
+            "$BASE/tiny-tokens.txt?download=true" \
+            --output "$ASR_DIR/tiny-tokens.txt"
+
+          printf '%s  %s\n' \
+            'd24fb083ae3b1041fc24e97971d60e280c9342201fbb67b0ab428a8b4a51a434' \
+            "$ASR_DIR/tiny-encoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'd2fece8dd42771f1df975c6c0445770d0c292bf7547c2cae04a6c0cc57540925' \
+            "$ASR_DIR/tiny-decoder.int8.onnx" | sha256sum -c -
+          printf '%s  %s\n' \
+            'b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126' \
+            "$ASR_DIR/tiny-tokens.txt" | sha256sum -c -
+
+          test "$(stat -c%s "$ASR_DIR/tiny-encoder.int8.onnx")" -ge 12000000
+          test "$(stat -c%s "$ASR_DIR/tiny-decoder.int8.onnx")" -ge 85000000
+          test "$(stat -c%s "$ASR_DIR/tiny-tokens.txt")" -ge 700000
+          echo "Verified Whisper Tiny INT8 is bundled; cloud transcription is not required."
+
+      - name: Validate committed Saudi voice pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/generate_bundled_natural_voice.py
+
+      - name: Audit bundled speech before build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
           import json
-          voice = "${VOICE}"
-          prompt = """Generate speech audio only. Do not speak these directions. Voice direction: Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent, mature calm presence, warm with children, not a broadcaster. Speak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\nهلا يا بطل، معك الشرطي. وش عندك؟"""
-          print(json.dumps({
-            "model": "gemini-3.1-flash-tts-preview",
-            "input": prompt,
-            "response_format": {"type": "audio"},
-            "generation_config": {"speech_config": [{"voice": voice}]}
-          }, ensure_ascii=False))
+          import math
+          import pathlib
+          import struct
+          import wave
+
+          root = pathlib.Path('police-app/src/main')
+          catalog = json.loads((root / 'assets/natural_voice_catalog.json').read_text(encoding='utf-8'))
+          raw_dir = root / 'res/raw'
+          expected = {f"voice_{entry['id']}.wav" for entry in catalog}
+          actual = {p.name for p in raw_dir.glob('voice_*.wav')}
+          if actual != expected:
+              raise SystemExit(f'voice catalog mismatch: actual={sorted(actual)} expected={sorted(expected)}')
+          if len(expected) != 15:
+              raise SystemExit(f'expected exactly 15 catalog voices, got {len(expected)}')
+
+          for name in sorted(expected):
+              path = raw_dir / name
+              if path.stat().st_size <= 3000:
+                  raise SystemExit(f'{name}: unexpectedly small')
+              with wave.open(str(path), 'rb') as wav:
+                  if wav.getnchannels() != 1:
+                      raise SystemExit(f'{name}: expected mono')
+                  if wav.getsampwidth() != 2:
+                      raise SystemExit(f'{name}: expected PCM16')
+                  if wav.getframerate() != 24000:
+                      raise SystemExit(f'{name}: expected 24000 Hz')
+                  if wav.getnframes() <= 1000:
+                      raise SystemExit(f'{name}: too short')
+                  duration = wav.getnframes() / wav.getframerate()
+                  if duration < 0.70:
+                      raise SystemExit(f'{name}: duration too short ({duration:.2f}s)')
+                  frames = wav.readframes(wav.getnframes())
+              sample_count = len(frames) // 2
+              if sample_count == 0:
+                  raise SystemExit(f'{name}: empty PCM')
+              samples = struct.unpack('<' + 'h' * sample_count, frames[:sample_count * 2])
+              rms = math.sqrt(sum(s * s for s in samples) / sample_count)
+              if rms <= 150:
+                  raise SystemExit(f'{name}: effectively silent (RMS={rms:.1f})')
+              print(f'{name}: {duration:.2f}s RMS={rms:.1f}')
+          print(f'Audited {len(expected)} committed natural speech assets.')
           PY
-          )
-          HTTP_CODE=$(curl --silent --show-error --location --output "$RESPONSE" --write-out '%{http_code}' --connect-timeout 15 --max-time 60 -X POST "https://generativelanguage.googleapis.com/v1beta/interactions" -H "x-goog-api-key: ${GEMINI_API_KEY}" -H 'Content-Type: application/json' -H 'Api-Revision: 2026-05-20' --data "$PAYLOAD")
-          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
-            echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
-            python3 - <<PY
-          import json
-          try:
-              data=json.load(open("$RESPONSE"))
-              print(data.get("error",{}).get("message","Gemini request failed")[:500])
-          except Exception:
-              pass
-          PY
-            exit 1
-          fi
-          python3 - <<PY
-          import base64, json, wave
-          data = json.load(open("$RESPONSE"))
-          audio = None
-          for step in data.get("steps", []):
-              if step.get("type") == "model_output":
-                  for block in step.get("content", []):
-                      if block.get("type") == "audio" and block.get("data"):
-                          audio = block
-                          break
-              if audio: break
-          if not audio:
-              for key in ("output_audio", "outputAudio"):
-                  candidate = data.get(key)
-                  if isinstance(candidate, dict) and candidate.get("data"):
-                      audio = candidate; break
-          if not audio:
-              raise SystemExit("Gemini REST response contained no audio content block")
-          raw = base64.b64decode(audio["data"])
-          if len(raw) < 3000: raise SystemExit("Gemini returned an unexpectedly short audio payload")
-          mime = (audio.get("mime_type") or audio.get("mimeType") or "").lower()
-          if mime.startswith("audio/wav") or raw[:4] == b"RIFF":
-              open("$WAV", "wb").write(raw)
-          elif mime.startswith("audio/l16") or mime.startswith("audio/pcm") or not mime:
-              rate = int(audio.get("sample_rate") or audio.get("sampleRate") or 24000)
-              with wave.open("$WAV", "wb") as w:
-                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(raw)
-          else:
-              raise SystemExit("Unexpected Gemini audio MIME: " + mime)
-          print("Gemini Saudi-directed TTS payload bytes:", len(raw), "mime:", mime or "unspecified")
-          PY
-          test -s "$WAV"
-          ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$WAV"
-          echo "Gemini 3.1 TTS returned a decodable Saudi-directed audio stream using ${VOICE}."
-          rm -f "$RESPONSE" "$WAV"
+
       - name: Build Al-Shorti
         env:
           ALSHORTI_KEYSTORE_PASSWORD: ${{ secrets.ALSHORTI_KEYSTORE_PASSWORD }}
           ALSHORTI_KEY_ALIAS: ${{ secrets.ALSHORTI_KEY_ALIAS }}
           ALSHORTI_KEY_PASSWORD: ${{ secrets.ALSHORTI_KEY_PASSWORD }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
-          ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
+
+      - name: Verify APK contains local listening and natural speech
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls police-app/build/outputs/apk/debug/*.apk | head -1)
+          test -s "$APK"
+          python3 - "$APK" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import zipfile
+
+          apk = pathlib.Path(sys.argv[1])
+          catalog = json.loads(pathlib.Path('police-app/src/main/assets/natural_voice_catalog.json').read_text(encoding='utf-8'))
+          expected_voice = {f"res/raw/voice_{entry['id']}.wav" for entry in catalog}
+          expected_asr = {
+              'assets/asr/whisper-tiny-int8/tiny-encoder.int8.onnx': 12_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-decoder.int8.onnx': 85_000_000,
+              'assets/asr/whisper-tiny-int8/tiny-tokens.txt': 700_000,
+          }
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+              missing_voice = sorted(expected_voice - names)
+              if missing_voice:
+                  raise SystemExit(f'APK missing bundled natural voices: {missing_voice}')
+              actual_voice = sorted(name for name in names if name.startswith('res/raw/voice_') and name.endswith('.wav'))
+              if len(actual_voice) != 15:
+                  raise SystemExit(f'APK expected 15 bundled voices, found {len(actual_voice)}')
+              for name in actual_voice:
+                  if len(archive.read(name)) <= 3000:
+                      raise SystemExit(f'{name}: embedded file unexpectedly small')
+              for name, minimum in expected_asr.items():
+                  if name not in names:
+                      raise SystemExit(f'APK missing local ASR asset: {name}')
+                  if len(archive.read(name)) < minimum:
+                      raise SystemExit(f'{name}: embedded ASR asset unexpectedly small')
+          print('APK contains 15 natural speech resources and the complete local Whisper ASR model.')
+          PY
+
+      - name: Report APK size
+        run: du -h police-app/build/outputs/apk/debug/*.apk
+
       - name: Upload APK
-        if: steps.voice.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: AlShorti-${{ env.VERSION_NAME }}-debug
+          name: AlShorti-${{ env.VERSION_NAME }}-local-listening-living-scene
           path: police-app/build/outputs/apk/debug/*.apk
+          retention-days: 30
 
   unit-tests:
     name: Unit tests
@@ -202,16 +217,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - run: chmod +x gradlew
       - name: Run tests
         run: ./gradlew --no-daemon :police-app:testDebugUnitTest
 
@@ -221,15 +233,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
           cache: gradle
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - run: chmod +x gradlew
       - name: Run lint
         run: ./gradlew --no-daemon :police-app:lintDebug

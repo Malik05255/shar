@@ -1,0 +1,58 @@
+name: Validate Runtime 3D Pack
+
+on:
+  pull_request:
+    paths:
+      - 'runtime3d/**'
+      - 'police-app/src/main/kotlin/com/malik/alshurti/Runtime3D**'
+      - 'police-app/src/main/kotlin/com/malik/alshurti/RuntimeOfficePlanBus.kt'
+      - '.github/workflows/runtime3d.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'runtime3d/**'
+      - 'police-app/src/main/kotlin/com/malik/alshurti/Runtime3D**'
+      - 'police-app/src/main/kotlin/com/malik/alshurti/RuntimeOfficePlanBus.kt'
+      - '.github/workflows/runtime3d.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate manifest schema and completeness
+        run: python3 runtime3d/validate_manifest.py
+
+      - name: Verify enabled asset URLs and exact byte counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/runtime3d-assets.tsv"
+          import json
+          data=json.load(open('runtime3d/manifest.json', encoding='utf-8'))
+          if not data.get('enabled', False):
+              raise SystemExit(0)
+          for actor in data['actors']:
+              print(f"{actor['id']}\t{actor['bytes']}\t{actor['url']}")
+          PY
+
+          if [[ ! -s "$RUNNER_TEMP/runtime3d-assets.tsv" ]]; then
+            echo 'Runtime 3D pack is disabled; network verification skipped.'
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r actor bytes url; do
+            headers="$RUNNER_TEMP/${actor}.headers"
+            curl --fail --silent --show-error --location --head \
+              --connect-timeout 15 --max-time 45 "$url" > "$headers"
+            remote_bytes=$(awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub("\r",""); value=$2} END{print value}' "$headers")
+            if [[ -n "$remote_bytes" && "$remote_bytes" != "$bytes" ]]; then
+              echo "::error::$actor content-length $remote_bytes does not match manifest bytes $bytes"
+              exit 1
+            fi
+            echo "$actor OK"
+          done < "$RUNNER_TEMP/runtime3d-assets.tsv"

@@ -3,26 +3,25 @@ package com.malik.alshurti
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import java.util.ArrayDeque
+import kotlin.random.Random
 
 /**
- * State-specific cinematic performance player.
+ * Continuous cinematic fallback director.
  *
- * Every generated clip is one-shot. The final rendered frame stays on screen until another action
- * arrives; no idle/talk clip is looped or ping-ponged. This avoids the visible "same scene again"
- * effect while keeping real motion for each conversation/action transition.
+ * This path is used only while a validated animated 3D pack is unavailable. Unlike the old finite
+ * deck, motion never "runs out". Clips may be reused after a cooldown, never as an immediate repeat,
+ * and every replay receives a new randomized start seed. The photoreal master frame remains below
+ * the video at all times, so a CDN/player failure degrades gracefully instead of freezing black.
  */
 @Composable
 fun AiCinematicDogStage(
@@ -33,79 +32,65 @@ fun AiCinematicDogStage(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var stickyAction by remember { mutableStateOf<DogAction?>(null) }
-    var stickyJob by remember { mutableStateOf<Job?>(null) }
+    val recentAmbient = remember { ArrayDeque<DogAction>() }
+    val random = remember { Random(System.nanoTime()) }
+    var playbackNonce by remember { mutableLongStateOf(1L) }
+    var currentAction by remember { mutableStateOf<DogAction?>(null) }
+    var forcedContinuation by remember { mutableStateOf<DogAction?>(null) }
 
-    LaunchedEffect(officeScene.revision) {
-        val eventAction = when {
-            officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
-            officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
-            officeScene.cue == OfficeCue.DOOR_OPEN -> DogAction.WALK_TO_DOOR
-            officeScene.cue == OfficeCue.STAFF_SPEAK || officeScene.staffSpeaking -> DogAction.GREET_STAFF
-            officeScene.cue == OfficeCue.DOOR_CLOSE -> DogAction.RETURN_TO_DESK
-            else -> null
-        }
-        if (eventAction != null) {
-            stickyJob?.cancel()
-            stickyAction = eventAction
-            val holdMs = when (eventAction) {
-                DogAction.REVIEW_FILE -> 5_100L
-                DogAction.ANSWER_PHONE -> 6_100L
-                DogAction.WALK_TO_DOOR -> 6_100L
-                DogAction.GREET_STAFF -> 4_800L
-                DogAction.RETURN_TO_DESK -> 6_100L
-                else -> 4_500L
+    fun rememberAmbient(action: DogAction) {
+        recentAmbient.remove(action)
+        recentAmbient.addLast(action)
+        while (recentAmbient.size > AMBIENT_COOLDOWN) recentAmbient.removeFirst()
+    }
+
+    fun nextAmbient(excluding: DogAction? = null): DogAction {
+        val available = AMBIENT_POOL.filter { candidate ->
+            candidate != excluding &&
+                candidate !in recentAmbient &&
+                RemoteCinematicAssets.sourceFor(candidate) != null
+        }.ifEmpty {
+            AMBIENT_POOL.filter { candidate ->
+                candidate != excluding && RemoteCinematicAssets.sourceFor(candidate) != null
             }
-            stickyJob = scope.launch {
-                delay(holdMs)
-                if (stickyAction == eventAction) stickyAction = null
+        }.ifEmpty { listOf(DogAction.SEATED_IDLE) }
+
+        val chosen = available[random.nextInt(available.size)]
+        rememberAmbient(chosen)
+        return chosen
+    }
+
+    val explicitEvent = when {
+        officeScene.phoneRinging || officeScene.cue == OfficeCue.PHONE_RING -> DogAction.ANSWER_PHONE
+        officeScene.cue == OfficeCue.DOOR_OPEN -> DogAction.WALK_TO_DOOR
+        officeScene.cue == OfficeCue.DOOR_CLOSE -> DogAction.RETURN_TO_DESK
+        officeScene.cue == OfficeCue.STAFF_SPEAK || officeScene.staffSpeaking -> DogAction.GREET_STAFF
+        officeScene.cue == OfficeCue.PAPER_RUSTLE -> DogAction.REVIEW_FILE
+        officeScene.dogAction == DogAction.STAND_UP -> DogAction.STAND_UP
+        officeScene.dogAction == DogAction.SIT_DOWN -> DogAction.SIT_DOWN
+        else -> null
+    }
+
+    LaunchedEffect(phase, officeScene.revision, explicitEvent) {
+        forcedContinuation = null
+        currentAction = when (phase) {
+            CallPhase.SPEAKING -> if (officeScene.dogAction == DogAction.TALK_STANDING) {
+                DogAction.TALK_STANDING
+            } else {
+                DogAction.TALK_SEATED
             }
+            CallPhase.THINKING -> DogAction.REVIEW_FILE
+            CallPhase.LISTENING -> explicitEvent ?: currentAction ?: nextAmbient()
+            CallPhase.STARTING -> DogAction.SEATED_IDLE
+            CallPhase.ERROR -> DogAction.SEATED_IDLE
         }
+        playbackNonce += 1L
     }
 
-    DisposableEffect(Unit) {
-        onDispose { stickyJob?.cancel() }
-    }
+    val requestedAction = forcedContinuation ?: currentAction ?: DogAction.SEATED_IDLE
+    val remoteSource = RemoteCinematicAssets.sourceFor(requestedAction)
 
-    val requestedAction = when {
-        officeScene.dogAction != DogAction.SEATED_IDLE -> officeScene.dogAction
-        stickyAction != null -> stickyAction!!
-        officeScene.phoneRinging || officeScene.attention == DogAttention.PHONE -> DogAction.ANSWER_PHONE
-        officeScene.staffSpeaking || officeScene.staffAtDoor -> DogAction.GREET_STAFF
-        officeScene.doorOpen || officeScene.attention == DogAttention.DOOR -> DogAction.WALK_TO_DOOR
-        phase == CallPhase.SPEAKING -> DogAction.TALK_SEATED
-        else -> DogAction.SEATED_IDLE
-    }
-
-    val candidateClipNames = remember(requestedAction) {
-        when (requestedAction) {
-            DogAction.SEATED_IDLE -> listOf("dog_idle_loop")
-            DogAction.TALK_SEATED -> listOf("dog_talk_seated")
-            DogAction.STAND_UP -> listOf("dog_stand_up")
-            DogAction.TALK_STANDING -> listOf("dog_talk_standing")
-            DogAction.WALK_AROUND_DESK -> listOf("dog_walk_around_desk")
-            DogAction.APPROACH_CAMERA -> listOf("dog_approach_camera")
-            DogAction.RETURN_FROM_CAMERA -> listOf("dog_return_from_camera")
-            DogAction.WALK_TO_PHONE -> listOf("dog_walk_to_phone")
-            DogAction.ANSWER_PHONE -> listOf("dog_answer_phone")
-            DogAction.WALK_TO_DOOR -> listOf("dog_walk_to_door")
-            DogAction.GREET_STAFF -> listOf("dog_greet_staff", "dog_walk_to_door")
-            DogAction.RETURN_TO_DESK -> listOf("dog_return_to_desk")
-            DogAction.REVIEW_FILE -> listOf("dog_review_file")
-            DogAction.SIT_DOWN -> listOf("dog_sit_down")
-        }
-    }
-
-    val resolvedClip = remember(candidateClipNames) {
-        candidateClipNames.firstNotNullOfOrNull { name ->
-            context.resources.getIdentifier(name, "raw", context.packageName)
-                .takeIf { it != 0 }
-                ?.let { name to it }
-        }
-    }
-
-    if (resolvedClip == null) {
+    if (remoteSource == null) {
         PhotorealPoliceDogFallback(
             phase = phase,
             attention = officeScene.attention,
@@ -114,9 +99,69 @@ fun AiCinematicDogStage(
         return
     }
 
-    val (_, clipResId) = resolvedClip
-    val playbackSeed = remember(requestedAction, clipResId) {
-        System.nanoTime() xor (requestedAction.ordinal.toLong() shl 33) xor clipResId.toLong()
+    LaunchedEffect(requestedAction, remoteSource) {
+        CinematicMediaCache.prefetch(
+            context = context,
+            urls = buildList {
+                add(remoteSource)
+                addAll(RemoteCinematicAssets.likelyNext(requestedAction))
+                if (phase == CallPhase.LISTENING) {
+                    AMBIENT_POOL.mapNotNull(RemoteCinematicAssets::sourceFor)
+                        .filterNot { it == remoteSource }
+                        .take(3)
+                        .let(::addAll)
+                }
+            }.distinct()
+        )
+    }
+
+    val playbackSource = remember(remoteSource, playbackNonce) {
+        CinematicMediaCache.localOrRemote(context, remoteSource)
+    }
+    val playbackSeed = remember(requestedAction, playbackSource, playbackNonce, officeScene.revision) {
+        System.nanoTime() xor
+            (requestedAction.ordinal.toLong() shl 31) xor
+            playbackSource.hashCode().toLong() xor
+            playbackNonce xor
+            officeScene.revision.toLong()
+    }
+    val randomizeStart = requestedAction in setOf(
+        DogAction.TALK_SEATED,
+        DogAction.TALK_STANDING,
+        DogAction.SEATED_IDLE,
+        DogAction.REVIEW_FILE
+    )
+
+    fun advance(completed: DogAction) {
+        playbackNonce += 1L
+        when (phase) {
+            CallPhase.SPEAKING -> {
+                // Never exhaust speaking motion. Keep the same physical posture until TTS ends,
+                // but restart at a different point in the take so long replies remain alive.
+                forcedContinuation = if (officeScene.dogAction == DogAction.TALK_STANDING) {
+                    DogAction.TALK_STANDING
+                } else {
+                    DogAction.TALK_SEATED
+                }
+            }
+            CallPhase.THINKING -> {
+                forcedContinuation = if (completed == DogAction.REVIEW_FILE) {
+                    DogAction.SEATED_IDLE
+                } else {
+                    DogAction.REVIEW_FILE
+                }
+            }
+            CallPhase.LISTENING -> {
+                forcedContinuation = when (completed) {
+                    DogAction.WALK_TO_DOOR,
+                    DogAction.GREET_STAFF -> DogAction.RETURN_TO_DESK
+                    DogAction.STAND_UP -> DogAction.SIT_DOWN
+                    else -> nextAmbient(excluding = completed)
+                }
+            }
+            CallPhase.STARTING,
+            CallPhase.ERROR -> forcedContinuation = DogAction.SEATED_IDLE
+        }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -131,19 +176,31 @@ fun AiCinematicDogStage(
             factory = { ctx ->
                 CinematicClipView(ctx).apply {
                     bind(
-                        resId = clipResId,
-                        randomizeStart = false,
-                        seed = playbackSeed
+                        source = playbackSource,
+                        randomizeStart = randomizeStart,
+                        seed = playbackSeed,
+                        onCompletion = { advance(requestedAction) }
                     )
                 }
             },
             update = { view ->
                 view.bind(
-                    resId = clipResId,
-                    randomizeStart = false,
-                    seed = playbackSeed
+                    source = playbackSource,
+                    randomizeStart = randomizeStart,
+                    seed = playbackSeed,
+                    onCompletion = { advance(requestedAction) }
                 )
             }
         )
     }
 }
+
+private val AMBIENT_POOL = listOf(
+    DogAction.SEATED_IDLE,
+    DogAction.REVIEW_FILE,
+    DogAction.ANSWER_PHONE,
+    DogAction.WALK_TO_DOOR,
+    DogAction.RETURN_TO_DESK
+)
+
+private const val AMBIENT_COOLDOWN = 2

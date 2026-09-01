@@ -1,0 +1,198 @@
+name: Generate Geometry-Aware Textured Reference - Free Pool
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-hunyuan-texture-reference.yml'
+      - 'runtime3d/hf_hunyuan21_textured_reference.py'
+      - 'runtime3d/trellis2_textured_reference.py'
+      - 'runtime3d/sf3d_textured_reference.py'
+      - 'runtime3d/reference_pbr_maps.py'
+      - 'runtime3d/.hf-texture-run-once'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  textured-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      HERO_REFERENCE_RUN_ID: '33391759260'
+      HERO_REFERENCE_ARTIFACT: Runtime3D-photorealistic-hero-reference-candidate
+      HERO_REFERENCE_FILE: police_dog.hero_reference.fullbody.png
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Enforce authenticated free candidate-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'PROVIDER_POOL=microsoft-trellis2-zero,tencent-hunyuan-zero,stabilityai-stable-fast-3d-zero'
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'TRIPO_API_USED=false'
+          echo 'PRODUCTION_ACTIVATION=false'
+          if [[ -z "$HF_TOKEN" ]]; then
+            echo '::error::HF_TOKEN is required for the free authenticated ZeroGPU quota. Anonymous quota is intentionally disabled to avoid wasting daily GPU budget.'
+            exit 1
+          fi
+          echo 'HF_AUTHENTICATED_FREE_QUOTA=true'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False
+          print('manifest.enabled=false')
+          PY
+
+      - name: Download exact approved hero reference
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.HERO_REFERENCE_ARTIFACT }}
+          path: ${{ runner.temp }}/hero-reference
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.HERO_REFERENCE_RUN_ID }}
+
+      - name: Verify reference input
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE"
+          test -s "$REF"
+          BYTES=$(stat -c%s "$REF")
+          if (( BYTES < 10000 )); then
+            echo "::error::Hero reference unexpectedly small: $BYTES"
+            exit 1
+          fi
+          echo "heroReferenceBytes=$BYTES"
+          file "$REF"
+
+      - name: Install free provider clients and CPU mask dependencies
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' 'Pillow>=10,<12' 'numpy>=1.26,<3'
+
+      - name: Try official Microsoft TRELLIS.2 ZeroGPU first
+        id: trellis
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/geometry-aware-reference"
+          rm -f \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+          python3 runtime3d/trellis2_textured_reference.py \
+            --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            --report "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+
+      - name: Fall back to official Tencent Hunyuan ZeroGPU
+        id: hunyuan
+        if: steps.trellis.outcome != 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/geometry-aware-reference"
+          rm -f \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+          python3 runtime3d/hf_hunyuan21_textured_reference.py \
+            --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            --report "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+
+      - name: Fall back to official Stable Fast 3D ZeroGPU
+        if: steps.trellis.outcome != 'success' && steps.hunyuan.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/geometry-aware-reference"
+          rm -f \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+          python3 runtime3d/sf3d_textured_reference.py \
+            --reference "$RUNNER_TEMP/hero-reference/$HERO_REFERENCE_FILE" \
+            --output "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.glb" \
+            --report "$RUNNER_TEMP/geometry-aware-reference/police_dog.geometry_aware.textured_reference.json"
+
+      - name: Validate geometry-aware material payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json
+          root = Path(os.environ['RUNNER_TEMP']) / 'geometry-aware-reference'
+          p = root / 'police_dog.geometry_aware.textured_reference.glb'
+          report_path = root / 'police_dog.geometry_aware.textured_reference.json'
+          if not p.is_file() or not report_path.is_file():
+              raise SystemExit('Geometry-aware textured reference output/report missing')
+          report = json.loads(report_path.read_text())
+          d = read_glb_json(p)
+          meshes = d.get('meshes') or []
+          materials = d.get('materials') or []
+          textures = d.get('textures') or []
+          images = d.get('images') or []
+          accessors = d.get('accessors') or []
+          vertices = 0
+          for mesh in meshes:
+              for prim in mesh.get('primitives') or []:
+                  pos = (prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos, int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          summary = {
+              'provider': report.get('provider'),
+              'bytes': p.stat().st_size,
+              'meshes': len(meshes),
+              'vertices': vertices,
+              'materials': len(materials),
+              'textures': len(textures),
+              'images': len(images),
+              'pbrChannels': report.get('pbrChannels'),
+              'freeOnly': report.get('freeOnly'),
+              'paidFallbackAllowed': report.get('paidFallbackAllowed'),
+              'productionReady': report.get('productionReady'),
+          }
+          print(json.dumps(summary, indent=2))
+          if not meshes or vertices < 1000:
+              raise SystemExit('Generated geometry-aware reference geometry floor failed')
+          if not materials or not textures or not images:
+              raise SystemExit('Generated geometry-aware reference lacks embedded material payload')
+          if report.get('freeOnly') is not True or report.get('paidFallbackAllowed') is not False:
+              raise SystemExit('Free-only policy report failed')
+          if report.get('productionReady') is not False:
+              raise SystemExit('Reference candidate must not self-declare production ready')
+          print('GEOMETRY_AWARE_TEXTURE_REFERENCE_STRUCTURAL_GATE=PASS')
+          print('VISUAL_IDENTITY_AND_TRANSFER_ACCEPTANCE=STILL_REQUIRED')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Upload geometry-aware textured reference candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-geometry-aware-textured-reference-candidate
+          path: ${{ runner.temp }}/geometry-aware-reference/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production manifest closed
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('runtime3d/manifest.json').read_text())
+          assert data.get('enabled') is False
+          print('manifest.enabled=false')
+          print('PRODUCTION_GATE=CLOSED')
+          PY

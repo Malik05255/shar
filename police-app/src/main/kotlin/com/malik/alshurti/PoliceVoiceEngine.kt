@@ -1,15 +1,23 @@
 package com.malik.alshurti
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import com.malik.alshurti.neural.NeuralArabicVoice
+import com.malik.alshurti.neural.PcmSpeechEnergy
+import com.malik.alshurti.voice.BundledNaturalVoice
+import com.malik.alshurti.voice.GeminiSilentListener
+import com.malik.alshurti.voice.OfflineArabicListener
 import com.malik.alshurti.voice.SaudiHumanVoice
 
+/**
+ * Deliberately simple voice runtime.
+ *
+ * ONLINE: Gemini ASR + Gemini TTS. The opening greeting is a bundled WAV so startup is immediate.
+ * OFFLINE: bundled Whisper ASR + local neural TTS.
+ *
+ * No hidden cross-mode fallback is allowed. If a backend fails, the UI receives the real error.
+ */
 class PoliceVoiceEngine(
-    private val context: Context,
+    context: Context,
     private val listener: Listener
 ) {
     interface Listener {
@@ -26,151 +34,371 @@ class PoliceVoiceEngine(
         fun onViseme(viseme: MouthViseme)
     }
 
-    private var speechRecognizer: SpeechRecognizer? = null
-    private var mode: VoiceMode = VoiceMode.ONLINE
-    private var listening = false
+    private enum class SpeechBackend { NONE, CLOUD, BUNDLED, LOCAL }
+    private enum class ListenBackend { NONE, CLOUD, LOCAL }
+
+    private val appContext = context.applicationContext
+    private var mode = VoiceMode.ONLINE
+    private var released = false
+    private var readyReported = false
     private var spokenText = ""
+    private var activeSpeechBackend = SpeechBackend.NONE
+    private var activeListenBackend = ListenBackend.NONE
+    private var localAsrReady = false
+    private var localTtsReady = false
+    private var cloudTtsReady = false
     private var lastViseme = MouthViseme.REST
+    private var lipEnergy = 0f
+    private var lipVoiced = false
 
-    private val saudiVoice = SaudiHumanVoice(
-        context = context.applicationContext,
-        callbacks = object : SaudiHumanVoice.Callbacks {
-            override fun onPreparing(percent: Int, message: String) {
-                listener.onTtsPreparing(percent, message)
-            }
+    private val cloudAvailable: Boolean
+        get() = BuildConfig.GEMINI_API_KEY.trim().isNotBlank()
 
+    private val cloudListener = GeminiSilentListener(
+        context = appContext,
+        callbacks = object : GeminiSilentListener.Callbacks {
             override fun onReady() {
-                listener.onTtsReady()
+                if (!released && activeListenBackend == ListenBackend.CLOUD) listener.onReadyToListen()
             }
 
-            override fun onSpeechStarted(durationMs: Long) {
-                lastViseme = MouthViseme.OPEN
-                listener.onViseme(lastViseme)
-                listener.onTtsStarted()
+            override fun onSpeechStarted() {
+                if (!released && activeListenBackend == ListenBackend.CLOUD) listener.onSpeechStarted()
             }
 
-            override fun onSpeechCursor(fraction: Float) {
-                val viseme = visemeAtFraction(spokenText, fraction)
-                if (viseme != lastViseme) {
-                    lastViseme = viseme
-                    listener.onViseme(viseme)
-                }
+            override fun onFinalText(text: String) {
+                if (released || activeListenBackend != ListenBackend.CLOUD) return
+                activeListenBackend = ListenBackend.NONE
+                listener.onFinalText(text)
             }
 
-            override fun onSpeechFinished() {
-                lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
-                listener.onTtsFinished()
-            }
-
-            override fun onError(message: String) {
-                lastViseme = MouthViseme.REST
-                listener.onViseme(MouthViseme.REST)
-                listener.onTtsError(message)
+            override fun onError(message: String, recoverable: Boolean) {
+                if (released || activeListenBackend != ListenBackend.CLOUD) return
+                activeListenBackend = ListenBackend.NONE
+                listener.onSpeechError(message, recoverable)
             }
         }
     )
 
-    fun setMode(newMode: VoiceMode) {
-        mode = newMode
-        stopListening()
-        destroyRecognizer()
+    private val localListener = OfflineArabicListener(
+        context = appContext,
+        callbacks = object : OfflineArabicListener.Callbacks {
+            override fun onPreparing(percent: Int, message: String) {
+                if (mode == VoiceMode.OFFLINE) listener.onTtsPreparing(percent, message)
+            }
 
-        if (newMode == VoiceMode.OFFLINE) {
-            listener.onTtsError("الصوت السعودي البشري يحتاج اتصالاً بالإنترنت.")
-            return
+            override fun onPrepared() {
+                localAsrReady = true
+                maybeReportReady()
+            }
+
+            override fun onReady() {
+                if (!released && activeListenBackend == ListenBackend.LOCAL) listener.onReadyToListen()
+            }
+
+            override fun onSpeechStarted() {
+                if (!released && activeListenBackend == ListenBackend.LOCAL) listener.onSpeechStarted()
+            }
+
+            override fun onFinalText(text: String) {
+                if (released || activeListenBackend != ListenBackend.LOCAL) return
+                activeListenBackend = ListenBackend.NONE
+                listener.onFinalText(text)
+            }
+
+            override fun onError(message: String, recoverable: Boolean) {
+                if (activeListenBackend == ListenBackend.LOCAL) activeListenBackend = ListenBackend.NONE
+                listener.onSpeechError(message, recoverable)
+            }
         }
-        saudiVoice.prepare()
+    )
+
+    private val cloudVoice = SaudiHumanVoice(
+        context = appContext,
+        callbacks = object : SaudiHumanVoice.Callbacks {
+            override fun onPreparing(percent: Int, message: String) {
+                if (mode == VoiceMode.ONLINE) listener.onTtsPreparing(percent, message)
+            }
+
+            override fun onReady() {
+                cloudTtsReady = true
+                maybeReportReady()
+            }
+
+            override fun onSpeechStarted(durationMs: Long) {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechStarted()
+            }
+
+            override fun onSpeechCursor(fraction: Float) {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechCursor(fraction)
+            }
+
+            override fun onSpeechFrame(fraction: Float, energy: Float) {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleEnergySpeechFrame(fraction, energy)
+            }
+
+            override fun onSpeechFinished() {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) handleSpeechFinished()
+            }
+
+            override fun onError(message: String) {
+                if (activeSpeechBackend == SpeechBackend.CLOUD) {
+                    activeSpeechBackend = SpeechBackend.NONE
+                    resetMouth()
+                    if (bundledVoice.has(spokenText)) {
+                        startBundled()
+                    } else {
+                        listener.onTtsError(message)
+                    }
+                } else {
+                    cloudTtsReady = false
+                    listener.onTtsError(message)
+                }
+            }
+        }
+    )
+
+    private val bundledVoice = BundledNaturalVoice(
+        context = appContext,
+        callbacks = object : BundledNaturalVoice.Callbacks {
+            override fun onSpeechStarted(durationMs: Long) {
+                if (activeSpeechBackend == SpeechBackend.BUNDLED) handleSpeechStarted()
+            }
+
+            override fun onSpeechCursor(fraction: Float) {
+                if (activeSpeechBackend == SpeechBackend.BUNDLED) handleSpeechCursor(fraction)
+            }
+
+            override fun onSpeechFinished() {
+                if (activeSpeechBackend == SpeechBackend.BUNDLED) handleSpeechFinished()
+            }
+
+            override fun onError(message: String) {
+                if (activeSpeechBackend == SpeechBackend.BUNDLED) {
+                    activeSpeechBackend = SpeechBackend.NONE
+                    resetMouth()
+                    listener.onTtsError(message)
+                }
+            }
+        }
+    )
+
+    private val localVoice = NeuralArabicVoice(
+        context = appContext,
+        callbacks = object : NeuralArabicVoice.Callbacks {
+            override fun onPreparing(percent: Int, message: String) {
+                if (mode == VoiceMode.OFFLINE) listener.onTtsPreparing(percent, message)
+            }
+
+            override fun onReady() {
+                localTtsReady = true
+                maybeReportReady()
+            }
+
+            override fun onSpeechStarted(durationMs: Long) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechStarted()
+            }
+
+            override fun onSpeechFrame(fraction: Float, energy: Float) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleEnergySpeechFrame(fraction, energy)
+            }
+
+            override fun onSpeechFinished() {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) handleSpeechFinished()
+            }
+
+            override fun onError(message: String) {
+                if (activeSpeechBackend == SpeechBackend.LOCAL) activeSpeechBackend = SpeechBackend.NONE
+                localTtsReady = false
+                resetMouth()
+                if (bundledVoice.has(spokenText)) startBundled() else listener.onTtsError(message)
+            }
+        }
+    )
+
+    fun localModelsInstalled(): Boolean = localListener.isModelInstalled() && localVoice.isModelInstalled()
+
+    fun recommendedStartupMode(): VoiceMode = if (cloudAvailable) VoiceMode.ONLINE else VoiceMode.OFFLINE
+
+    fun setMode(newMode: VoiceMode) {
+        if (released) return
+        stopListening()
+        interruptSpeech()
+        mode = newMode
+        readyReported = false
+
+        when (mode) {
+            VoiceMode.ONLINE -> {
+                // Do not touch the heavyweight local engines in online mode.
+                if (!cloudAvailable) {
+                    listener.onTtsError("مفتاح Gemini غير موجود في هذه النسخة.")
+                    return
+                }
+                cloudVoice.prepare()
+                maybeReportReady()
+            }
+            VoiceMode.OFFLINE -> {
+                cloudTtsReady = false
+                localListener.prepare(allowDownload = false)
+                localVoice.prepare(allowDownload = false)
+                maybeReportReady()
+            }
+        }
     }
 
     fun startListening() {
-        if (mode != VoiceMode.ONLINE) {
-            listener.onSpeechError("المحادثة الصوتية تعمل في وضع الإنترنت فقط.", false)
-            return
-        }
-
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            listener.onSpeechError("التعرّف على الصوت غير متوفر على هذا الجهاز.", false)
-            return
-        }
-
-        stopListening()
-        val recognizer = speechRecognizer ?: SpeechRecognizer.createSpeechRecognizer(context).also {
-            speechRecognizer = it
-            it.setRecognitionListener(recognitionListener)
-        }
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "ar-SA")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-
-            // Saudi conversational speech often contains natural pauses between phrases. The old
-            // 650 ms cutoff truncated users mid-sentence; these values allow a human pause without
-            // making the turn feel sluggish after the speaker actually finishes.
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1_150L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 720L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 450L)
-        }
-
-        try {
-            listening = true
-            recognizer.startListening(intent)
-        } catch (t: Throwable) {
-            listening = false
-            destroyRecognizer()
-            listener.onSpeechError(t.message ?: "تعذر تشغيل الميكروفون.", true)
+        if (released || activeListenBackend != ListenBackend.NONE) return
+        when (mode) {
+            VoiceMode.ONLINE -> {
+                if (!cloudAvailable) {
+                    listener.onSpeechError("Gemini غير مهيأ في هذه النسخة.", false)
+                    return
+                }
+                activeListenBackend = ListenBackend.CLOUD
+                cloudListener.start()
+            }
+            VoiceMode.OFFLINE -> {
+                if (!localAsrReady) {
+                    listener.onSpeechError("الاستماع المحلي غير جاهز بعد.", true)
+                    return
+                }
+                activeListenBackend = ListenBackend.LOCAL
+                localListener.start()
+            }
         }
     }
 
     fun stopListening() {
-        if (!listening) return
-        listening = false
-        runCatching { speechRecognizer?.cancel() }
-    }
-
-    fun interruptSpeech() {
-        saudiVoice.interrupt()
-        lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        activeListenBackend = ListenBackend.NONE
+        cloudListener.stop()
+        localListener.stop()
     }
 
     fun speak(text: String) {
-        stopListening()
+        if (released) return
         spokenText = text.trim()
+        stopListening()
+        interruptSpeech()
         if (spokenText.isBlank()) {
             listener.onTtsFinished()
             return
         }
-        saudiVoice.speak(spokenText)
+
+        when (mode) {
+            VoiceMode.ONLINE -> {
+                if (spokenText == STARTUP_PROBE_TEXT && bundledVoice.has(spokenText)) {
+                    startBundled()
+                } else if (cloudTtsReady) {
+                    activeSpeechBackend = SpeechBackend.CLOUD
+                    cloudVoice.speak(spokenText)
+                } else if (bundledVoice.has(spokenText)) {
+                    startBundled()
+                } else {
+                    listener.onTtsError("صوت Gemini غير جاهز.")
+                }
+            }
+            VoiceMode.OFFLINE -> {
+                if (localTtsReady) {
+                    activeSpeechBackend = SpeechBackend.LOCAL
+                    localVoice.speak(spokenText)
+                } else if (bundledVoice.has(spokenText)) {
+                    startBundled()
+                } else {
+                    listener.onTtsError("الصوت المحلي غير جاهز بعد.")
+                }
+            }
+        }
+    }
+
+    private fun startBundled() {
+        activeSpeechBackend = SpeechBackend.BUNDLED
+        if (!bundledVoice.speak(spokenText)) {
+            activeSpeechBackend = SpeechBackend.NONE
+            listener.onTtsError("تعذر تشغيل الملف الصوتي المحلي.")
+        }
+    }
+
+    fun interruptSpeech() {
+        activeSpeechBackend = SpeechBackend.NONE
+        cloudVoice.interrupt()
+        bundledVoice.interrupt()
+        localVoice.interrupt()
+        resetMouth()
     }
 
     fun release() {
+        if (released) return
+        released = true
         stopListening()
-        destroyRecognizer()
-        saudiVoice.release()
-        lastViseme = MouthViseme.REST
-        listener.onViseme(MouthViseme.REST)
+        interruptSpeech()
+        cloudListener.release()
+        localListener.release()
+        cloudVoice.release()
+        bundledVoice.release()
+        localVoice.release()
     }
 
-    private fun destroyRecognizer() {
-        runCatching { speechRecognizer?.destroy() }
-        speechRecognizer = null
+    private fun maybeReportReady() {
+        if (released || readyReported) return
+        val ready = when (mode) {
+            VoiceMode.ONLINE -> cloudAvailable && (cloudTtsReady || bundledVoice.has(STARTUP_PROBE_TEXT))
+            VoiceMode.OFFLINE -> localAsrReady && (localTtsReady || bundledVoice.has(STARTUP_PROBE_TEXT))
+        }
+        if (ready) {
+            readyReported = true
+            listener.onTtsReady()
+        }
+    }
+
+    private fun handleSpeechStarted() {
+        lipEnergy = 0f
+        lipVoiced = false
+        lastViseme = MouthViseme.REST
+        dispatchViseme(MouthViseme.REST)
+        listener.onTtsStarted()
+    }
+
+    private fun handleEnergySpeechFrame(fraction: Float, energy: Float) {
+        lipEnergy = PcmSpeechEnergy.smooth(lipEnergy, energy.coerceIn(0f, 1f))
+        lipVoiced = PcmSpeechEnergy.isVoiced(lipEnergy, lipVoiced)
+        val viseme = if (lipVoiced) visemeAtFraction(spokenText, fraction) else MouthViseme.REST
+        if (viseme != lastViseme) {
+            lastViseme = viseme
+            dispatchViseme(viseme)
+        }
+    }
+
+    private fun handleSpeechCursor(fraction: Float) {
+        val viseme = visemeAtFraction(spokenText, fraction)
+        if (viseme != lastViseme) {
+            lastViseme = viseme
+            dispatchViseme(viseme)
+        }
+    }
+
+    private fun handleSpeechFinished() {
+        activeSpeechBackend = SpeechBackend.NONE
+        resetMouth()
+        listener.onTtsFinished()
+    }
+
+    private fun resetMouth() {
+        lipEnergy = 0f
+        lipVoiced = false
+        lastViseme = MouthViseme.REST
+        dispatchViseme(MouthViseme.REST)
+    }
+
+    private fun dispatchViseme(viseme: MouthViseme) {
+        RuntimeOfficePlanBus.publishViseme(viseme)
+        listener.onViseme(viseme)
     }
 
     private fun visemeAtFraction(text: String, fraction: Float): MouthViseme {
         if (text.isBlank()) return MouthViseme.REST
         val position = ((text.length - 1) * fraction.coerceIn(0f, 1f)).toInt()
-        val radius = 3
-        val from = (position - radius).coerceAtLeast(0)
-        val to = (position + radius + 1).coerceAtMost(text.length)
-        val letter = text.substring(from, to)
-            .firstOrNull { it.isLetter() }
-            ?: return MouthViseme.REST
+        val from = (position - 3).coerceAtLeast(0)
+        val to = (position + 4).coerceAtMost(text.length)
+        val letter = text.substring(from, to).firstOrNull(Char::isLetter) ?: return MouthViseme.REST
         return when (letter) {
             'ب', 'م', 'ف' -> MouthViseme.CLOSED
             'و', 'ؤ' -> MouthViseme.ROUND
@@ -180,60 +408,7 @@ class PoliceVoiceEngine(
         }
     }
 
-    private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) = listener.onReadyToListen()
-        override fun onBeginningOfSpeech() = listener.onSpeechStarted()
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() {
-            listening = false
-        }
-
-        override fun onError(error: Int) {
-            listening = false
-
-            // Busy/client failures frequently leave OEM recognizers poisoned for the next call.
-            // Drop that instance so the automatic retry gets a genuinely fresh recognizer.
-            if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT) {
-                destroyRecognizer()
-            }
-
-            val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH ||
-                error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
-                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
-                error == SpeechRecognizer.ERROR_CLIENT
-            val message = when (error) {
-                SpeechRecognizer.ERROR_AUDIO -> "مشكلة في صوت الميكروفون."
-                SpeechRecognizer.ERROR_CLIENT -> "توقف الاستماع مؤقتاً."
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "يحتاج التطبيق إذن الميكروفون."
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "تعذر الوصول لخدمة التعرف على الصوت."
-                SpeechRecognizer.ERROR_NO_MATCH -> "ما سمعت الكلام بوضوح."
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "الميكروفون مشغول، سأحاول مرة ثانية."
-                SpeechRecognizer.ERROR_SERVER -> "خدمة التعرف على الصوت غير متاحة الآن."
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "تكلم متى ما كنت جاهز."
-                else -> "تعذر فهم الصوت ($error)."
-            }
-            listener.onSpeechError(message, recoverable)
-        }
-
-        override fun onResults(results: Bundle?) {
-            listening = false
-            val text = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                .orEmpty()
-            listener.onFinalText(text)
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val text = partialResults
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                .orEmpty()
-            if (text.isNotBlank()) listener.onPartialText(text)
-        }
-
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    private companion object {
+        const val STARTUP_PROBE_TEXT = "هلا يا بطل، معك الشرطي. وش عندك؟"
     }
 }

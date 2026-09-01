@@ -1,0 +1,235 @@
+name: Rig Stable Fast 3D Donor to Animated Hero - Free Blender
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-sf3d-rigged-donor.yml'
+      - 'runtime3d/blender_rig_sf3d_donor_v2.py'
+      - 'runtime3d/blender_transfer_sf3d_candidate.py'
+      - 'runtime3d/blender_transfer_pbr_candidate.py'
+      - 'runtime3d/extract_glb_pbr_images.py'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rig-sf3d-donor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MOTION_RUN_ID: '33393807309'
+      MOTION_ARTIFACT: Runtime3D-police-dog-motion-candidate
+      MOTION_GLB: police_dog.motion_candidate.glb
+      DONOR_RUN_ID: '33410396487'
+      DONOR_ARTIFACT: Runtime3D-sf3d-textured-reference-candidate
+      DONOR_GLB: police_dog.sf3d.textured_reference.glb
+      BLENDER_VERSION: '4.0.2'
+      BLENDER_ARCHIVE: 'blender-4.0.2-linux-x64.tar.xz'
+      BLENDER_ROOT: 'runtime3d/.toolcache/blender-4.0.2'
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce free candidate-only gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'RIG_FIRST_SF3D_CANDIDATE=true'
+          echo 'PRODUCTION_ACTIVATION=false'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('runtime3d/manifest.json').read_text())
+          assert manifest.get('enabled') is False
+          print('manifest.enabled=false')
+          PY
+
+      - name: Download exact animated hero
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.MOTION_ARTIFACT }}
+          path: ${{ runner.temp }}/motion
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.MOTION_RUN_ID }}
+
+      - name: Download exact Stable Fast 3D donor
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DONOR_ARTIFACT }}
+          path: ${{ runner.temp }}/donor
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.DONOR_RUN_ID }}
+
+      - name: Verify immutable source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          motion=Path(os.environ['RUNNER_TEMP'])/'motion'/os.environ['MOTION_GLB']
+          donor=Path(os.environ['RUNNER_TEMP'])/'donor'/os.environ['DONOR_GLB']
+          md=read_glb_json(motion); dd=read_glb_json(donor)
+          names={a.get('name') for a in md.get('animations') or [] if a.get('name')}
+          skins=md.get('skins') or []
+          joints=max((len(s.get('joints') or []) for s in skins),default=0)
+          donor_meshes=dd.get('meshes') or []
+          print(json.dumps({'motionBytes':motion.stat().st_size,'motionAnimations':len(names),
+                            'missing':sorted(set(DOG_CLIPS)-names),'motionSkins':len(skins),'maxJoints':joints,
+                            'donorBytes':donor.stat().st_size,'donorMeshes':len(donor_meshes),
+                            'donorMaterials':len(dd.get('materials') or []),'donorTextures':len(dd.get('textures') or []),
+                            'donorImages':len(dd.get('images') or [])},indent=2))
+          if set(DOG_CLIPS)-names or len(skins)!=1 or joints < 32:
+              raise SystemExit('Animated source contract failed')
+          if not donor_meshes or not dd.get('materials') or len(dd.get('textures') or []) < 2 or len(dd.get('images') or []) < 2:
+              raise SystemExit('SF3D donor geometry/PBR contract failed')
+          PY
+
+      - name: Extract durable PBR images directly from donor GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rigged-sf3d-source-images"
+          python3 runtime3d/extract_glb_pbr_images.py \
+            --input "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output-dir "$RUNNER_TEMP/rigged-sf3d-source-images" \
+            --metadata "$RUNNER_TEMP/rigged-sf3d-source-images/extraction.json"
+          BASE=$(find "$RUNNER_TEMP/rigged-sf3d-source-images" -maxdepth 1 -type f -name 'basecolor.*' | head -n1)
+          NORMAL=$(find "$RUNNER_TEMP/rigged-sf3d-source-images" -maxdepth 1 -type f -name 'normal.*' | head -n1)
+          test -n "$BASE" && test -s "$BASE"
+          test -n "$NORMAL" && test -s "$NORMAL"
+          echo "SF3D_BASECOLOR_PATH=$BASE" >> "$GITHUB_ENV"
+          echo "SF3D_NORMAL_PATH=$NORMAL" >> "$GITHUB_ENV"
+          echo "BASECOLOR_BYTES=$(stat -c%s "$BASE")"
+          echo "NORMAL_BYTES=$(stat -c%s "$NORMAL")"
+
+      - name: Restore verified Blender portable cache
+        uses: actions/cache@v4
+        with:
+          path: runtime3d/.toolcache/blender-4.0.2
+          key: blender-linux-x64-4.0.2-official-v1
+
+      - name: Prepare official portable Blender runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/$BLENDER_ROOT"
+          URL_BASE="https://download.blender.org/release/Blender4.0"
+          if [[ ! -x "$ROOT/blender" ]]; then
+            rm -rf "$ROOT"
+            mkdir -p "$(dirname "$ROOT")"
+            curl --fail --location --retry 3 --retry-delay 2 "$URL_BASE/$BLENDER_ARCHIVE" -o "$RUNNER_TEMP/$BLENDER_ARCHIVE"
+            curl --fail --location --retry 3 --retry-delay 2 "$URL_BASE/blender-4.0.2.sha256" -o "$RUNNER_TEMP/blender-4.0.2.sha256"
+            grep -E "[ *]${BLENDER_ARCHIVE}$" "$RUNNER_TEMP/blender-4.0.2.sha256" > "$RUNNER_TEMP/blender-selected.sha256"
+            test -s "$RUNNER_TEMP/blender-selected.sha256"
+            ( cd "$RUNNER_TEMP" && sha256sum -c blender-selected.sha256 )
+            tar -xJf "$RUNNER_TEMP/$BLENDER_ARCHIVE" -C "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/blender-4.0.2-linux-x64" "$ROOT"
+          fi
+          test -x "$ROOT/blender"
+          echo "$ROOT" >> "$GITHUB_PATH"
+          "$ROOT/blender" --version | head -n 2
+
+      - name: Ensure minimal headless EGL runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! ldconfig -p | grep -q 'libEGL.so.1'; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri
+          fi
+          ldconfig -p | grep 'libEGL.so.1'
+          echo 'HEADLESS_EGL_RUNTIME=READY'
+
+      - name: Rig and subdivide SF3D donor with exact motion armature
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          EGL_PLATFORM: 'surfaceless'
+        run: |
+          set -euo pipefail
+          test -s "$SF3D_BASECOLOR_PATH"
+          test -s "$SF3D_NORMAL_PATH"
+          mkdir -p "$RUNNER_TEMP/rigged-sf3d/previews"
+          blender --background \
+            --python runtime3d/blender_rig_sf3d_donor_v2.py -- \
+            --motion "$RUNNER_TEMP/motion/$MOTION_GLB" \
+            --donor "$RUNNER_TEMP/donor/$DONOR_GLB" \
+            --output "$RUNNER_TEMP/rigged-sf3d/police_dog.rigged_sf3d_candidate.glb" \
+            --qc "$RUNNER_TEMP/rigged-sf3d/police_dog.rigged_sf3d_candidate.qc.json" \
+            --preview-dir "$RUNNER_TEMP/rigged-sf3d/previews" \
+            --subdivision-levels 2
+          test -s "$RUNNER_TEMP/rigged-sf3d/police_dog.rigged_sf3d_candidate.glb"
+          test -s "$RUNNER_TEMP/rigged-sf3d/police_dog.rigged_sf3d_candidate.qc.json"
+          COUNT=$(find "$RUNNER_TEMP/rigged-sf3d/previews" -maxdepth 1 -type f -name '*.png' | wc -l)
+          [[ "$COUNT" -eq 4 ]] || { echo "::error::Expected four rigged-SF3D QC renders, got $COUNT"; exit 1; }
+
+      - name: Validate rigged SF3D GLB contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0,'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          root=Path(os.environ['RUNNER_TEMP'])/'rigged-sf3d'
+          out=root/'police_dog.rigged_sf3d_candidate.glb'
+          qc=json.loads((root/'police_dog.rigged_sf3d_candidate.qc.json').read_text())
+          d=read_glb_json(out)
+          names={a.get('name') for a in d.get('animations') or [] if a.get('name')}
+          skins=d.get('skins') or []
+          joints=max((len(s.get('joints') or []) for s in skins),default=0)
+          mats=d.get('materials') or []; tex=d.get('textures') or []; imgs=d.get('images') or []
+          accessors=d.get('accessors') or []
+          vertices=0
+          for mesh in d.get('meshes') or []:
+              for prim in mesh.get('primitives') or []:
+                  pos=(prim.get('attributes') or {}).get('POSITION')
+                  if isinstance(pos,int) and 0 <= pos < len(accessors):
+                      vertices += int(accessors[pos].get('count') or 0)
+          base_ok=False; normal_ok=False
+          for mat in mats:
+              pbr=mat.get('pbrMetallicRoughness') or {}
+              base_ok = base_ok or isinstance((pbr.get('baseColorTexture') or {}).get('index'),int)
+              normal_ok = normal_ok or isinstance((mat.get('normalTexture') or {}).get('index'),int)
+          print(json.dumps({'bytes':out.stat().st_size,'vertices':vertices,'animations':len(names),
+                            'missing':sorted(set(DOG_CLIPS)-names),'skins':len(skins),'maxJoints':joints,
+                            'materials':len(mats),'textures':len(tex),'images':len(imgs),
+                            'baseColorTexture':base_ok,'normalTexture':normal_ok,
+                            'weightedRatio':qc.get('weightedRatio'),'subdivision':qc.get('subdivision'),
+                            'previews':qc.get('previewFiles')},indent=2))
+          if vertices < 100000: raise SystemExit('Rigged donor density gate failed')
+          if set(DOG_CLIPS)-names or len(skins)!=1 or joints < 32: raise SystemExit('Rig/animation gate failed')
+          if len(tex)<2 or len(imgs)<2 or not base_ok or not normal_ok: raise SystemExit('PBR embedding gate failed')
+          if float(qc.get('weightedRatio') or 0) < 0.999: raise SystemExit('Weighted vertex gate failed')
+          if len(qc.get('previewFiles') or []) != 4: raise SystemExit('Four-view visual QC gate failed')
+          print('RIGGED_SF3D_STRUCTURAL_GATE=PASS')
+          print('PRODUCTION_GATE=CLOSED')
+          PY
+
+      - name: Upload rigged SF3D candidate and QC
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-rigged-sf3d-candidate
+          path: ${{ runner.temp }}/rigged-sf3d/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep production manifest closed
+        run: |
+          echo 'MANUAL_VISUAL_QC_REQUIRED=true'
+          echo 'DEFORMATION_QC_REQUIRED=true'
+          echo 'PHYSICAL_ANDROID_GATE_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'

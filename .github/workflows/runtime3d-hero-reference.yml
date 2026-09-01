@@ -1,0 +1,77 @@
+name: Prepare Runtime 3D Hero Reference - Free ZeroGPU
+
+on:
+  workflow_dispatch:
+    inputs:
+      reference_url:
+        description: Approved office reference used only as identity/uniform source
+        required: true
+        default: https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-hero-reference.yml'
+      - 'runtime3d/prepare_hero_reference.py'
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-hero-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REFERENCE_URL: ${{ github.event.inputs.reference_url || 'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/8eb927a9-0c08-4a01-b3c7-fab9ca83e076.png' }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Enforce free-only reference generation
+        run: |
+          echo 'FREE_ONLY=true'
+          echo 'PAID_FALLBACK=false'
+          echo 'TARGET_STYLE=photorealistic-real-k9-officer'
+          echo 'CARTOON_ACCEPTED=false'
+          echo 'BIPED_RIG_REFERENCE=true'
+
+      - name: Install public Gradio client
+        run: python3 -m pip install --quiet 'gradio_client>=1.3,<2' Pillow
+
+      - name: Prepare photorealistic anatomy then K9 officer reference
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/runtime3d-hero-reference"
+          python3 runtime3d/prepare_hero_reference.py \
+            --reference-url "$REFERENCE_URL" \
+            --output-dir "$RUNNER_TEMP/runtime3d-hero-reference"
+
+      - name: Verify final reference dimensions
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF="$RUNNER_TEMP/runtime3d-hero-reference/police_dog.hero_reference.fullbody.png"
+          test -s "$REF"
+          REF="$REF" python3 - <<'PY'
+          import os
+          from PIL import Image
+          p = os.environ['REF']
+          with Image.open(p) as im:
+              w, h = im.size
+              print(f'hero_reference={w}x{h} bytes={os.path.getsize(p)}')
+              if min(w, h) < 700:
+                  raise SystemExit(f'hero reference resolution too low: {w}x{h}')
+          print('Structural image gate passed. Visual quality approval remains mandatory.')
+          PY
+
+      - name: Upload hero reference candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-photorealistic-hero-reference-candidate
+          path: ${{ runner.temp }}/runtime3d-hero-reference/*
+          if-no-files-found: warn
+          retention-days: 14

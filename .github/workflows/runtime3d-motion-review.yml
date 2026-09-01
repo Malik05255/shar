@@ -1,0 +1,134 @@
+name: Review Runtime 3D Hero Motion - Free Blender Clay Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/silent-listening-living-office
+    paths:
+      - '.github/workflows/runtime3d-motion-review.yml'
+      - 'runtime3d/blender_render_motion_review.py'
+      - 'runtime3d/.motion-review-run-once'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  clay-deformation-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SOURCE_RUN_ID: '33393807309'
+      SOURCE_ARTIFACT: Runtime3D-police-dog-motion-candidate
+      SOURCE_GLB: police_dog.motion_candidate.glb
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Enforce review scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'FREE_ONLY=true'
+          echo 'CLAY_DEFORMATION_REVIEW_ONLY=true'
+          echo 'MATERIAL_ACCEPTANCE=false'
+          echo 'PRODUCTION_ACTIVATION=false'
+
+      - name: Download exact successful motion artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.SOURCE_ARTIFACT }}
+          path: ${{ runner.temp }}/motion-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify motion GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/motion-source/$SOURCE_GLB"
+          test -s "$SRC"
+          BYTES=$(stat -c%s "$SRC")
+          (( BYTES > 50000000 )) || { echo "::error::Motion GLB unexpectedly small: $BYTES"; exit 1; }
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'runtime3d')
+          from inspect_glb import read_glb_json, DOG_CLIPS
+          p = Path(os.environ['RUNNER_TEMP'])/'motion-source'/os.environ['SOURCE_GLB']
+          d = read_glb_json(p)
+          names = {a.get('name') for a in (d.get('animations') or []) if a.get('name')}
+          missing = sorted(set(DOG_CLIPS)-names)
+          print(f'motion_source_bytes={p.stat().st_size}')
+          print(f'animation_count={len(names)}')
+          print(f'missing={missing}')
+          if missing: raise SystemExit('Motion source lost required clips')
+          PY
+
+      - name: Install free Blender review runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y blender python3-numpy libegl1 libgl1-mesa-dri
+          ldconfig -p | grep -E 'libEGL\.so\.1|libGL\.so\.1'
+          blender --background --python-expr "import numpy; print('BLENDER_NUMPY=' + numpy.__version__)"
+
+      - name: Render and verify deformation review frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/motion-review/renders"
+          blender --background \
+            --python runtime3d/blender_render_motion_review.py -- \
+            --input "$RUNNER_TEMP/motion-source/$SOURCE_GLB" \
+            --output-dir "$RUNNER_TEMP/motion-review/renders" \
+            --report "$RUNNER_TEMP/motion-review/deformation-review.json"
+          test -s "$RUNNER_TEMP/motion-review/deformation-review.json"
+          COUNT=$(find "$RUNNER_TEMP/motion-review/renders" -maxdepth 1 -type f -name '*.png' | wc -l)
+          if [[ "$COUNT" -ne 13 ]]; then
+            echo "::error::Expected 13 review renders, found $COUNT"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP'])/'motion-review'/'deformation-review.json'
+          r = json.loads(p.read_text())
+          print(f"automaticGate={r.get('automaticGate')}")
+          print(f"caseCount={len(r.get('cases') or [])}")
+          if r.get('automaticGate') != 'PASS':
+              raise SystemExit(f"Automatic deformation gate failed: {r.get('automaticFailures')}")
+          if len(r.get('cases') or []) != 13:
+              raise SystemExit('Review report did not contain all 13 cases')
+          PY
+
+      - name: Show automatic deformation report
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/motion-review/deformation-review.json" ]]; then
+            cat "$RUNNER_TEMP/motion-review/deformation-review.json"
+          fi
+
+      - name: Upload clay review renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runtime3D-police-dog-motion-clay-review
+          path: ${{ runner.temp }}/motion-review/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep production closed after real clay gate
+        shell: bash
+        run: |
+          test -s "$RUNNER_TEMP/motion-review/deformation-review.json"
+          echo 'DEFORMATION_AUTOMATIC_GATE=PASS'
+          echo 'MANUAL_VISUAL_REVIEW_REQUIRED=true'
+          echo 'PBR_FUR_MATERIAL_GATE_REQUIRED=true'
+          echo 'FACIAL_DEFORMATION_GATE_REQUIRED=true'
+          echo 'PRODUCTION_GATE=CLOSED'

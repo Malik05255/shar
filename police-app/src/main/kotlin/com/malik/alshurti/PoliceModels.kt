@@ -24,5 +24,9 @@ data class PoliceUiState(
     val statusText: String = "جاري تجهيز الشرطي…",
     val errorMessage: String? = null,
     val firstGreetingDone: Boolean = false,
-    val officeScene: OfficeSceneState = OfficeSceneState()
+    val officeScene: OfficeSceneState = OfficeSceneState(),
+    /** Full independent-actor choreography. The 3D renderer consumes this directly. */
+    val runtimePlan: RuntimeScenarioPlan? = null,
+    /** Monotonic plan identity so a new beat never requires rebuilding the whole 3D world. */
+    val runtimePlanRevision: Long = 0L
 )
