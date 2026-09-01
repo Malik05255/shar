@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -26,6 +27,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -105,7 +107,7 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 18.dp)
-                .background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(28.dp))
+                .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(28.dp))
                 .padding(4.dp)
         ) {
             ModeButton(
@@ -117,6 +119,58 @@ fun PoliceCallScreen(viewModel: PoliceCallViewModel = viewModel()) {
                 label = "بدون إنترنت",
                 selected = state.mode == VoiceMode.OFFLINE,
                 onClick = { viewModel.chooseMode(VoiceMode.OFFLINE) }
+            )
+        }
+
+        DeviceStatusStrip(
+            state = state,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 14.dp, vertical = 14.dp)
+        )
+    }
+}
+
+@Composable
+private fun DeviceStatusStrip(state: PoliceUiState, modifier: Modifier = Modifier) {
+    val error = state.errorMessage?.takeIf { it.isNotBlank() }
+    val detail = when {
+        error != null -> error
+        state.phase == CallPhase.LISTENING -> "تكلم الآن، الميكروفون يستمع"
+        state.phase == CallPhase.THINKING -> "جاري فهم كلامك"
+        state.phase == CallPhase.SPEAKING -> "الشرطي يتكلم"
+        state.phase == CallPhase.STARTING -> "جاري بدء المحادثة"
+        else -> "اضغط على الشاشة للمحاولة مرة أخرى"
+    }
+    val modeText = if (state.mode == VoiceMode.ONLINE) "ONLINE / GEMINI" else "OFFLINE / LOCAL"
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "الشرطي v${BuildConfig.VERSION_NAME} • $modeText",
+            color = Color.White.copy(alpha = 0.72f),
+            fontSize = 10.sp,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = detail,
+            color = if (error != null) Color(0xFFFFC6C6) else Color.White,
+            fontWeight = if (error != null) FontWeight.Bold else FontWeight.Medium,
+            fontSize = 12.sp,
+            textAlign = TextAlign.Center
+        )
+        if (state.heardText.isNotBlank() && state.phase != CallPhase.STARTING) {
+            Text(
+                text = "سمعت: ${state.heardText.take(90)}",
+                color = Color.White.copy(alpha = 0.78f),
+                fontSize = 10.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 2
             )
         }
     }
