@@ -15,22 +15,20 @@ import kotlinx.coroutines.launch
 import kotlin.random.Random
 
 /**
- * Single self-healing conversation coordinator.
+ * Device-first conversation coordinator.
  *
- * There is one authoritative phase machine. Online and offline are explicit user choices. Online
- * dialogue uses Gemini with deterministic fallback; offline dialogue never calls the cloud. Voice
- * failures are recoverable events rather than terminal screens, so the microphone always returns to
- * listening when possible.
+ * Every app launch starts from the recommended backend instead of inheriting a stale mode from an
+ * older APK. Recoverable audio failures are visible in UI briefly before retrying; they are never
+ * silently swallowed.
  */
 class PoliceCallViewModel(application: Application) : AndroidViewModel(application), PoliceVoiceEngine.Listener {
-    private val preferences = application.getSharedPreferences(PREFS_NAME, 0)
     private val onlineBrain: PoliceBrain = HybridPoliceBrain()
     private val offlineBrain: PoliceBrain = DeterministicPoliceBrain()
     private val voiceEngine = PoliceVoiceEngine(application.applicationContext, this)
     private val officeSoundscape = OfficeSoundscape(application.applicationContext)
     private val random = Random(System.nanoTime())
 
-    private val initialMode: VoiceMode = resolveInitialMode()
+    private val initialMode: VoiceMode = voiceEngine.recommendedStartupMode()
     private val _uiState = MutableStateFlow(PoliceUiState(mode = initialMode))
     val uiState: StateFlow<PoliceUiState> = _uiState.asStateFlow()
 
@@ -77,7 +75,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         sessionStarted = false
         openingGreetingInFlight = false
         ambientIndex = 0
-        preferences.edit().putString(KEY_MODE, mode.name).apply()
 
         _uiState.update {
             it.copy(
@@ -97,7 +94,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun retryListening() {
-        if (!microphonePermissionGranted || !sessionStarted) return
+        if (!microphonePermissionGranted) return
+        if (!sessionStarted) {
+            tryStartSession()
+            return
+        }
         recoverToListening(delayMs = 0L)
     }
 
@@ -108,20 +109,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         openingGreetingInFlight = false
         voiceEngine.interruptSpeech()
         recoverToListening(delayMs = 120L)
-    }
-
-    private fun resolveInitialMode(): VoiceMode {
-        val saved = runCatching {
-            VoiceMode.valueOf(preferences.getString(KEY_MODE, "").orEmpty())
-        }.getOrNull()
-        return when {
-            saved == VoiceMode.OFFLINE && voiceEngine.localModelsInstalled() -> VoiceMode.OFFLINE
-            saved == VoiceMode.ONLINE -> VoiceMode.ONLINE
-            else -> VoiceModePolicy.startupMode(
-                localAsrInstalled = voiceEngine.localModelsInstalled(),
-                localTtsInstalled = voiceEngine.localModelsInstalled()
-            )
-        }
     }
 
     private fun tryStartSession() {
@@ -174,24 +161,23 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                // The cloud brain already owns a local fallback. If something unexpected still
-                // escapes, use the deterministic brain here rather than exposing a dead state.
                 val fallback = runCatching { offlineBrain.reply(text) }
                     .getOrElse { PoliceReply("أنا سامعك يا بطل. قل لي مرة ثانية وش صار؟", DogMood.CALM) }
+                _uiState.update { it.copy(errorMessage = "تعذر رد Gemini؛ استخدمت الرد المحلي لهذه الجولة.") }
                 setPhase(CallPhase.SPEAKING)
-                setDogSpeaking(fallback.text, fallback.mood)
+                setDogSpeaking(fallback.text, fallback.mood, keepError = true)
                 voiceEngine.speak(fallback.text)
             }
         }
     }
 
-    private fun setDogSpeaking(text: String, mood: DogMood) {
+    private fun setDogSpeaking(text: String, mood: DogMood, keepError: Boolean = false) {
         _uiState.update {
             it.copy(
                 replyText = text,
                 mood = mood,
                 viseme = MouthViseme.REST,
-                errorMessage = null,
+                errorMessage = if (keepError) it.errorMessage else null,
                 firstGreetingDone = true,
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.NONE,
@@ -320,6 +306,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     override fun onReadyToListen() {
         if (!sessionStarted || openingGreetingInFlight) return
         setPhase(CallPhase.LISTENING)
+        _uiState.update { it.copy(errorMessage = null) }
         if (ambientJob?.isActive != true) startAmbientLife()
     }
 
@@ -330,6 +317,7 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
         _uiState.update {
             it.copy(
                 mood = DogMood.LISTENING,
+                errorMessage = null,
                 officeScene = it.officeScene.copy(
                     cue = OfficeCue.NONE,
                     attention = DogAttention.CAMERA,
@@ -351,12 +339,11 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onSpeechError(message: String, recoverable: Boolean) {
         if (!sessionStarted || openingGreetingInFlight) return
+        _uiState.update { it.copy(mood = DogMood.SERIOUS, errorMessage = message) }
         if (recoverable) {
-            _uiState.update { it.copy(errorMessage = null) }
-            recoverToListening(delayMs = 500L)
+            recoverToListening(delayMs = 1_200L)
         } else {
             setPhase(CallPhase.ERROR)
-            _uiState.update { it.copy(mood = DogMood.SERIOUS, errorMessage = message) }
         }
     }
 
@@ -385,17 +372,18 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     override fun onTtsError(message: String) {
-        // TTS exhaustion is not terminal. The user can still speak and the next turn may recover.
         openingGreetingInFlight = false
         _uiState.update {
             it.copy(
                 viseme = MouthViseme.REST,
-                mood = DogMood.CALM,
-                errorMessage = null
+                mood = DogMood.SERIOUS,
+                errorMessage = message
             )
         }
         if (microphonePermissionGranted && sessionStarted) {
-            recoverToListening(delayMs = 180L)
+            recoverToListening(delayMs = 1_200L)
+        } else {
+            setPhase(CallPhase.ERROR)
         }
     }
 
@@ -421,8 +409,6 @@ class PoliceCallViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     private companion object {
-        const val PREFS_NAME = "alshurti_voice_settings"
-        const val KEY_MODE = "voice_mode"
         const val OPENING_GREETING = "هلا يا بطل، معك الشرطي. وش عندك؟"
 
         val AMBIENT_BEATS = listOf(
