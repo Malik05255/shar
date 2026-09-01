@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import org.json.JSONArray
 import java.util.concurrent.atomic.AtomicLong
 
@@ -43,7 +44,14 @@ class BundledNaturalVoice(
 
     private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(attributes)
-        .setOnAudioFocusChangeListener { }
+        .setOnAudioFocusChangeListener { change ->
+            when (change) {
+                AudioManager.AUDIOFOCUS_GAIN -> runCatching { player?.setVolume(1f, 1f) }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> runCatching { player?.setVolume(0.35f, 0.35f) }
+                AudioManager.AUDIOFOCUS_LOSS,
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> Unit
+            }
+        }
         .build()
 
     fun has(text: String): Boolean {
@@ -60,16 +68,37 @@ class BundledNaturalVoice(
         }
 
         val ticket = generation.incrementAndGet()
+        mainHandler.removeCallbacksAndMessages(null)
         stopPlayerOnly()
 
-        val localPlayer = MediaPlayer.create(appContext, resId) ?: run {
+        val localPlayer = MediaPlayer()
+        val descriptor = runCatching { appContext.resources.openRawResourceFd(resId) }.getOrNull()
+        if (descriptor == null) {
+            localPlayer.release()
             callbacks.onError("تعذر فتح ملف الصوت الطبيعي المحلي.")
             return false
         }
-        player = localPlayer
-        localPlayer.setAudioAttributes(attributes)
-        localPlayer.setVolume(1f, 1f)
 
+        try {
+            // Set routing attributes BEFORE datasource/prepare. Some OEM stacks ignore attributes
+            // applied after MediaPlayer.create() has already prepared the player.
+            localPlayer.setAudioAttributes(attributes)
+            localPlayer.setDataSource(
+                descriptor.fileDescriptor,
+                descriptor.startOffset,
+                descriptor.length
+            )
+        } catch (error: Throwable) {
+            descriptor.close()
+            localPlayer.release()
+            callbacks.onError("تعذر تجهيز ملف الصوت الطبيعي: ${error.message ?: "unknown"}")
+            return false
+        } finally {
+            runCatching { descriptor.close() }
+        }
+
+        player = localPlayer
+        localPlayer.setVolume(1f, 1f)
         localPlayer.setOnErrorListener { _, what, extra ->
             if (ticket == generation.get()) callbacks.onError("فشل تشغيل الصوت الطبيعي المحلي: $what/$extra")
             stopPlayerOnly()
@@ -77,22 +106,31 @@ class BundledNaturalVoice(
         }
         localPlayer.setOnCompletionListener {
             if (ticket == generation.get()) {
-                mainHandler.removeCallbacksAndMessages(ticket)
                 callbacks.onSpeechCursor(1f)
                 callbacks.onSpeechFinished()
             }
             stopPlayerOnly()
         }
 
-        val focusResult = runCatching { audioManager.requestAudioFocus(focusRequest) }
-            .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
-        focusHeld = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        return try {
+            localPlayer.prepare()
+            if (ticket != generation.get() || player !== localPlayer) return false
 
-        val durationMs = localPlayer.duration.toLong().coerceAtLeast(1L)
-        localPlayer.start()
-        callbacks.onSpeechStarted(durationMs)
-        scheduleCursor(ticket, durationMs)
-        return true
+            val focusResult = runCatching { audioManager.requestAudioFocus(focusRequest) }
+                .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+            focusHeld = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+
+            val durationMs = localPlayer.duration.toLong().coerceAtLeast(1L)
+            localPlayer.start()
+            callbacks.onSpeechStarted(durationMs)
+            scheduleCursor(ticket, durationMs)
+            schedulePlaybackWatchdog(ticket, localPlayer)
+            true
+        } catch (error: Throwable) {
+            stopPlayerOnly()
+            callbacks.onError("تعذر بدء الصوت الطبيعي المحلي: ${error.message ?: "unknown"}")
+            false
+        }
     }
 
     fun interrupt() {
@@ -104,19 +142,33 @@ class BundledNaturalVoice(
     fun release() = interrupt()
 
     private fun scheduleCursor(ticket: Long, durationMs: Long) {
-        val token = ticket
         val runnable = object : Runnable {
             override fun run() {
                 val current = player
-                if (ticket != generation.get() || current == null || !current.isPlaying) return
-                val fraction = (current.currentPosition.toDouble() / durationMs.toDouble())
+                if (ticket != generation.get() || current == null) return
+                val playing = runCatching { current.isPlaying }.getOrDefault(false)
+                if (!playing) return
+                val position = runCatching { current.currentPosition }.getOrDefault(0)
+                val fraction = (position.toDouble() / durationMs.toDouble())
                     .toFloat()
                     .coerceIn(0f, 1f)
                 callbacks.onSpeechCursor(fraction)
-                mainHandler.postAtTime(this, token, android.os.SystemClock.uptimeMillis() + 40L)
+                mainHandler.postDelayed(this, CURSOR_INTERVAL_MS)
             }
         }
-        mainHandler.postAtTime(runnable, token, android.os.SystemClock.uptimeMillis() + 40L)
+        mainHandler.postDelayed(runnable, CURSOR_INTERVAL_MS)
+    }
+
+    private fun schedulePlaybackWatchdog(ticket: Long, expectedPlayer: MediaPlayer) {
+        mainHandler.postDelayed({
+            if (ticket != generation.get() || player !== expectedPlayer) return@postDelayed
+            val isPlaying = runCatching { expectedPlayer.isPlaying }.getOrDefault(false)
+            val position = runCatching { expectedPlayer.currentPosition }.getOrDefault(0)
+            if (!isPlaying || position <= 0) {
+                stopPlayerOnly()
+                callbacks.onError("الصوت الطبيعي لم يبدأ فعلياً على مسار الوسائط في هذا الجهاز.")
+            }
+        }, PLAYBACK_WATCHDOG_MS)
     }
 
     private fun stopPlayerOnly() {
@@ -161,5 +213,10 @@ class BundledNaturalVoice(
         .replace('إ', 'ا')
         .replace('أ', 'ا')
         .replace('آ', 'ا')
-        .replace("  ", " ")
+        .replace(Regex("\\s+"), " ")
+
+    private companion object {
+        const val CURSOR_INTERVAL_MS = 40L
+        const val PLAYBACK_WATCHDOG_MS = 420L
+    }
 }
