@@ -20,12 +20,11 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.sqrt
 
 /**
- * Beep-free foreground speech capture.
+ * Beep-free foreground speech capture for real Android devices.
  *
- * Android SpeechRecognizer is intentionally not used here because several OEM recognizers emit
- * start/stop tones and repeatedly restart after initial-silence timeouts. AudioRecord stays open
- * quietly, a lightweight local VAD finds one utterance, and only that utterance is sent to Gemini
- * 3.5 Transcribe. No microphone audio is stored on disk.
+ * The recorder tries VOICE_RECOGNITION first and falls back to MIC because some OEMs expose the
+ * former but fail to start it. VAD is intentionally child/phone-distance tolerant and has a bounded
+ * initial wait, so the app can recover instead of appearing stuck forever.
  */
 class GeminiSilentListener(
     context: Context,
@@ -42,14 +41,10 @@ class GeminiSilentListener(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val generation = AtomicLong(0L)
     private val captureExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "alshorti-silent-capture").apply {
-            priority = Thread.NORM_PRIORITY + 1
-        }
+        Thread(runnable, "alshorti-silent-capture").apply { priority = Thread.NORM_PRIORITY + 1 }
     }
     private val networkExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "alshorti-transcribe").apply {
-            priority = Thread.NORM_PRIORITY
-        }
+        Thread(runnable, "alshorti-transcribe").apply { priority = Thread.NORM_PRIORITY }
     }
 
     @Volatile private var recorder: AudioRecord? = null
@@ -66,9 +61,7 @@ class GeminiSilentListener(
         val ticket = generation.incrementAndGet()
         listening = true
         try {
-            captureExecutor.execute {
-                captureOneUtterance(ticket)
-            }
+            captureExecutor.execute { captureOneUtterance(ticket) }
         } catch (_: RejectedExecutionException) {
             listening = false
             dispatch { callbacks.onError("تعذر تشغيل الميكروفون.", true) }
@@ -99,27 +92,13 @@ class GeminiSilentListener(
             if (minBuffer <= 0) throw IllegalStateException("الميكروفون غير متاح.")
 
             val bufferBytes = maxOf(minBuffer * 2, FRAME_SAMPLES * 2 * 8)
-            localRecorder = AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(INPUT_SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferBytes)
-                .build()
-
-            if (localRecorder.state != AudioRecord.STATE_INITIALIZED) {
-                throw IllegalStateException("تعذر تهيئة الميكروفون.")
-            }
+            localRecorder = createCompatibleRecorder(bufferBytes)
             if (ticket != generation.get() || released) return
 
             recorder = localRecorder
             localRecorder.startRecording()
             if (localRecorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                throw IllegalStateException("تعذر بدء الاستماع.")
+                throw IllegalStateException("تعذر بدء الاستماع على هذا الجهاز.")
             }
             dispatch { callbacks.onReady() }
 
@@ -145,7 +124,7 @@ class GeminiSilentListener(
                 val rms = rms(current)
 
                 if (!speechStarted) {
-                    noiseFloor = (noiseFloor * 0.965 + rms.coerceAtMost(NOISE_TRACKING_CEILING) * 0.035)
+                    noiseFloor = (noiseFloor * 0.975 + rms.coerceAtMost(NOISE_TRACKING_CEILING) * 0.025)
                         .coerceIn(MIN_NOISE_RMS, MAX_NOISE_RMS)
                     if (preRoll.size >= PRE_ROLL_FRAMES) preRoll.removeFirst()
                     preRoll.addLast(current)
@@ -159,6 +138,8 @@ class GeminiSilentListener(
                         preRoll.clear()
                         lastVoiceFrame = frameIndex
                         dispatch { callbacks.onSpeechStarted() }
+                    } else if (frameIndex >= MAX_INITIAL_WAIT_FRAMES) {
+                        break
                     }
                 } else {
                     utterance.add(current)
@@ -181,15 +162,13 @@ class GeminiSilentListener(
             localRecorder = null
 
             if (!speechStarted || utterance.size < MIN_UTTERANCE_FRAMES) {
-                dispatch { callbacks.onError("ما سمعت كلاماً واضحاً.", true) }
+                dispatch { callbacks.onError("ما سمعت كلاماً واضحاً. قرّب الجوال وتكلم بشكل طبيعي.", true) }
                 return
             }
 
             val wav = encodeWav(utterance)
             try {
-                networkExecutor.execute {
-                    transcribe(ticket, wav)
-                }
+                networkExecutor.execute { transcribe(ticket, wav) }
             } catch (_: RejectedExecutionException) {
                 dispatch { callbacks.onError("تعذر معالجة الصوت.", true) }
             }
@@ -207,12 +186,35 @@ class GeminiSilentListener(
         }
     }
 
+    private fun createCompatibleRecorder(bufferBytes: Int): AudioRecord {
+        var lastError: Throwable? = null
+        for (source in intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC)) {
+            val candidate = runCatching {
+                AudioRecord.Builder()
+                    .setAudioSource(source)
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(INPUT_SAMPLE_RATE)
+                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufferBytes)
+                    .build()
+            }.onFailure { lastError = it }.getOrNull()
+
+            if (candidate != null && candidate.state == AudioRecord.STATE_INITIALIZED) return candidate
+            candidate?.let { runCatching { it.release() } }
+        }
+        throw IllegalStateException(lastError?.message ?: "تعذر تهيئة الميكروفون على هذا الجهاز.")
+    }
+
     private fun transcribe(ticket: Long, wav: ByteArray) {
         if (ticket != generation.get() || released) return
         val connection = (URL(INTERACTIONS_ENDPOINT).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 12_000
-            readTimeout = 35_000
+            connectTimeout = 10_000
+            readTimeout = 30_000
             doOutput = true
             setRequestProperty("x-goog-api-key", BuildConfig.GEMINI_API_KEY.trim())
             setRequestProperty("Content-Type", "application/json")
@@ -256,7 +258,7 @@ class GeminiSilentListener(
                     in 500..599 -> "خدمة تحويل الصوت غير متاحة مؤقتاً."
                     else -> "تعذر تحويل الصوت ($status)."
                 }
-                dispatch { callbacks.onError(message, status == 429 || status >= 500) }
+                dispatch { callbacks.onError(message, true) }
                 return
             }
 
@@ -295,7 +297,7 @@ class GeminiSilentListener(
                 }
             }
         }
-        return collected.joinToString(" ")
+        return collected.joinToString(" ").strip()
     }
 
     private fun rms(samples: ShortArray): Double {
@@ -374,18 +376,19 @@ class GeminiSilentListener(
         const val INPUT_SAMPLE_RATE = 16_000
         const val FRAME_MS = 20
         const val FRAME_SAMPLES = INPUT_SAMPLE_RATE * FRAME_MS / 1_000
-        const val PRE_ROLL_FRAMES = 15
-        const val START_CONFIRM_FRAMES = 3
-        const val END_SILENCE_FRAMES = 34
-        const val MIN_UTTERANCE_FRAMES = 18
+        const val PRE_ROLL_FRAMES = 18
+        const val START_CONFIRM_FRAMES = 2
+        const val END_SILENCE_FRAMES = 28
+        const val MIN_UTTERANCE_FRAMES = 14
         const val MAX_UTTERANCE_FRAMES = 750
-        const val INITIAL_NOISE_RMS = 260.0
-        const val MIN_NOISE_RMS = 90.0
-        const val MAX_NOISE_RMS = 1_400.0
-        const val NOISE_TRACKING_CEILING = 2_200.0
-        const val ABSOLUTE_START_RMS = 720.0
-        const val ABSOLUTE_CONTINUE_RMS = 420.0
-        const val START_NOISE_MULTIPLIER = 2.7
-        const val CONTINUE_NOISE_MULTIPLIER = 1.65
+        const val MAX_INITIAL_WAIT_FRAMES = 600
+        const val INITIAL_NOISE_RMS = 180.0
+        const val MIN_NOISE_RMS = 55.0
+        const val MAX_NOISE_RMS = 1_000.0
+        const val NOISE_TRACKING_CEILING = 1_700.0
+        const val ABSOLUTE_START_RMS = 380.0
+        const val ABSOLUTE_CONTINUE_RMS = 230.0
+        const val START_NOISE_MULTIPLIER = 1.8
+        const val CONTINUE_NOISE_MULTIPLIER = 1.28
     }
 }
