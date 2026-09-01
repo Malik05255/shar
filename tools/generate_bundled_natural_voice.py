@@ -13,11 +13,17 @@ CATALOG = ROOT / "police-app/src/main/assets/natural_voice_catalog.json"
 RAW_DIR = ROOT / "police-app/src/main/res/raw"
 API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 API_REVISION = "2026-05-20"
-MODEL = "gemini-3.1-flash-tts-preview"
+MODELS = [
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+]
+TRANSIENT_CODES = {429, 500, 502, 503, 504}
+preferred_model_index = 0
 
 
-def request_audio(api_key: str, voice: str, text: str):
-    prompt = (
+def make_prompt(text: str) -> str:
+    return (
         "Generate speech audio only. Do not speak or paraphrase these directions.\n"
         "Voice direction: Native Saudi man from Riyadh. Natural conversational Najdi/Saudi accent. "
         "Mature calm presence, warm with children, confident but never theatrical. Speak like a real "
@@ -25,9 +31,12 @@ def request_audio(api_key: str, voice: str, text: str):
         "relaxed pace, short natural pauses, subtle breathing, no announcer cadence.\n"
         "Speak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\n" + text
     )
+
+
+def request_once(api_key: str, voice: str, text: str, model: str):
     payload = json.dumps({
-        "model": MODEL,
-        "input": prompt,
+        "model": model,
+        "input": make_prompt(text),
         "response_format": {"type": "audio"},
         "generation_config": {"speech_config": [{"voice": voice}]},
     }, ensure_ascii=False).encode("utf-8")
@@ -42,44 +51,82 @@ def request_audio(api_key: str, voice: str, text: str):
             "Api-Revision": API_REVISION,
         },
     )
+    with urllib.request.urlopen(req, timeout=75) as response:
+        body = json.load(response)
+    return extract_audio(body)
 
+
+def request_audio(api_key: str, voice: str, text: str):
+    global preferred_model_index
+    order = list(range(preferred_model_index, len(MODELS))) + list(range(0, preferred_model_index))
     last_error = None
-    for attempt in range(6):
-        try:
-            with urllib.request.urlopen(req, timeout=75) as response:
-                body = json.load(response)
-            return extract_audio(body)
-        except urllib.error.HTTPError as exc:
-            last_error = exc
-            if exc.code not in (429, 500, 502, 503, 504) or attempt == 5:
-                raise
-            time.sleep(min(2 ** attempt, 20))
-        except Exception as exc:
-            last_error = exc
-            if attempt == 5:
-                raise
-            time.sleep(min(2 ** attempt, 20))
-    raise last_error
+
+    # Try each official TTS model promptly. If one works, keep it preferred for the rest of the
+    # catalog so a quota-limited model is not hammered again for every sentence.
+    for model_index in order:
+        model = MODELS[model_index]
+        for attempt in range(2):
+            try:
+                audio = request_once(api_key, voice, text, model)
+                preferred_model_index = model_index
+                print(f"  using {model}", flush=True)
+                return audio
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                body = ""
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:
+                    pass
+                print(f"  {model}: HTTP {exc.code} attempt {attempt + 1}/2 {body}", flush=True)
+                if exc.code not in TRANSIENT_CODES:
+                    break
+                if attempt == 0:
+                    time.sleep(1.5)
+            except Exception as exc:
+                last_error = exc
+                print(f"  {model}: {type(exc).__name__}: {exc}", flush=True)
+                if attempt == 0:
+                    time.sleep(1.5)
+
+    # One bounded cooldown, then retry the preferred candidate once. This handles short rolling
+    # quota windows without turning CI into an unbounded wait.
+    time.sleep(8.0)
+    model = MODELS[preferred_model_index]
+    try:
+        audio = request_once(api_key, voice, text, model)
+        print(f"  using {model} after cooldown", flush=True)
+        return audio
+    except Exception as exc:
+        last_error = exc
+
+    raise last_error if last_error is not None else RuntimeError("All Gemini TTS models failed")
 
 
 def extract_audio(body):
-    candidates = []
-    for step in body.get("steps", []):
-        if step.get("type") == "model_output":
-            candidates.extend(step.get("content", []))
-    for key in ("output_audio", "outputAudio"):
-        node = body.get(key)
+    def walk(node):
         if isinstance(node, dict):
-            candidates.append(node)
-    for node in candidates:
-        if not isinstance(node, dict) or not node.get("data"):
-            continue
-        mime = (node.get("mime_type") or node.get("mimeType") or "").lower()
-        if node.get("type") == "audio" or mime.startswith("audio/"):
-            raw = base64.b64decode(node["data"])
-            rate = int(node.get("sample_rate") or node.get("sampleRate") or 24000)
-            return raw, mime, rate
-    raise RuntimeError("Gemini response contained no audio")
+            data = node.get("data")
+            mime = (node.get("mime_type") or node.get("mimeType") or "").lower()
+            if data and (node.get("type") == "audio" or mime.startswith("audio/")):
+                raw = base64.b64decode(data)
+                rate = int(node.get("sample_rate") or node.get("sampleRate") or 24000)
+                return raw, mime, rate
+            for value in node.values():
+                found = walk(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for value in node:
+                found = walk(value)
+                if found is not None:
+                    return found
+        return None
+
+    audio = walk(body)
+    if audio is None:
+        raise RuntimeError("Gemini response contained no audio")
+    return audio
 
 
 def write_wav(path: pathlib.Path, raw: bytes, mime: str, rate: int):
