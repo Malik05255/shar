@@ -4,53 +4,24 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.malik.alshurti.livev2.LivePoliceV2Screen
 
+/**
+ * V2 entry point.
+ *
+ * The legacy update/cinematic stack is deliberately not mounted. This branch exists to prove the
+ * new audio-to-audio call architecture on a physical phone without any legacy state machine or
+ * updater changing what the user is actually testing.
+ */
 class MainActivity : ComponentActivity() {
-    private lateinit var appUpdateManager: AppUpdateManager
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        appUpdateManager = AppUpdateManager(this)
-
         setContent {
-            val updateState = appUpdateManager.state.collectAsStateWithLifecycle().value
-
             MaterialTheme {
-                Box(Modifier.fillMaxSize()) {
-                    PoliceCallScreen()
-                    AppUpdatePrompt(
-                        state = updateState,
-                        onUpdateNow = appUpdateManager::startUpdate,
-                        onRetry = appUpdateManager::retry,
-                        onDismiss = appUpdateManager::dismissForThisSession
-                    )
-                }
+                LivePoliceV2Screen()
             }
         }
-
-        // Every real app launch checks GitHub Releases once. Network/check failures stay silent so
-        // the child can always use the core call experience even when GitHub is unavailable.
-        appUpdateManager.checkForUpdates()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (::appUpdateManager.isInitialized) {
-            appUpdateManager.onActivityResumed()
-        }
-    }
-
-    override fun onDestroy() {
-        if (::appUpdateManager.isInitialized) {
-            appUpdateManager.release()
-        }
-        super.onDestroy()
     }
 }
