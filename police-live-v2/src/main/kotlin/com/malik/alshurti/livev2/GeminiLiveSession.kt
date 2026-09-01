@@ -197,8 +197,6 @@ class GeminiLiveSession(
                 JSONObject().put("languageCodes", JSONArray().put("ar-SA"))
             )
             .put("outputAudioTranscription", JSONObject())
-            .put("proactivity", JSONObject().put("proactiveAudio", true))
-            .put("contextWindowCompression", JSONObject().put("slidingWindow", JSONObject()))
 
         return JSONObject().put("setup", setup).toString()
     }
@@ -220,7 +218,7 @@ class GeminiLiveSession(
 
         server.optJSONObject("interimInputTranscription")
             ?.optString("text")
-            ?.takeIf(String::isNotBlank)
+            ?.takeIf { it.isNotBlank() }
             ?.let {
                 callbacks.onUserText(it, true)
                 callbacks.onState(State.USER_SPEAKING, "أسمعك…")
@@ -228,12 +226,12 @@ class GeminiLiveSession(
 
         server.optJSONObject("inputTranscription")
             ?.optString("text")
-            ?.takeIf(String::isNotBlank)
+            ?.takeIf { it.isNotBlank() }
             ?.let { callbacks.onUserText(it, false) }
 
         server.optJSONObject("outputTranscription")
             ?.optString("text")
-            ?.takeIf(String::isNotBlank)
+            ?.takeIf { it.isNotBlank() }
             ?.let { callbacks.onPoliceText(it) }
 
         val parts = server.optJSONObject("modelTurn")?.optJSONArray("parts")
