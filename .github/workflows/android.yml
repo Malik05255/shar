@@ -34,18 +34,15 @@ jobs:
       - name: Load app version
         run: cat version.properties >> "$GITHUB_ENV"
 
-      - name: Check Gemini natural voice configuration
-        id: voice
+      - name: Require Gemini natural voice configuration
         shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "$GEMINI_API_KEY" ]]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Missing repository secret: GEMINI_API_KEY"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "::error::GEMINI_API_KEY missing. Refusing to build a potentially silent APK."
+            exit 1
           fi
 
       - name: Restore permanent signing key when configured
@@ -81,95 +78,60 @@ jobs:
           test -s "$DRAW_DIR/cinematic_office_reference.png"
           echo "No cinematic MP4 is bundled into the APK."
 
-      - name: Verify exact cinematic CDN assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          urls=(
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142010_21ee919f-e378-4db1-b7ed-66e367acc0e3.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142018_248ecb5a-3804-457a-9a43-9b19de5f8121.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_141957_53df74a5-4bcb-445d-95a5-69182cd4f0d5.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142642_29bd6e49-40ad-484b-97f2-ebed9197a923.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142734_345318c2-5f9c-4f87-b067-8ca5bb5c5b54.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_140952_4319b02c-dc65-4750-b24f-f5459350058b.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_142029_d4e858db-fdfa-46ce-a248-34ccf47f19de.mp4'
-            'https://d8j0ntlcm91z4.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/hf_20260830_145806_3f9ed13a-6db3-41a4-a89a-34a383d9f5a3.mp4'
-            'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/d332e06e-e71d-4a6f-bd09-25701099796e.mp4'
-            'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/d974bddb-4396-45bb-b829-2bdc0c87aa12.mp4'
-            'https://d2ol7oe51mr4n9.cloudfront.net/user_3IdaZt4rxgNGbXtsJ68cilp0L0M/5f6f1b84-9230-4dc9-ad56-e87a3f18ded6.mp4'
-          )
-          for url in "${urls[@]}"; do
-            curl --fail --silent --show-error --location --head --connect-timeout 15 --max-time 30 "$url" >/dev/null
-          done
-          echo "All exact-quality cinematic CDN assets are reachable."
-
-      - name: Verify Gemini Saudi-directed voice end-to-end
-        if: steps.voice.outputs.ready == 'true'
+      - name: Generate all bundled natural Saudi speech
         shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ALSHORTI_GEMINI_POLICE_VOICE: ${{ secrets.ALSHORTI_GEMINI_POLICE_VOICE }}
         run: |
           set -euo pipefail
-          VOICE="${ALSHORTI_GEMINI_POLICE_VOICE:-Gacrux}"
-          RESPONSE="$RUNNER_TEMP/gemini-tts-response.json"
-          WAV="$RUNNER_TEMP/alshorti-gemini-smoke.wav"
-          PAYLOAD=$(python3 - <<PY
+          python3 tools/generate_bundled_natural_voice.py
+
+      - name: Audit bundled speech before build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
           import json
-          voice = "${VOICE}"
-          prompt = """Generate speech audio only. Do not speak these directions. Voice direction: Native Saudi man from Riyadh, natural conversational Najdi/Saudi accent, mature calm presence, warm with children, not a broadcaster. Speak exactly the transcript after [TRANSCRIPT].\n[TRANSCRIPT]\nهلا يا بطل، معك الشرطي. وش عندك؟"""
-          print(json.dumps({
-            "model": "gemini-3.1-flash-tts-preview",
-            "input": prompt,
-            "response_format": {"type": "audio"},
-            "generation_config": {"speech_config": [{"voice": voice}]}
-          }, ensure_ascii=False))
+          import math
+          import pathlib
+          import struct
+          import wave
+
+          root = pathlib.Path('police-app/src/main')
+          catalog = json.loads((root / 'assets/natural_voice_catalog.json').read_text(encoding='utf-8'))
+          raw_dir = root / 'res/raw'
+          expected = {f"voice_{entry['id']}.wav" for entry in catalog}
+          actual = {p.name for p in raw_dir.glob('voice_*.wav')}
+          if actual != expected:
+              raise SystemExit(f'voice catalog mismatch: actual={sorted(actual)} expected={sorted(expected)}')
+          if len(expected) != 15:
+              raise SystemExit(f'expected exactly 15 catalog voices, got {len(expected)}')
+
+          for name in sorted(expected):
+              path = raw_dir / name
+              if path.stat().st_size <= 3000:
+                  raise SystemExit(f'{name}: unexpectedly small')
+              with wave.open(str(path), 'rb') as wav:
+                  if wav.getnchannels() != 1:
+                      raise SystemExit(f'{name}: expected mono')
+                  if wav.getsampwidth() != 2:
+                      raise SystemExit(f'{name}: expected PCM16')
+                  if wav.getframerate() < 16000:
+                      raise SystemExit(f'{name}: sample rate too low')
+                  if wav.getnframes() <= 1000:
+                      raise SystemExit(f'{name}: too short')
+                  frames = wav.readframes(wav.getnframes())
+              sample_count = len(frames) // 2
+              if sample_count == 0:
+                  raise SystemExit(f'{name}: empty PCM')
+              samples = struct.unpack('<' + 'h' * sample_count, frames[:sample_count * 2])
+              rms = math.sqrt(sum(s * s for s in samples) / sample_count)
+              if rms <= 150:
+                  raise SystemExit(f'{name}: effectively silent (RMS={rms:.1f})')
+              print(f'{name}: RMS={rms:.1f}')
+          print(f'Audited {len(expected)} natural speech assets.')
           PY
-          )
-          HTTP_CODE=$(curl --silent --show-error --location --output "$RESPONSE" --write-out '%{http_code}' --connect-timeout 15 --max-time 60 \
-            -X POST 'https://generativelanguage.googleapis.com/v1beta/interactions' \
-            -H "x-goog-api-key: ${GEMINI_API_KEY}" \
-            -H 'Content-Type: application/json' \
-            -H 'Api-Revision: 2026-05-20' \
-            --data "$PAYLOAD")
-          if [[ "$HTTP_CODE" == "429" ]]; then
-            echo "::warning::Gemini TTS smoke test is temporarily rate-limited (HTTP 429); code build will continue."
-            rm -f "$RESPONSE" "$WAV"
-            exit 0
-          fi
-          if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
-            echo "::error::Gemini TTS smoke test failed with HTTP ${HTTP_CODE}."
-            exit 1
-          fi
-          python3 - <<PY
-          import base64, json, wave
-          data = json.load(open("$RESPONSE"))
-          audio = None
-          for step in data.get("steps", []):
-              if step.get("type") == "model_output":
-                  for block in step.get("content", []):
-                      if block.get("type") == "audio" and block.get("data"):
-                          audio = block; break
-              if audio: break
-          if not audio:
-              raise SystemExit("Gemini response contained no audio")
-          raw = base64.b64decode(audio["data"])
-          if len(raw) < 3000:
-              raise SystemExit("Gemini returned unexpectedly short audio")
-          mime = (audio.get("mime_type") or audio.get("mimeType") or "").lower()
-          rate = int(audio.get("sample_rate") or audio.get("sampleRate") or 24000)
-          if mime.startswith("audio/wav") or raw[:4] == b"RIFF":
-              open("$WAV", "wb").write(raw)
-          else:
-              with wave.open("$WAV", "wb") as w:
-                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(raw)
-          with wave.open("$WAV", "rb") as w:
-              assert w.getnchannels() == 1
-              assert w.getframerate() >= 16000
-              assert w.getnframes() > 1000
-              print("Gemini voice:", w.getframerate(), "Hz,", w.getnframes(), "frames")
-          PY
-          rm -f "$RESPONSE" "$WAV"
 
       - name: Build Al-Shorti
         env:
@@ -181,15 +143,44 @@ jobs:
           ALSHORTI_GEMINI_STAFF_VOICE: ${{ secrets.ALSHORTI_GEMINI_STAFF_VOICE }}
         run: ./gradlew --no-daemon :police-app:assembleDebug
 
+      - name: Verify APK contains all natural speech
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls police-app/build/outputs/apk/debug/*.apk | head -1)
+          test -s "$APK"
+          python3 - "$APK" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import zipfile
+
+          apk = pathlib.Path(sys.argv[1])
+          catalog = json.loads(pathlib.Path('police-app/src/main/assets/natural_voice_catalog.json').read_text(encoding='utf-8'))
+          expected = {f"res/raw/voice_{entry['id']}.wav" for entry in catalog}
+          with zipfile.ZipFile(apk) as archive:
+              names = set(archive.namelist())
+              missing = sorted(expected - names)
+              actual = sorted(name for name in names if name.startswith('res/raw/voice_') and name.endswith('.wav'))
+              if missing:
+                  raise SystemExit(f'APK missing bundled natural voices: {missing}')
+              if len(actual) != 15:
+                  raise SystemExit(f'APK expected 15 bundled voices, found {len(actual)}')
+              for name in actual:
+                  if len(archive.read(name)) <= 3000:
+                      raise SystemExit(f'{name}: embedded file unexpectedly small')
+          print('APK contains all 15 non-empty natural speech resources.')
+          PY
+
       - name: Report APK size
         run: du -h police-app/build/outputs/apk/debug/*.apk
 
       - name: Upload APK
-        if: steps.voice.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: AlShorti-${{ env.VERSION_NAME }}-debug
+          name: AlShorti-${{ env.VERSION_NAME }}-guaranteed-audible
           path: police-app/build/outputs/apk/debug/*.apk
+          retention-days: 30
 
   unit-tests:
     name: Unit tests
